@@ -34,6 +34,28 @@ Future<void> main(List<String> arguments) async {
     await runFirstStartCheck(arguments);
     return;
   }
+  if (arguments.firstOrNull != '--package-smoke') {
+    try {
+      await prepareAppStorage();
+    } catch (error) {
+      runApp(
+        MaterialApp(
+          home: Scaffold(
+            body: Center(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: SelectableText(
+                  '无法读取当前版本的应用数据。请确认整个软件目录可写，或检查 app-data 中手动修改的 JSON。'
+                  '\n不会改用旧版或系统共享配置。原文件已保留。\n$error',
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      return;
+    }
+  }
   DiaryService.add(
     '[App] 应用启动，版本: $appVersion, 平台: ${Platform.operatingSystem}',
   );

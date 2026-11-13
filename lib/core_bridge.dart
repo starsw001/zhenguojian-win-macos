@@ -874,14 +874,7 @@ class NativeRepository extends AppRepository {
       'rebuildOrdinaryCatalogs': !background && dataDirectory == null,
       ...programStorageDefaults(
         windows: Platform.isWindows,
-        executable:
-            Platform.isWindows &&
-                (Platform.environment['GUO_UPDATE_ROOT'] ?? '').isNotEmpty
-            ? path.join(
-                Platform.environment['GUO_UPDATE_ROOT']!,
-                'application.exe',
-              )
-            : Platform.resolvedExecutable,
+        executable: Platform.resolvedExecutable,
         isolated: dataDirectory != null,
       ),
     });

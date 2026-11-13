@@ -36,9 +36,9 @@ func nativeLicenseManager() *licensing.Manager {
 			edition = "zhenguoshang"
 		}
 		executable, _ := os.Executable()
-		configDir, _ := os.UserConfigDir()
+		root := filepath.Dir(executable)
 		nativeLicense.manager = licensing.Open(licensing.Config{
-			Root: filepath.Dir(executable), Storage: filepath.Join(configDir, "GuoApp", "licenses", edition),
+			Root: root, Storage: filepath.Join(root, "app-data", "licenses", edition),
 			Edition: edition, Version: buildAppVersion, ServerURL: licensing.ServiceOrigin,
 			DistributionPublicKey: buildLicenseDistributionKey, ServerPublicKey: buildLicenseServerKey,
 			ActivatePath: buildLicenseActivatePath, VerifyPath: buildLicenseVerifyPath, EventPath: buildLicenseEventPath,

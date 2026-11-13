@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"duanjuapp/native/licensing"
+	"duanjuapp/native/portable"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -151,7 +152,7 @@ func signBundle(bundle, customerPath, keyPath, edition, version, expectedPublic 
 			return errors.New("运行目录不能包含链接")
 		}
 		if entry.IsDir() {
-			if path != root && (strings.EqualFold(entry.Name(), "logs") || strings.EqualFold(entry.Name(), "download") || strings.HasPrefix(entry.Name(), ".")) {
+			if path != root && (portable.MutableDirectory(entry.Name()) || strings.HasPrefix(entry.Name(), ".")) {
 				return errors.New("运行目录含用户或验证数据，拒绝封装")
 			}
 			return nil

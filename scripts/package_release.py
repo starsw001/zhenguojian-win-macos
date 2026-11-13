@@ -11,6 +11,7 @@ from pathlib import Path
 from launcher_build import build_launcher
 from app_build import BuildVariant, add_variant_argument
 from license_build import load_license_build, read_build_receipt, customer_distribution_id
+from portable_bundle import initialize_portable_data
 
 root = Path(__file__).resolve().parents[1]
 parser = argparse.ArgumentParser()
@@ -86,6 +87,7 @@ else:
                     '--signing-key', str(options.signing_key.resolve()), '--edition', variant.slug,
                     '--version', version, '--expected-public-key', config['distributionPublicKey']],
                    cwd=root / 'native', env=os.environ.copy(), check=True)
+    initialize_portable_data(staging)
     staging.rename(target)
     artifacts.append(target)
     if options.archive:

@@ -3,13 +3,23 @@ import 'dart:io';
 
 import 'package:crypto/crypto.dart';
 import 'package:path/path.dart' as p;
-import 'package:path_provider/path_provider.dart';
+import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
+import 'package:shared_preferences_platform_interface/shared_preferences_platform_interface.dart';
+
+import 'portable_storage.dart';
+
+Future<void>? _preparedStorage;
 
 Future<void> prepareAppStorage() async {
   if (!Platform.isWindows) return;
-  final target = await getApplicationSupportDirectory();
-  final legacy = Directory(p.join(target.parent.parent.path, '真果鉴', '真果鉴'));
-  await migrateLegacyAppStorage(legacy: legacy, target: target);
+  await (_preparedStorage ??= _preparePortableStorage());
+}
+
+Future<void> _preparePortableStorage() async {
+  final layout = PortableStorageLayout(Platform.resolvedExecutable);
+  await layout.prepare();
+  PathProviderPlatform.instance = PortablePathProvider(layout);
+  SharedPreferencesStorePlatform.instance = PortablePreferencesStore(layout);
 }
 
 Future<Map<String, String>> _storageFiles(Directory root) async {

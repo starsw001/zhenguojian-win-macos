@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/sha256"
 	"crypto/subtle"
+	"duanjuapp/native/portable"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -115,7 +116,7 @@ func (m *Manager) open() error {
 		return errors.New("无法取得本机授权摘要")
 	}
 	m.config.Storage = filepath.Join(m.config.Storage, d.DistributionID)
-	if err := os.MkdirAll(m.config.Storage, 0700); err != nil {
+	if err := portable.EnsureDirectory(m.config.Storage); err != nil {
 		return errors.New("无法创建独立授权目录")
 	}
 	unlock, err := m.beginState()

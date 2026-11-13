@@ -121,6 +121,12 @@ func newNativeDownloads(engine *nativeEngine) *nativeDownloads {
 		return engine.downloader.resolvePlaybackMedia(ctx, Task{
 			DramaID: job.Drama.ID, DramaTitle: job.Drama.Title, Chapter: job.Chapter, Index: job.Index})
 	}
+	if nativePortableRoot(engine.directory) != "" {
+		manager.root, manager.loadErr = nativePortableDownloadLocation(engine.directory)
+		if manager.loadErr != nil {
+			return manager
+		}
+	}
 	manager.loadErr = manager.load()
 	if manager.loadErr == nil && engine.defaultDownloadDirectory != "" {
 		location := filepath.Join(engine.directory, "download-location.json")
@@ -135,7 +141,7 @@ func newNativeDownloads(engine *nativeEngine) *nativeDownloads {
 			if manager.root == engine.defaultDownloadDirectory {
 				mode = "default"
 			}
-			data, _ := json.Marshal(map[string]string{"directory": manager.root, "mode": mode})
+			data := nativeDownloadLocationData(engine.directory, manager.root, mode)
 			if err := nativeDownloadWrite(location, data); err != nil {
 				manager.loadErr = errors.New("无法保存下载位置，请检查应用数据目录权限")
 			}

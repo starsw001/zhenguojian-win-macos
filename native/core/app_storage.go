@@ -48,6 +48,10 @@ func (engine *nativeEngine) storage() (nativeStorageInfo, error) {
 
 // nativeDownloadLocation 下载原生Location。
 func nativeDownloadLocation(directory string, defaultDownloads ...string) string {
+	if nativePortableRoot(directory) != "" {
+		path, _ := nativePortableDownloadLocation(directory)
+		return path
+	}
 	var value struct {
 		Directory string `json:"directory"`
 		Mode      string `json:"mode"`
@@ -147,6 +151,9 @@ func nativeCopyTree(ctx context.Context, source, target string) error {
 
 // moveDownloads 按存储设置执行下载目录迁移。
 func (engine *nativeEngine) moveDownloads(ctx context.Context, parent string, exact ...bool) error {
+	if nativePortableRoot(engine.directory) != "" {
+		return errors.New("便携版下载保存在当前软件目录的 download 文件夹；更换位置请移动整个软件文件夹")
+	}
 	if !filepath.IsAbs(parent) {
 		return errors.New("请选择有效的保存目录")
 	}

@@ -44,6 +44,8 @@ macos/Runner/GeneratedPluginRegistrant.*
 macos/DuanjuCore/*.xcframework/
 **/xcuserdata/
 /download/
+/app-data/
+/logs/
 *.credentials.json
 *.key
 .dev.vars

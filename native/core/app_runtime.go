@@ -3,12 +3,12 @@ package core
 import (
 	"context"
 	"crypto/tls"
+	"duanjuapp/native/portable"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
-	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -302,7 +302,7 @@ func newNativeEngine(directory string, defaultDownloads ...string) (*nativeEngin
 	if !filepath.IsAbs(directory) {
 		return nil, errors.New("应用数据目录无效")
 	}
-	if err := os.MkdirAll(directory, 0700); err != nil {
+	if err := portable.EnsureDirectory(directory); err != nil {
 		return nil, err
 	}
 	cfg := defaultConfig()

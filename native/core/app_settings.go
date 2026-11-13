@@ -132,6 +132,9 @@ func (engine *nativeEngine) loadResourceSettings() {
 					stored.Warning = "缓存设置无效，缓存上限使用默认值；原代理和下载设置保留，请检查后重新保存"
 				}
 			}
+			if decodeErr == nil {
+				stored.LogDirectory, decodeErr = nativePortableSelectedPath(engine.directory, stored.LogDirectory, "logs")
+			}
 			if readErr == nil && decodeErr == nil && stored.validate() == nil {
 				settings = stored
 			} else {
@@ -261,6 +264,11 @@ func (engine *nativeEngine) applyResourceSettings(settings nativeResourceSetting
 func (engine *nativeEngine) saveResourceSettings(settings nativeResourceSettings) (nativeResourceSettings, error) {
 	settings.ProxyURL = strings.TrimSpace(settings.ProxyURL)
 	settings.LogDirectory = strings.TrimSpace(settings.LogDirectory)
+	var pathErr error
+	settings.LogDirectory, pathErr = nativePortableSelectedPath(engine.directory, settings.LogDirectory, "logs")
+	if pathErr != nil {
+		return nativeResourceSettings{}, pathErr
+	}
 	settings.LogPath, settings.DefaultLogDirectory = "", ""
 	settings.Warning = ""
 	settings.SystemProxyStatus = ""
@@ -285,7 +293,12 @@ func (engine *nativeEngine) saveResourceSettings(settings nativeResourceSettings
 		engine.mu.Unlock()
 		return nativeResourceSettings{}, err
 	}
-	data, err := json.Marshal(settings)
+	stored := settings
+	if root := nativePortableRoot(engine.directory); root != "" && stored.LogDirectory != "" {
+		stored.LogDirectory, _ = filepath.Rel(root, stored.LogDirectory)
+		stored.LogDirectory = filepath.ToSlash(stored.LogDirectory)
+	}
+	data, err := json.Marshal(stored)
 	if err == nil {
 		var existing, updated map[string]json.RawMessage
 		old, readErr := os.ReadFile(filepath.Join(engine.directory, "resource-settings.json"))

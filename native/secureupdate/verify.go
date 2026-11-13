@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"crypto/ed25519"
 	"crypto/sha256"
+	"duanjuapp/native/portable"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -235,6 +236,9 @@ func VerifyTree(dir, key, edition, id, version string, strict bool) error {
 				return errors.New("安装包包含链接")
 			}
 			if d.IsDir() {
+				if filepath.Dir(path) == filepath.Clean(dir) && portable.MutableDirectory(d.Name()) {
+					return filepath.SkipDir
+				}
 				return nil
 			}
 			rel, e := filepath.Rel(dir, path)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"duanjuapp/native/portable"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -25,17 +26,16 @@ type Selection struct{ Active, Previous string }
 // Locate 构造与当前安装目录和分发身份对应的更新存储位置。
 func Locate(root, ed, id, key, base string) (Install, error) {
 	root = filepath.Clean(root)
-	cache, e := os.UserCacheDir()
-	if e != nil || !filepath.IsAbs(root) || !ValidEdition(ed) {
+	data, e := portable.DataDirectory(root)
+	if e != nil || !ValidEdition(ed) {
 		return Install{}, errors.New("更新安装位置无效")
 	}
-	h := sha256.Sum256([]byte(strings.ToLower(root)))
-	return Install{root, filepath.Join(cache, "GuoApp", "signed-updates", ed, hex.EncodeToString(h[:16])), ed, id, key, base}, nil
+	return Install{root, filepath.Join(data, "updates"), ed, id, key, base}, nil
 }
 
 // Init 初始化当前安装的更新缓存与状态目录。
 func (i Install) Init() error {
-	if e := os.MkdirAll(i.Cache, 0700); e != nil {
+	if e := portable.EnsureDirectory(i.Cache); e != nil {
 		return e
 	}
 	return NoLinks(i.Cache)
