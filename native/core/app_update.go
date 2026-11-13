@@ -1,393 +1,265 @@
 package core
 
 import (
-	"archive/zip"
 	"context"
+	"duanjuapp/native/licensing"
+	"duanjuapp/native/secureupdate"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
-	"regexp"
 	"runtime"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
-)
-
-const updateRepo = "vjc9wrh9r9-boop/zhenguojian-win-macos"
-
-var (
-	updateVersionPattern = regexp.MustCompile(`(\d+\.\d+\.\d+)\+(\d+)`)
-	updateReleasesPage   = "https://github.com/" + updateRepo + "/releases/latest"
-
-	updateMu     sync.Mutex
-	updateStatus = struct {
-		state    string
-		received int64
-		total    int64
-		message  string
-		staging  string
-		asset    string
-	}{state: "idle"}
 )
 
 type updateQuery struct {
 	Version string `json:"version"`
 	Edition string `json:"edition"`
+	Ticket  string `json:"ticket"`
 }
-
 type updateResult struct {
+	NoRelease bool   `json:"noRelease,omitempty"`
 	Available bool   `json:"available"`
 	Current   string `json:"current"`
 	Version   string `json:"version"`
 	Notes     string `json:"notes"`
 	PageURL   string `json:"pageUrl"`
 	AssetURL  string `json:"assetUrl"`
+	Ticket    string `json:"ticket"`
 	Error     string `json:"error,omitempty"`
 }
 
-func parseUpdateVersion(value string) (string, int, bool) {
-	match := updateVersionPattern.FindStringSubmatch(value)
-	if match == nil {
-		return "", 0, false
-	}
-	build, err := strconv.Atoi(match[2])
-	if err != nil {
-		return "", 0, false
-	}
-	return match[1], build, true
+var updates struct {
+	sync.Mutex
+	offer                *secureupdate.Offer
+	state, message, slot string
+	received, total      int64
 }
 
-func (engine *nativeEngine) updateCheck(ctx context.Context, raw string) (updateResult, error) {
-	var query updateQuery
-	_ = json.Unmarshal([]byte(raw), &query)
-	result := updateResult{Current: query.Version, PageURL: updateReleasesPage}
-	currentMain, currentBuild, ok := parseUpdateVersion(query.Version)
-	if !ok {
-		result.Error = "当前版本号无法解析"
-		return result, nil
+// updateEdition 更新软件类型。
+func updateEdition() string {
+	if buildAllSources == "true" {
+		return "zhenguoshang"
 	}
-
-	tag, notes, assets, err := engine.fetchLatestRelease(ctx)
-	if err != nil {
-		result.Error = "无法获取最新版本信息：" + err.Error()
-		return result, nil
-	}
-	latestVersion := ""
-	for name := range assets {
-		if main, build, ok := parseUpdateVersion(name); ok && strings.HasPrefix(name, query.Edition) {
-			latestVersion = fmt.Sprintf("%s+%d", main, build)
-			break
-		}
-	}
-	if latestVersion == "" {
-		if main, build, ok := parseUpdateVersion(tag); ok {
-			latestVersion = fmt.Sprintf("%s+%d", main, build)
-		}
-	}
-	if latestVersion == "" {
-		result.Error = "未能确定最新版本号"
-		return result, nil
-	}
-	latestMain, latestBuild, _ := parseUpdateVersion(latestVersion)
-	result.Version = latestVersion
-	result.Notes = notes
-	result.Available = latestBuild > currentBuild || (latestBuild == currentBuild && latestMain > currentMain)
-	for name, address := range assets {
-		if !strings.HasPrefix(name, query.Edition) {
-			continue
-		}
-		switch runtime.GOOS {
-		case "windows":
-			if strings.Contains(name, "-windows-x64.zip") {
-				result.AssetURL = address
-			}
-		case "darwin":
-			if strings.Contains(name, "-macos-universal.zip") {
-				result.AssetURL = address
-			}
-		}
-		if result.AssetURL != "" {
-			break
-		}
-	}
-	return result, nil
+	return "hongguoshang"
 }
 
-func (engine *nativeEngine) fetchLatestRelease(ctx context.Context) (string, string, map[string]string, error) {
-	assets := map[string]string{}
-	requestCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
-	api := "https://api.github.com/repos/" + updateRepo + "/releases/latest"
-	request, err := http.NewRequestWithContext(requestCtx, http.MethodGet, api, nil)
-	if err == nil {
-		request.Header.Set("Accept", "application/vnd.github+json")
-		request.Header.Set("User-Agent", "guojian-updater")
-		if response, err := engine.updateClient().Do(request); err == nil {
-			if response.StatusCode == http.StatusOK {
-				var payload struct {
-					TagName string `json:"tag_name"`
-					Body    string `json:"body"`
-					Assets  []struct {
-						Name string `json:"name"`
-						URL  string `json:"browser_download_url"`
-					} `json:"assets"`
-				}
-				if decodeErr := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&payload); decodeErr == nil && payload.TagName != "" {
-					response.Body.Close()
-					for _, asset := range payload.Assets {
-						assets[asset.Name] = asset.URL
-					}
-					return payload.TagName, payload.Body, assets, nil
-				}
-			}
-			response.Body.Close()
-		}
-	}
-	// GitHub API 不可达时退回 releases/latest 重定向解析
-	for _, address := range []string{updateReleasesPage, "https://ghfast.top/" + updateReleasesPage} {
-		client := engine.updateClient()
-		client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-		request, err := http.NewRequestWithContext(requestCtx, http.MethodGet, address, nil)
-		if err != nil {
-			continue
-		}
-		request.Header.Set("User-Agent", "guojian-updater")
-		response, err := client.Do(request)
-		if err != nil {
-			continue
-		}
-		location := response.Header.Get("Location")
-		response.Body.Close()
-		if location == "" {
-			continue
-		}
-		tag := location[strings.LastIndex(location, "/")+1:]
-		if tag != "" {
-			return tag, "", assets, nil
-		}
-	}
-	return "", "", assets, errors.New("网络不可达")
-}
-
+// updateClient 取得update请求使用的客户端。
 func (engine *nativeEngine) updateClient() *http.Client {
-	client := *engine.downloader.client
-	client.Timeout = 0
-	return &client
+	engine.updateClientOnce.Do(func() {
+		t := licensing.SystemTransport()
+		t.ResponseHeaderTimeout = 15 * time.Second
+		if engine.downloader != nil && engine.downloader.proxyRouter != nil {
+			sys := t.Proxy
+			router := engine.downloader.proxyRouter
+			t.Proxy = func(r *http.Request) (*url.URL, error) {
+				router.mu.RLock()
+				mode, configured := router.mode, router.manual
+				router.mu.RUnlock()
+				switch mode {
+				case "direct":
+					return nil, nil
+				case "manual":
+					return configured, nil
+				}
+				return sys(r)
+			}
+		}
+		engine.publicUpdateClient = secureupdate.NewPublicClient(t)
+	})
+	return engine.publicUpdateClient
 }
 
-func (engine *nativeEngine) updateDownload(raw string) (map[string]any, error) {
-	var query updateQuery
-	_ = json.Unmarshal([]byte(raw), &query)
+// updateCheck 更新检查。
+func (engine *nativeEngine) updateCheck(ctx context.Context, raw string) (updateResult, error) {
+	var q updateQuery
+	_ = json.Unmarshal([]byte(raw), &q)
+	out := updateResult{Current: buildAppVersion}
+	out.PageURL = secureupdate.ReleasesURL
 	if runtime.GOOS != "windows" {
-		return nil, errors.New("当前平台请前往 GitHub 下载更新")
+		return engine.passiveRelease(ctx, q)
 	}
-	updateMu.Lock()
-	if updateStatus.state == "downloading" || updateStatus.state == "extracting" {
-		updateMu.Unlock()
-		return map[string]any{"state": updateStatus.state}, nil
+	if q.Version != buildAppVersion || q.Edition != updateEdition() {
+		out.Error = "软件和当前更新通道不匹配"
+		return out, nil
 	}
-	updateStatus = struct {
-		state    string
-		received int64
-		total    int64
-		message  string
-		staging  string
-		asset    string
-	}{state: "downloading"}
-	updateMu.Unlock()
-
-	go engine.runUpdateDownload(query)
-	return map[string]any{"state": "downloading"}, nil
-}
-
-func (engine *nativeEngine) runUpdateDownload(query updateQuery) {
-	setState := func(state, message string, received, total int64, staging, asset string) {
-		updateMu.Lock()
-		updateStatus.state = state
-		updateStatus.message = message
-		updateStatus.received = received
-		updateStatus.total = total
-		updateStatus.staging = staging
-		updateStatus.asset = asset
-		updateMu.Unlock()
+	i, e := secureupdate.Runtime(buildLicenseDistributionKey, updateEdition())
+	if e != nil {
+		out.Error = e.Error()
+		return out, nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
+	c, cancel := context.WithTimeout(ctx, 25*time.Second)
 	defer cancel()
-	info, err := engine.updateCheck(ctx, mustJSON(query))
-	if err != nil || info.AssetURL == "" {
-		setState("error", "未找到适用于当前平台的安装包", 0, 0, "", "")
-		return
+	o, e := secureupdate.Discover(c, engine.updateClient(), i.Edition, i.ID, i.Key, buildAppVersion)
+	if errors.Is(e, secureupdate.ErrNoPublishedRelease) {
+		out.NoRelease = true
+		return out, nil
 	}
-	cacheDir := filepath.Join(engine.directory, "update-cache")
-	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
-		setState("error", "无法创建更新缓存目录", 0, 0, "", "")
-		return
+	if e != nil {
+		out.Error = e.Error()
+		return out, nil
 	}
-	zipPath := filepath.Join(cacheDir, "package.zip")
-	_ = os.Remove(zipPath)
-	addresses := []string{info.AssetURL, "https://ghfast.top/" + info.AssetURL, "https://gh-proxy.com/" + info.AssetURL}
-	var received, total int64
-	downloaded := false
-	for _, address := range addresses {
-		if err := engine.downloadToFile(ctx, address, zipPath, func(done, size int64) {
-			setState("downloading", "", done, size, "", info.AssetURL)
-		}); err == nil {
-			downloaded = true
-			received, total = 0, 0
-			break
+	if o == nil {
+		return out, nil
+	}
+	updates.Lock()
+	if updates.state != "downloading" && updates.state != "extracting" && updates.state != "applying" {
+		if updates.offer == nil || updates.offer.Release.SHA256 != o.Release.SHA256 {
+			updates.state = "idle"
+			updates.slot = ""
 		}
+		updates.offer = o
 	}
-	if !downloaded {
-		setState("error", "下载失败，请稍后重试或前往 GitHub 下载", received, total, "", info.AssetURL)
-		return
-	}
-	setState("extracting", "正在解压", received, total, "", info.AssetURL)
-	staging := filepath.Join(cacheDir, "staging")
-	_ = os.RemoveAll(staging)
-	if err := unzipTo(zipPath, staging); err != nil {
-		setState("error", "安装包解压失败："+err.Error(), 0, 0, "", info.AssetURL)
-		return
-	}
-	_ = os.Remove(zipPath)
-	setState("ready", info.Version, 0, 0, staging, info.AssetURL)
+	updates.Unlock()
+	out.Available = true
+	out.Version = o.Release.Version
+	out.Notes = o.Notes
+	out.PageURL = o.Page
+	out.AssetURL = o.URL
+	out.Ticket = o.Release.SHA256
+	return out, nil
 }
 
-func (engine *nativeEngine) downloadToFile(ctx context.Context, address, target string, progress func(int64, int64)) error {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, address, nil)
-	if err != nil {
-		return err
+// activity 检查播放、下载等忙碌任务，并按 reserve 决定是否预留更新时段。
+func (engine *nativeEngine) activity(reserve bool) error {
+	engine.mu.Lock()
+	defer engine.mu.Unlock()
+	if len(engine.work) > 0 {
+		return errors.New("本地媒体任务正在运行，请在空闲后更新")
 	}
-	request.Header.Set("User-Agent", "guojian-updater")
-	response, err := engine.updateClient().Do(request)
-	if err != nil {
-		return err
+	engine.playbackMu.Lock()
+	defer engine.playbackMu.Unlock()
+	if engine.playbackCancel != nil {
+		return errors.New("正在准备播放，暂缓更新")
 	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("HTTP %d", response.StatusCode)
+	m := engine.downloads
+	if m == nil {
+		return nil
 	}
-	file, err := os.Create(target)
-	if err != nil {
-		return err
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.moving || m.mediaBusy || len(m.active) > 0 {
+		return errors.New("下载或媒体任务正在进行，请在空闲后更新")
 	}
-	defer file.Close()
-	buffer := make([]byte, 256<<10)
-	var done int64
-	total := response.ContentLength
-	for {
-		count, readErr := response.Body.Read(buffer)
-		if count > 0 {
-			if _, err := file.Write(buffer[:count]); err != nil {
-				return err
-			}
-			done += int64(count)
-			progress(done, total)
-		}
-		if readErr != nil {
-			if readErr == io.EOF {
-				return nil
-			}
-			return readErr
+	for _, j := range m.jobs {
+		if j.State == "queued" || j.State == "downloading" {
+			return errors.New("下载队列正在工作，请在空闲后更新")
 		}
 	}
-}
-
-func unzipTo(archive, target string) error {
-	reader, err := zip.OpenReader(archive)
-	if err != nil {
-		return err
-	}
-	defer reader.Close()
-	for _, entry := range reader.File {
-		path := filepath.Join(target, entry.Name)
-		if !strings.HasPrefix(path, filepath.Clean(target)+string(os.PathSeparator)) {
-			return errors.New("安装包内容异常")
-		}
-		if entry.FileInfo().IsDir() {
-			if err := os.MkdirAll(path, 0o755); err != nil {
-				return err
-			}
-			continue
-		}
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			return err
-		}
-		source, err := entry.Open()
-		if err != nil {
-			return err
-		}
-		file, err := os.Create(path)
-		if err != nil {
-			source.Close()
-			return err
-		}
-		if _, err := io.Copy(file, source); err != nil {
-			file.Close()
-			source.Close()
-			return err
-		}
-		file.Close()
-		source.Close()
+	if reserve {
+		m.updateHandoff = true
+		engine.updateHandoff = true
 	}
 	return nil
 }
 
+// updateDownload 更新下载。
+func (engine *nativeEngine) updateDownload(raw string) (map[string]any, error) {
+	var q updateQuery
+	if runtime.GOOS != "windows" || json.Unmarshal([]byte(raw), &q) != nil || q.Edition != updateEdition() || q.Version != buildAppVersion || !secureupdate.ValidDigest(q.Ticket) {
+		return nil, errors.New("更新请求与当前软件不符")
+	}
+	if e := engine.activity(false); e != nil {
+		return nil, e
+	}
+	updates.Lock()
+	if updates.offer == nil || updates.offer.Release.SHA256 != q.Ticket || updates.state == "downloading" || updates.state == "extracting" || updates.state == "applying" {
+		updates.Unlock()
+		return nil, errors.New("更新信息已变更或已有更新任务，请稍后重试")
+	}
+	updates.state, updates.message, updates.slot = "downloading", "", ""
+	updates.received, updates.total = 0, updates.offer.Release.Size
+	updates.Unlock()
+	go engine.runUpdateDownload(q)
+	return map[string]any{"state": "downloading"}, nil
+}
+
+// runUpdateDownload 执行Update下载。
+func (engine *nativeEngine) runUpdateDownload(q updateQuery) {
+	fail := func(e error) { updates.Lock(); updates.state, updates.message = "error", e.Error(); updates.Unlock() }
+	updates.Lock()
+	o := updates.offer
+	updates.Unlock()
+	if o == nil || q.Ticket == "" || o.Release.SHA256 != q.Ticket {
+		fail(errors.New("没有已验签的更新清单"))
+		return
+	}
+	i, e := secureupdate.Runtime(buildLicenseDistributionKey, updateEdition())
+	if e != nil {
+		fail(e)
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
+	defer cancel()
+	slot, e := i.Download(ctx, engine.updateClient(), *o, buildAppVersion, func(n, total int64) {
+		updates.Lock()
+		defer updates.Unlock()
+		if n < 0 {
+			updates.state = "extracting"
+		} else {
+			updates.received, updates.total = n, total
+		}
+	})
+	if e != nil {
+		fail(e)
+		return
+	}
+	updates.Lock()
+	updates.state, updates.slot = "ready", slot
+	updates.Unlock()
+}
+
+// updateStatusValue 更新状态值。
 func (engine *nativeEngine) updateStatusValue() map[string]any {
-	updateMu.Lock()
-	defer updateMu.Unlock()
-	return map[string]any{
-		"state":    updateStatus.state,
-		"received": updateStatus.received,
-		"total":    updateStatus.total,
-		"message":  updateStatus.message,
-		"version":  updateStatus.message,
-	}
+	updates.Lock()
+	defer updates.Unlock()
+	return map[string]any{"state": updates.state, "message": updates.message, "received": updates.received, "total": updates.total}
 }
 
+// updateApply 更新Apply。
 func (engine *nativeEngine) updateApply() (map[string]any, error) {
-	if runtime.GOOS != "windows" {
-		return nil, errors.New("当前平台请前往 GitHub 下载更新")
+	updates.Lock()
+	defer updates.Unlock()
+	if updates.state != "ready" || !secureupdate.ValidDigest(updates.slot) {
+		return nil, errors.New("更新尚未通过验证")
 	}
-	updateMu.Lock()
-	staging := updateStatus.staging
-	state := updateStatus.state
-	updateMu.Unlock()
-	if state != "ready" || staging == "" {
-		return nil, errors.New("更新尚未下载完成")
+	i, e := secureupdate.Runtime(buildLicenseDistributionKey, updateEdition())
+	if e != nil {
+		return nil, e
 	}
-	executable, err := os.Executable()
-	if err != nil {
-		return nil, err
+	if e = engine.activity(true); e != nil {
+		return nil, e
 	}
-	installDir := filepath.Dir(executable)
-	batchPath := filepath.Join(installDir, "update.bat")
-	name := filepath.Base(executable)
-	content := strings.Join([]string{
-		"@echo off",
-		"chcp 65001 >nul",
-		"timeout /t 1 /nobreak >nul",
-		":wait",
-		"tasklist /FI \"IMAGENAME eq " + name + "\" 2>nul | find /I \"" + name + "\" >nul",
-		"if not errorlevel 1 (",
-		"  timeout /t 1 /nobreak >nul",
-		"  goto wait",
-		")",
-		"robocopy \"" + staging + "\" \"" + installDir + "\" /E /R:2 /W:1 /NFL /NDL /NJH /NJS >nul",
-		"start \"\" \"" + filepath.Join(installDir, name) + "\"",
-		"del \"%~f0\"",
-	}, "\r\n")
-	if err := os.WriteFile(batchPath, []byte(content), 0o755); err != nil {
-		return nil, err
+	if e = i.Request(os.Getenv("GUO_UPDATE_SESSION"), updates.slot); e != nil {
+		if m := engine.downloads; m != nil {
+			m.mu.Lock()
+			m.updateHandoff = false
+			m.mu.Unlock()
+		}
+		engine.playbackMu.Lock()
+		engine.updateHandoff = false
+		engine.playbackMu.Unlock()
+		return nil, e
 	}
-	return map[string]any{"batch": batchPath}, nil
+	updates.state = "applying"
+	return map[string]any{"restart": true}, nil
 }
 
-func mustJSON(value any) string {
-	raw, _ := json.Marshal(value)
-	return string(raw)
+// updateReady 更新就绪。
+func updateReady() (any, error) {
+	if os.Getenv("GUO_UPDATE_TRIAL") != "1" {
+		return map[string]any{}, nil
+	}
+	i, e := secureupdate.Runtime(buildLicenseDistributionKey, updateEdition())
+	if e != nil {
+		return nil, e
+	}
+	exe, e := os.Executable()
+	if e != nil || filepath.Base(exe) != i.Edition+".exe" {
+		return nil, errors.New("启动确认进程不匹配")
+	}
+	return map[string]any{}, i.Ack(os.Getenv("GUO_UPDATE_SESSION"))
 }

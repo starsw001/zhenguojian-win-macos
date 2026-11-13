@@ -18,6 +18,7 @@ type nativeSystemProxy struct {
 	PAC    bool     `json:"pac"`
 }
 
+// resolve 解析系统代理配置。
 func (proxy nativeSystemProxy) resolve(request *http.Request) (*url.URL, error) {
 	host := strings.ToLower(request.URL.Hostname())
 	for _, exception := range proxy.Bypass {
@@ -42,6 +43,7 @@ func (proxy nativeSystemProxy) resolve(request *http.Request) (*url.URL, error) 
 	return url.Parse(address)
 }
 
+// systemSettings 读取当前系统代理设置。
 func (router *proxyRouter) systemSettings() nativeSystemProxy {
 	router.mu.Lock()
 	defer router.mu.Unlock()
@@ -52,6 +54,7 @@ func (router *proxyRouter) systemSettings() nativeSystemProxy {
 	return router.system
 }
 
+// updateSystemProxy 更新系统代理。
 func (engine *nativeEngine) updateSystemProxy(proxy nativeSystemProxy) error {
 	for _, address := range []string{proxy.HTTP, proxy.HTTPS} {
 		if address == "" {

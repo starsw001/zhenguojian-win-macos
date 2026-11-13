@@ -12,6 +12,7 @@ import (
 const nativeCatalogTTL = 15 * time.Minute
 
 type nativeCatalogState struct {
+	NextPage  int       `json:"nextPage,omitempty"`
 	UpdatedAt time.Time `json:"updatedAt"`
 	Page      int       `json:"page"`
 	HasMore   bool      `json:"hasMore"`
@@ -19,6 +20,7 @@ type nativeCatalogState struct {
 }
 
 type nativeCatalogDisk struct {
+	CatalogEpochs   map[string]string                    `json:"catalogEpochs,omitempty"`
 	Version         int                                  `json:"version"`
 	Catalogs        map[string][]nativeDrama             `json:"catalogs"`
 	States          map[string]nativeCatalogState        `json:"states"`
@@ -27,18 +29,25 @@ type nativeCatalogDisk struct {
 	Recommendations map[string]nativeRecommendationState `json:"recommendations,omitempty"`
 }
 
+// loadCatalogCache 从本地缓存恢复站源目录与作品元数据。
 func (engine *nativeEngine) loadCatalogCache() {
 	file, err := os.Open(filepath.Join(engine.directory, "catalogs.json"))
 	if err != nil {
 		return
 	}
 	defer file.Close()
-	body, err := io.ReadAll(io.LimitReader(file, nativeCatalogMaxBytes+1))
-	if err != nil || len(body) > nativeCatalogMaxBytes {
+	limit := engine.cacheBytes("catalogMiB")
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.Size() > int64(limit) {
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(file, int64(limit)+1))
+	if err != nil || len(body) > limit {
 		return
 	}
 	var disk nativeCatalogDisk
 	if json.Unmarshal(body, &disk) == nil && (disk.Version == 2 || disk.Version == 3) {
+		engine.catalogEpochs = disk.CatalogEpochs
 		if disk.Catalogs != nil {
 			engine.catalogs = disk.Catalogs
 			for _, items := range engine.catalogs {
@@ -77,6 +86,7 @@ func (engine *nativeEngine) loadCatalogCache() {
 	}
 }
 
+// migrateNativeDrama 规整持久化作品记录中的旧字段与缺省值。
 func migrateNativeDrama(drama nativeDrama) nativeDrama {
 	if drama.MetadataSchema == 0 && drama.Source == sourceHuangdou && drama.VIP != nil && !*drama.VIP {
 		drama.VIP = nil
@@ -85,6 +95,7 @@ func migrateNativeDrama(drama nativeDrama) nativeDrama {
 	return drama
 }
 
+// nativeCached 返回指定站源当前已缓存的目录结果。
 func (engine *nativeEngine) nativeCached(source string) nativeCatalogResult {
 	source = canonicalProviderSource(source)
 	engine.mu.Lock()
@@ -96,7 +107,7 @@ func (engine *nativeEngine) nativeCached(source string) nativeCatalogResult {
 	state, found := engine.catalogStates[source]
 	age := time.Since(state.UpdatedAt)
 	result := nativeCatalogResult{
-		Items: items, Page: max(1, state.Page), HasMore: !found || state.HasMore,
+		Items: items, Page: max(1, state.Page), NextPage: state.NextPage, HasMore: !found || state.HasMore,
 		Fresh:   len(items) > 0 && state.Warning == "" && !state.UpdatedAt.IsZero() && age >= 0 && age < nativeCatalogTTL,
 		Warning: state.Warning,
 	}
@@ -108,6 +119,7 @@ func (engine *nativeEngine) nativeCached(source string) nativeCatalogResult {
 	return result
 }
 
+// mergeNativeCatalog 合并目录页中的作品并处理重复条目。
 func mergeNativeCatalog(first, second []nativeDrama) []nativeDrama {
 	items := append([]nativeDrama{}, first...)
 	indices := make(map[string]int, len(items))
@@ -125,6 +137,7 @@ func mergeNativeCatalog(first, second []nativeDrama) []nativeDrama {
 	return items
 }
 
+// mergeNativeDrama 合并同一作品已有字段与新取得的元数据。
 func mergeNativeDrama(previous, fresh nativeDrama) nativeDrama {
 	previous, fresh = migrateNativeDrama(previous), migrateNativeDrama(fresh)
 	if previous.ID != "" && fresh.ID != previous.ID {
@@ -148,7 +161,7 @@ func mergeNativeDrama(previous, fresh nativeDrama) nativeDrama {
 	if fresh.Category == "" || nativeGenericCategory(fresh.Category) && previous.Category != "" && !nativeGenericCategory(previous.Category) {
 		fresh.Category = previous.Category
 	}
-	if fresh.Episodes == 0 {
+	if fresh.Episodes == 0 && fresh.Source != sourceHuangguoAI {
 		fresh.Episodes = previous.Episodes
 	}
 	if fresh.VIP == nil {
@@ -172,6 +185,7 @@ func mergeNativeDrama(previous, fresh nativeDrama) nativeDrama {
 	return fresh
 }
 
+// nativeGenericCategory 判断分类是否属于通用目录类别。
 func nativeGenericCategory(category string) bool {
 	switch category {
 	case "短剧", "真人剧", "漫剧", "AI剧", "AI 剧", "AI短剧", "AI 短剧", "AI漫剧", "AI 漫剧":
@@ -180,7 +194,10 @@ func nativeGenericCategory(category string) bool {
 	return false
 }
 
+// saveCatalogCache 保存目录缓存。
 func (engine *nativeEngine) saveCatalogCache(source string, result *nativeCatalogResult) error {
+	current := *result
+	current.Items = append([]nativeDrama{}, result.Items...)
 	engine.mu.Lock()
 	defer engine.mu.Unlock()
 	previous := engine.catalogs[source]
@@ -225,6 +242,13 @@ func (engine *nativeEngine) saveCatalogCache(source string, result *nativeCatalo
 		result.Page = max(1, state.Page)
 		result.HasMore = true
 	}
+	baseSource, _, _ := strings.Cut(source, "|")
+	if current.Authoritative && baseSource != sourceHuangguoAI {
+		result.Page, result.HasMore, result.NextPage = current.Page, current.HasMore, current.NextPage
+	} else if current.Page < state.Page {
+		result.NextPage = state.NextPage
+	}
+	state.NextPage = result.NextPage
 	state.Page, state.HasMore = result.Page, result.HasMore
 	state.Warning = result.Warning
 	if result.Warning == "" {
@@ -241,12 +265,18 @@ func (engine *nativeEngine) saveCatalogCache(source string, result *nativeCatalo
 		result.Warning = joinNativeWarnings(result.Warning, err.Error())
 		result.Fresh, result.HasMore = false, true
 	}
+	if current.Authoritative {
+		result.Items, result.Page, result.NextPage = current.Items, current.Page, current.NextPage
+		result.HasMore = current.HasMore || err != nil
+		result.Authoritative = err == nil
+	}
 	return err
 }
 
+// writeCatalogDiskLocked 写入当前目录缓存快照，供内部持锁流程调用。
 func (engine *nativeEngine) writeCatalogDiskLocked() error {
-	body, err := json.Marshal(nativeCatalogDisk{Version: 3, Catalogs: engine.catalogs, States: engine.catalogStates, Categories: engine.categoryOptions, HongguoApp: engine.hongguoCatalog, Recommendations: engine.recommendations})
-	if err == nil && len(body) > nativeCatalogMaxBytes {
+	body, err := json.Marshal(nativeCatalogDisk{Version: 3, CatalogEpochs: engine.catalogEpochs, Catalogs: engine.catalogs, States: engine.catalogStates, Categories: engine.categoryOptions, HongguoApp: engine.hongguoCatalog, Recommendations: engine.recommendations})
+	if err == nil && len(body) > engine.cacheBytes("catalogMiB") {
 		err = errNativeCatalogLimit
 	}
 	if err == nil {
@@ -261,6 +291,7 @@ func (engine *nativeEngine) writeCatalogDiskLocked() error {
 	return engine.catalogSaveError
 }
 
+// writeNativeCacheFile 将缓存内容写入指定文件。
 func writeNativeCacheFile(path string, data []byte) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return err
@@ -284,6 +315,7 @@ func writeNativeCacheFile(path string, data []byte) error {
 	return os.Rename(temporary.Name(), path)
 }
 
+// saveDetailMetadata 保存详情元数据。
 func (engine *nativeEngine) saveDetailMetadata(drama nativeDrama) error {
 	engine.mu.Lock()
 	defer engine.mu.Unlock()

@@ -35,6 +35,7 @@ type hongguoRecommendationPage struct {
 	Saved      bool    `json:"saved"`
 }
 
+// validate 校验红果推荐查询参数的字段与约束是否有效。
 func (query hongguoRecommendationQuery) validate() error {
 	known := false
 	for _, genre := range hongguoAppGenres {
@@ -54,6 +55,7 @@ func (query hongguoRecommendationQuery) validate() error {
 	return nil
 }
 
+// fetchHongguoRecommendations 获取红果推荐列表。
 func (downloader *Downloader) fetchHongguoRecommendations(ctx context.Context, query hongguoRecommendationQuery) (hongguoRecommendationPage, error) {
 	page := hongguoRecommendationPage{Dramas: []Drama{}}
 	if err := query.validate(); err != nil {
@@ -132,6 +134,7 @@ func (downloader *Downloader) fetchHongguoRecommendations(ctx context.Context, q
 	return page, ctx.Err()
 }
 
+// fetchHongguoFeedRecommendations 获取红果订阅流推荐列表。
 func (downloader *Downloader) fetchHongguoFeedRecommendations(ctx context.Context, query hongguoRecommendationQuery, tabType, bottomTab string) (hongguoRecommendationPage, error) {
 	seen := make(map[string]bool, len(query.Seen))
 	for _, id := range query.Seen {

@@ -10,6 +10,7 @@ import (
 	"time"
 )
 
+// TestYeguoAPIClientUsesRouteMethods 验证「Yeguo API Client Uses Route Methods」回归场景。
 func TestYeguoAPIClientUsesRouteMethods(t *testing.T) {
 	var sawCategories, sawCatalog, sawSearch, sawPlay bool
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
@@ -76,6 +77,7 @@ func TestYeguoAPIClientUsesRouteMethods(t *testing.T) {
 	}
 }
 
+// TestResolveYeguoMediaKeepsCodecAlternatives 验证「Resolve Yeguo Media Keeps Codec Alternatives」回归场景。
 func TestResolveYeguoMediaKeepsCodecAlternatives(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		if request.URL.Path != "/api/playlet/play" {

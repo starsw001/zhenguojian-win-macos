@@ -5,8 +5,8 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
-import 'app_build.dart';
 import 'app_layout.dart';
+import 'update_activity.dart';
 import 'core_bridge.dart';
 
 class UpdateInfo {
@@ -18,6 +18,8 @@ class UpdateInfo {
     required this.pageUrl,
     required this.assetUrl,
     this.error,
+    this.noRelease = false,
+    this.ticket = '',
   });
 
   final bool available;
@@ -27,23 +29,26 @@ class UpdateInfo {
   final String pageUrl;
   final String assetUrl;
   final String? error;
+  final bool noRelease;
+  final String ticket;
 
   static UpdateInfo fromJson(Map<String, dynamic> json) => UpdateInfo(
     available: json['available'] == true,
+    noRelease: json['noRelease'] == true,
     current: '${json['current'] ?? appVersion}',
     version: '${json['version'] ?? ''}',
     notes: '${json['notes'] ?? ''}',
-    pageUrl: '${json['pageUrl'] ?? 'https://github.com/vjc9wrh9r9-boop/zhenguojian-win-macos/releases/latest'}',
+    pageUrl: '${json['pageUrl'] ?? ''}',
+    ticket: '${json['ticket'] ?? ''}',
     assetUrl: '${json['assetUrl'] ?? ''}',
     error: json['error'] == null ? null : '${json['error']}',
   );
 }
 
-String get _edition => allSourcesEnabled ? 'zhenguojian' : 'hongguojian';
+String get _edition => allSourcesEnabled ? 'zhenguoshang' : 'hongguoshang';
 
 const _checkInterval = Duration(hours: 6);
-const _skippedKey = 'updateSkippedVersion';
-const _lastCheckKey = 'updateLastCheck';
+String get _lastCheckKey => 'signedUpdateCheck.$_edition';
 
 Future<UpdateInfo?> checkForUpdate(AppRepository repository) async {
   try {
@@ -62,28 +67,30 @@ Future<void> maybeAutoCheckUpdate(
   BuildContext context,
   AppRepository repository,
 ) async {
-  if (!mountedContext(context)) return;
+  if (!context.mounted) return;
   try {
     final prefs = await SharedPreferences.getInstance();
     final last = DateTime.tryParse(prefs.getString(_lastCheckKey) ?? '');
     if (last != null && DateTime.now().difference(last) < _checkInterval) {
       return;
     }
-    await prefs.setString(_lastCheckKey, DateTime.now().toIso8601String());
     final info = await checkForUpdate(repository);
-    if (info == null || !info.available) return;
-    if (prefs.getString(_skippedKey) == info.version) return;
-    if (!mountedContext(context)) return;
+    if (info == null || info.error != null) return;
+    await prefs.setString(_lastCheckKey, DateTime.now().toIso8601String());
+    if (!info.available) return;
+    while (true) {
+      if (!context.mounted) return;
+      final pageInFront = ModalRoute.of(context)?.isCurrent != false;
+      if (pageInFront &&
+          !UpdateActivity.playing &&
+          !await repository.updateBusy()) {
+        break;
+      }
+      await Future<void>.delayed(const Duration(seconds: 20));
+    }
+    if (!context.mounted) return;
     await showUpdateDialog(context, repository, info);
   } catch (_) {}
-}
-
-bool mountedContext(BuildContext context) {
-  try {
-    return context.mounted;
-  } catch (_) {
-    return false;
-  }
 }
 
 Future<void> showUpdateDialog(
@@ -97,7 +104,15 @@ Future<void> showUpdateDialog(
     builder: (context) {
       final width = MediaQuery.sizeOf(context).width;
       return AlertDialog(
-        title: Text(info.available ? '发现新版本 ${info.version}' : '已是最新版本'),
+        title: Text(
+          info.error != null
+              ? '更新检查未完成'
+              : info.noRelease
+              ? '暂无正式发布'
+              : info.available
+              ? '发现新版本 ${info.version}'
+              : '已是最新版本',
+        ),
         content: SizedBox(
           width: width < 520 ? width * 0.8 : 460,
           child: SingleChildScrollView(
@@ -112,27 +127,38 @@ Future<void> showUpdateDialog(
                 const SizedBox(height: 12),
                 if (info.error != null)
                   Text(info.error!, style: const TextStyle(fontSize: 13))
+                else if (info.noRelease)
+                  const Text('更新仓库尚未发布可识别的版本，当前软件可以继续使用。')
                 else if (!info.available)
                   Text(
                     '当前已是最新版本（${info.current}），无需更新。',
                     style: const TextStyle(fontSize: 13, height: 1.5),
                   )
                 else if (info.notes.trim().isNotEmpty)
-                  Text(info.notes.trim(), style: const TextStyle(fontSize: 13, height: 1.5)),
+                  Text(
+                    info.notes.trim(),
+                    style: const TextStyle(fontSize: 13, height: 1.5),
+                  ),
               ],
             ),
           ),
         ),
         actions: [
+          if (manual && info.error != null)
+            TextButton(
+              onPressed: () => Navigator.pop(context, 'release-page'),
+              child: const Text('打开发布页'),
+            ),
           if (info.available) ...[
             TextButton(
               onPressed: () => Navigator.pop(context, 'later'),
               child: const Text('稍后'),
             ),
-            TextButton(
-              onPressed: () => Navigator.pop(context, 'github'),
-              child: const Text('去 GitHub 下载'),
-            ),
+            if (!Platform.isWindows)
+              TextButton(
+                onPressed: () => Navigator.pop(context, 'github'),
+                child: const Text('去 GitHub 下载'),
+              ),
             if (Platform.isWindows && info.assetUrl.isNotEmpty)
               FilledButton(
                 onPressed: () => Navigator.pop(context, 'update'),
@@ -147,15 +173,31 @@ Future<void> showUpdateDialog(
       );
     },
   );
-  if (!mountedContext(context)) return;
+  if (!context.mounted) return;
   switch (action) {
+    case 'release-page':
+      final messenger = ScaffoldMessenger.maybeOf(context);
+      const address =
+          'https://github.com/starsw001/hongguo-win-public-package/releases';
+      try {
+        if (await launchUrl(
+          Uri.parse(address),
+          mode: LaunchMode.externalApplication,
+        )) {
+          return;
+        }
+      } catch (_) {}
+      messenger?.showSnackBar(const SnackBar(content: SelectableText(address)));
+      return;
     case 'github':
-      await launchUrl(Uri.parse(info.pageUrl), mode: LaunchMode.externalApplication);
+      await launchUrl(
+        Uri.parse(info.pageUrl),
+        mode: LaunchMode.externalApplication,
+      );
     case 'update':
       await _runDownload(context, repository, info);
     case 'later':
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString(_skippedKey, info.version);
+      return;
   }
 }
 
@@ -167,32 +209,34 @@ Future<void> _runDownload(
   final navigator = Navigator.of(context, rootNavigator: true);
   final progress = ValueNotifier<double?>(null);
   final statusText = ValueNotifier<String>('正在下载 ${info.version}…');
-  unawaited(showDialog<void>(
-    context: context,
-    barrierDismissible: false,
-    builder: (context) => PopScope(
-      canPop: false,
-      child: AlertDialog(
-        title: const Text('正在更新'),
-        content: ValueListenableBuilder<double?>(
-          valueListenable: progress,
-          builder: (context, value, _) => Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              LinearProgressIndicator(value: value),
-              const SizedBox(height: 12),
-              ValueListenableBuilder<String>(
-                valueListenable: statusText,
-                builder: (context, text, _) =>
-                    Text(text, style: const TextStyle(fontSize: 12)),
-              ),
-            ],
+  unawaited(
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => PopScope(
+        canPop: false,
+        child: AlertDialog(
+          title: const Text('正在更新'),
+          content: ValueListenableBuilder<double?>(
+            valueListenable: progress,
+            builder: (context, value, _) => Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                LinearProgressIndicator(value: value),
+                const SizedBox(height: 12),
+                ValueListenableBuilder<String>(
+                  valueListenable: statusText,
+                  builder: (context, text, _) =>
+                      Text(text, style: const TextStyle(fontSize: 12)),
+                ),
+              ],
+            ),
           ),
         ),
       ),
     ),
-  ));
+  );
 
   var closed = false;
   void closeDialog() {
@@ -202,7 +246,10 @@ Future<void> _runDownload(
   }
 
   try {
-    await repository.downloadUpdate(appVersion, _edition);
+    if (UpdateActivity.playing || await repository.updateBusy()) {
+      throw AppFailure('播放或下载中，暂不更新。');
+    }
+    await repository.downloadUpdate(appVersion, _edition, info.ticket);
     while (true) {
       await Future<void>.delayed(const Duration(milliseconds: 500));
       final status = await repository.updateStatus();
@@ -228,32 +275,22 @@ Future<void> _runDownload(
       }
       throw AppFailure('${status['message'] ?? '更新失败，请稍后重试'}');
     }
+    if (UpdateActivity.playing) throw AppFailure('播放中，暂不更新。');
     final applied = await repository.applyUpdate();
-    final batch = '${applied['batch'] ?? ''}';
-    if (batch.isEmpty) throw AppFailure('更新脚本创建失败');
-    await Process.start('cmd', ['/c', batch], mode: ProcessStartMode.detached);
-    closeDialog();
-    await Future<void>.delayed(const Duration(milliseconds: 300));
-    exit(0);
+    if (applied['restart'] != true) throw AppFailure('版本切换未就绪，继续使用原版。');
+    exit(74);
   } catch (error) {
     closeDialog();
-    if (mountedContext(context)) {
+    if (context.mounted) {
       await showDialog<void>(
         context: context,
         builder: (context) => AlertDialog(
           title: const Text('更新未完成'),
-          content: Text('$error\n\n可前往 GitHub 手动下载最新版本。'),
+          content: Text('$error\n\n原版本保持不变。'),
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(context),
               child: const Text('知道了'),
-            ),
-            TextButton(
-              onPressed: () async {
-                Navigator.pop(context);
-                await launchUrl(Uri.parse(info.pageUrl), mode: LaunchMode.externalApplication);
-              },
-              child: const Text('去 GitHub 下载'),
             ),
           ],
         ),

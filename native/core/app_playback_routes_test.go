@@ -11,6 +11,47 @@ import (
 	"testing"
 )
 
+// TestHongguoHealthTraceUsesOnlySafeRouteLabels 验证「Hongguo Health Trace Uses Only Safe Route Labels」回归场景。
+func TestHongguoHealthTraceUsesOnlySafeRouteLabels(t *testing.T) {
+	trace := &sourceResponseTrace{}
+	ctx := context.WithValue(context.Background(), sourceTraceKey{}, trace)
+	for _, tc := range []struct{ address, want string }{
+		{"https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/v1/?device_id=fixture-id", "/novel/player/multi_video_model/v1/"},
+		{"https://hongguoduanju.com/player/1234/5678?private=value", "官网同集播放页"},
+		{"https://v9-reading-video.qznovelvod.com/signed-media-path/?token=fixture-secret", ""},
+	} {
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, tc.address, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		observeSourceResponse(ctx, sourceFixtureResponse(request, 200, ""))
+		if trace.last.requestRoute != tc.want || trace.last.HTTPStatus != 200 {
+			t.Fatalf("unsafe or missing route label: %q", trace.last.requestRoute)
+		}
+	}
+}
+
+// TestHongguoAutomaticMediaUsesResolverPreferredVariant 验证「Hongguo Automatic Media Uses Resolver Preferred Variant」回归场景。
+func TestHongguoAutomaticMediaUsesResolverPreferredVariant(t *testing.T) {
+	media := providerMedia{URL: "https://v9-reading-video.qznovelvod.com/fixture", Direct: true, Quality: 720}
+	media.Variants = []providerMedia{{URL: "https://other-fixture.qznovelvod.com/fixture", Direct: true, Quality: 1080}}
+	for _, tc := range []struct {
+		source        string
+		request, want int
+	}{
+		{sourceHongguo, 0, 720},
+		{sourceHongguo, 1080, 1080},
+		{sourceHongguo, 720, 720},
+		{sourceWuguo, 0, 1080},
+	} {
+		choice := nativePlaybackChoicesForSource(tc.source, media, tc.request)
+		if len(choice.media) == 0 || choice.media[0].Quality != tc.want || len(choice.qualities) != 2 {
+			t.Fatalf("source=%s requested=%d wanted=%d got=%v", tc.source, tc.request, tc.want, choice)
+		}
+	}
+}
+
+// TestHongguoBackupAddressesAndCodecAlternatives 验证「Hongguo Backup Addresses And Codec Alternatives」回归场景。
 func TestHongguoBackupAddressesAndCodecAlternatives(t *testing.T) {
 	media, err := selectHongguoAppMedia(map[string]any{"video_list": []any{
 		map[string]any{"main_url": "https://media.test/hevc.mp4", "video_meta": map[string]any{"codec_type": "hevc", "definition": "1080p"}},
@@ -49,6 +90,7 @@ func TestHongguoBackupAddressesAndCodecAlternatives(t *testing.T) {
 	}
 }
 
+// TestNativePlaybackFallbackPreservesKeysAndReleasesOnlyOldSession 验证「Native Playback Fallback Preserves Keys And Releases Only Old Session」回归场景。
 func TestNativePlaybackFallbackPreservesKeysAndReleasesOnlyOldSession(t *testing.T) {
 	engine, err := newNativeEngine(t.TempDir())
 	if err != nil {
@@ -101,6 +143,7 @@ func TestNativePlaybackFallbackPreservesKeysAndReleasesOnlyOldSession(t *testing
 	}
 }
 
+// TestNativePlaybackHLSAlternativesAreLazyAndIsolated 验证「Native Playback HLS Alternatives Are Lazy And Isolated」回归场景。
 func TestNativePlaybackHLSAlternativesAreLazyAndIsolated(t *testing.T) {
 	engine, err := newNativeEngine(t.TempDir())
 	if err != nil {
@@ -141,6 +184,7 @@ func TestNativePlaybackHLSAlternativesAreLazyAndIsolated(t *testing.T) {
 	}
 }
 
+// TestNativePlaybackCancellationAndCacheBound 验证「Native Playback Cancellation And Cache Bound」回归场景。
 func TestNativePlaybackCancellationAndCacheBound(t *testing.T) {
 	engine := &nativeEngine{}
 	choice := nativePlaybackChoices(providerMedia{URL: "https://example.test/video.mp4"}, 0)

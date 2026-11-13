@@ -14,6 +14,7 @@ import (
 	"time"
 )
 
+// rankingFixture 返回排行榜Fixture。
 func rankingFixture(board rankingBoard, page int, rows []map[string]any) string {
 	key := "rank_" + board.path + "/page"
 	loader, _ := json.Marshal(map[string]any{"loaderData": map[string]any{key: map[string]any{"rankKey": board.upstreamKey, "pageNum": page, "updatedText": "9月13日已更新", "content": map[string]any{}}}})
@@ -21,6 +22,7 @@ func rankingFixture(board rankingBoard, page int, rows []map[string]any) string 
 	return "<script>window._ROUTER_DATA=" + string(loader) + "</script><script data-script-src='modern-run-router-data-fn' data-fn-name='r' data-fn-args='" + html.EscapeString(string(args)) + "'></script>"
 }
 
+// rankingRows 返回排行榜条目。
 func rankingRows(page int) []map[string]any {
 	return []map[string]any{
 		{"id": "7681903520873729048", "seriesId": "7681903520873729048", "rank": (page-1)*20 + 1, "title": "甲 & <乙> \"丙\"", "heatText": "1.2亿热度", "episodeVids": []string{"1111111111111111111", "2222222222222222222"}},
@@ -28,6 +30,7 @@ func rankingRows(page int) []map[string]any {
 	}
 }
 
+// TestHongguoRankingStreamAndValidation 验证「Hongguo Ranking Stream And Validation」回归场景。
 func TestHongguoRankingStreamAndValidation(t *testing.T) {
 	board, _ := findRankingBoard("hongguo-hot")
 	result, err := parseHongguoRanking(rankingFixture(board, 2, rankingRows(2)), board, 2)
@@ -70,6 +73,7 @@ func TestHongguoRankingStreamAndValidation(t *testing.T) {
 	}
 }
 
+// TestHuangdouRankingPreservesOrderAndMetrics 验证「Huangdou Ranking Preserves Order And Metrics」回归场景。
 func TestHuangdouRankingPreservesOrderAndMetrics(t *testing.T) {
 	rows := []any{
 		map[string]any{"id": "rp_first", "name": "低热度先返回", "hot_rate": "20", "click": "100"},
@@ -91,11 +95,12 @@ func TestHuangdouRankingPreservesOrderAndMetrics(t *testing.T) {
 	}
 }
 
+// TestHuangguoRankingStructuredData 验证「Huangguo Ranking Structured Data」回归场景。
 func TestHuangguoRankingStructuredData(t *testing.T) {
 	board, _ := findRankingBoard("huangguo-potential")
 	body := `<script type="application/ld+json">{"@graph":[{"@type":"BreadcrumbList","itemListElement":[]},{"@type":"ItemList","@id":"https://huangguoai.com/ranks/potential/#itemlist","itemListElement":[{"position":1,"name":"A & B","url":"https://huangguoai.com/detail/12/"},{"position":3,"name":"第二条","url":"https://huangguoai.com/detail/34/"}]}]}</script>`
 	result, err := parseHuangguoRanking(body, board)
-	if err != nil || len(result.Items) != 2 || result.Items[1].Rank != 3 || result.Items[0].Drama.ID != "huangguoai:12" || result.HasMore {
+	if err != nil || len(result.Items) != 2 || result.Items[1].Rank != 3 || result.Items[0].Drama.ID != "huangguoai:https://huangguoai.com/detail/12/" || result.HasMore {
 		t.Fatalf("could not preserve structured site ranks: %+v %v", result, err)
 	}
 	other, _ := findRankingBoard("huangguo-hot")
@@ -109,10 +114,12 @@ func TestHuangguoRankingStructuredData(t *testing.T) {
 
 type rankingTransport func(*http.Request) (*http.Response, error)
 
+// RoundTrip 实现隔离测试使用的单次 HTTP 请求处理。
 func (transport rankingTransport) RoundTrip(request *http.Request) (*http.Response, error) {
 	return transport(request)
 }
 
+// rankingTestDownloader 返回排行榜TestDownloader。
 func rankingTestDownloader(t *testing.T, transport rankingTransport) *Downloader {
 	t.Helper()
 	d := sourceFixtureDownloader(t, sourceFixtureTransport(transport))
@@ -121,10 +128,12 @@ func rankingTestDownloader(t *testing.T, transport rankingTransport) *Downloader
 	return d
 }
 
+// rankingHTTPResponse 返回排行榜HTTP响应。
 func rankingHTTPResponse(request *http.Request, status int, body string) *http.Response {
 	return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{"Content-Type": {"text/html; charset=utf-8"}}, Request: request}
 }
 
+// TestRankingCacheAndStaleRecovery 验证「Ranking Cache And Stale Recovery」回归场景。
 func TestRankingCacheAndStaleRecovery(t *testing.T) {
 	board, _ := findRankingBoard("hongguo-hot")
 	var calls atomic.Int32
@@ -135,6 +144,7 @@ func TestRankingCacheAndStaleRecovery(t *testing.T) {
 			return rankingHTTPResponse(request, 503, "temporarily unavailable"), nil
 		}
 		page, _ := strconv.Atoi(request.URL.Query().Get("page"))
+		page = max(1, page)
 		return rankingHTTPResponse(request, 200, rankingFixture(board, page, rankingRows(page))), nil
 	})
 	ctx := context.Background()
@@ -169,6 +179,7 @@ func TestRankingCacheAndStaleRecovery(t *testing.T) {
 	}
 }
 
+// TestRankingConcurrentRequestsShareFetch 验证「Ranking Concurrent Requests Share Fetch」回归场景。
 func TestRankingConcurrentRequestsShareFetch(t *testing.T) {
 	board, _ := findRankingBoard("hongguo-hot")
 	var calls atomic.Int32

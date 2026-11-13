@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:duanju_app/app_build.dart';
 import 'package:duanju_app/core_bridge.dart';
 import 'package:duanju_app/downloads_screen.dart';
 import 'package:duanju_app/local_store.dart';
@@ -11,12 +12,15 @@ import 'package:duanju_app/main.dart';
 import 'package:duanju_app/models.dart';
 import 'package:duanju_app/player_screen.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
+import 'package:window_manager/window_manager.dart';
 
 const fixtureBase = String.fromEnvironment('FIXTURE_BASE_URL');
 
@@ -213,6 +217,10 @@ class RecoveryFixtureRepository extends DeviceFixtureRepository {
 
 void main() {
   final binding = IntegrationTestWidgetsFlutterBinding.ensureInitialized();
+  if (Platform.isWindows) {
+    windowsPlaybackFlow(binding);
+    return;
+  }
 
   testWidgets('native MP4, encrypted HLS, CENC, swipe, rotation and resume', (
     tester,
@@ -701,5 +709,376 @@ void main() {
       }
     },
     timeout: const Timeout(Duration(minutes: 2)),
+  );
+}
+
+class WindowsFlowPaths extends PathProviderPlatform {
+  WindowsFlowPaths(this.directory);
+  final String directory;
+  @override
+  Future<String?> getApplicationSupportPath() async => directory;
+  @override
+  Future<String?> getApplicationDocumentsPath() async => directory;
+  @override
+  Future<String?> getTemporaryPath() async => directory;
+  @override
+  Future<String?> getApplicationCachePath() async => directory;
+  @override
+  Future<String?> getDownloadsPath() async => directory;
+}
+
+class WindowsFlowRepository extends AppRepository {
+  WindowsFlowRepository(this.base);
+  final String base;
+  final native = NativeRepository(background: true);
+  final searches = <String>[];
+  final selected = <int>[];
+  final released = <String>[];
+  bool unavailable = false;
+
+  Drama drama(String source) => Drama(
+    id: '$source:700001',
+    source: source,
+    title: 'Windows 合成流程验证',
+    category: '合成数据',
+    episodes: 3,
+  );
+
+  @override
+  Future<void> initialize() => native.initialize();
+  @override
+  Future<CatalogPage> cached(String source, {String category = ''}) async =>
+      CatalogPage([drama(source)], hasMore: false);
+  @override
+  Future<CatalogPage> catalog(
+    String source, {
+    int page = 1,
+    String query = '',
+    String category = '',
+    bool force = false,
+  }) async {
+    if (query.isNotEmpty) searches.add('$source:$query');
+    return CatalogPage([drama(source)], hasMore: false);
+  }
+
+  @override
+  Future<String> cover(Drama drama, {bool force = false}) async =>
+      throw AppFailure('合成验证不请求站源图片');
+  @override
+  Future<DramaDetail> detail(Drama drama) async => DramaDetail(drama, [
+    for (var number = 1; number <= 3; number++)
+      Episode({
+        'id': '$number',
+        'source': drama.source,
+        'currentEpisode': number,
+        'title': '第$number集',
+        'videoUrl':
+            '$base/${number == 1
+                ? 'clear.mp4'
+                : number == 2
+                ? 'index.m3u8'
+                : 'encrypted.mp4'}',
+        'referer': '$base/',
+      }, number),
+  ]);
+  @override
+  Future<PlaybackPlan> resolve(
+    Drama drama,
+    Episode episode, {
+    int quality = 0,
+  }) async {
+    selected.add(episode.number);
+    final plan = await native.resolve(
+      drama,
+      Episode({
+        ...episode.raw,
+        if (unavailable) 'videoUrl': '$base/missing.mp4',
+      }, episode.number),
+      quality: quality,
+    );
+    return episode.number == 3
+        ? PlaybackPlan(
+            url: plan.url,
+            headers: plan.headers,
+            decryptionKey: '00112233445566778899aabbccddeeff',
+            session: plan.session,
+            local: plan.local,
+          )
+        : plan;
+  }
+
+  @override
+  Future<PlaybackPlan> fallback(PlaybackPlan current) async =>
+      throw AppFailure('合成源没有备用线路');
+  @override
+  Future<void> cancelPlayback() => native.cancelPlayback();
+  @override
+  Future<void> release(String session) async {
+    if (session.isNotEmpty) released.add(session);
+    await native.release(session);
+  }
+}
+
+void windowsPlaybackFlow(IntegrationTestWidgetsFlutterBinding binding) {
+  testWidgets(
+    'Windows browse, search, select and decode without user data writes',
+    (tester) async {
+      expect(const bool.fromEnvironment('DISABLE_REMOTE_IMAGES'), isTrue);
+      final originalPlatform = debugDefaultTargetPlatformOverride;
+      debugDefaultTargetPlatformOverride = TargetPlatform.windows;
+      await windowManager.ensureInitialized();
+      MediaKit.ensureInitialized();
+      final directory = await Directory.systemTemp.createTemp(
+        'zhenguoshang-windows-flow-',
+      );
+      final originalPaths = PathProviderPlatform.instance;
+      PathProviderPlatform.instance = WindowsFlowPaths(directory.path);
+      SharedPreferences.setMockInitialValues({});
+      final store = LocalStore(await SharedPreferences.getInstance());
+      final executor = FFmpegExecutor();
+      final clear = File('${directory.path}/clear.mp4');
+      await executor.run([
+        '-f',
+        'lavfi',
+        '-i',
+        'testsrc2=size=320x180:rate=12',
+        '-f',
+        'lavfi',
+        '-i',
+        'anullsrc=channel_layout=stereo:sample_rate=44100',
+        '-t',
+        '20',
+        '-c:v',
+        'libx264',
+        '-threads',
+        '1',
+        '-g',
+        '24',
+        '-pix_fmt',
+        'yuv420p',
+        '-c:a',
+        'aac',
+        '-movflags',
+        '+faststart',
+        clear.path,
+      ]);
+      await File(
+        '${directory.path}/key.bin',
+      ).writeAsBytes(utf8.encode('0123456789abcdef'));
+      final keyInfo = File('${directory.path}/key-info.txt');
+      await keyInfo.writeAsString('key.bin\n${directory.path}/key.bin\n');
+      await executor.run([
+        '-i',
+        clear.path,
+        '-c',
+        'copy',
+        '-hls_time',
+        '2',
+        '-hls_list_size',
+        '0',
+        '-hls_key_info_file',
+        keyInfo.path,
+        '-hls_segment_filename',
+        '${directory.path}/segment-%d.ts',
+        '${directory.path}/index.m3u8',
+      ]);
+      await executor.run([
+        '-i',
+        clear.path,
+        '-c',
+        'copy',
+        '-movflags',
+        '+faststart',
+        '-encryption_scheme',
+        'cenc-aes-ctr',
+        '-encryption_key',
+        '00112233445566778899aabbccddeeff',
+        '-encryption_kid',
+        '11223344556677889900aabbccddeeff',
+        '${directory.path}/encrypted.mp4',
+      ]);
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      server.listen((request) async {
+        final name = request.uri.path.substring(1);
+        if (!RegExp(
+          r'^(clear\.mp4|encrypted\.mp4|index\.m3u8|key\.bin|segment-\d+\.ts)$',
+        ).hasMatch(name)) {
+          request.response.statusCode = HttpStatus.notFound;
+          await request.response.close();
+          return;
+        }
+        final file = File('${directory.path}/$name');
+        if (!await file.exists()) {
+          request.response.statusCode = HttpStatus.notFound;
+          await request.response.close();
+          return;
+        }
+        request.response.headers.set(HttpHeaders.acceptRangesHeader, 'bytes');
+        request.response.headers.contentType = ContentType.parse(
+          name.endsWith('.mp4')
+              ? 'video/mp4'
+              : name.endsWith('.m3u8')
+              ? 'application/vnd.apple.mpegurl'
+              : 'application/octet-stream',
+        );
+        final bytes = await file.length();
+        final range = RegExp(
+          r'^bytes=(\d+)-(\d*)$',
+        ).firstMatch(request.headers.value(HttpHeaders.rangeHeader) ?? '');
+        final start = range == null ? 0 : int.parse(range[1]!);
+        final end = range == null || range[2]!.isEmpty
+            ? bytes - 1
+            : int.parse(range[2]!).clamp(0, bytes - 1);
+        if (start > end || start >= bytes) {
+          request.response.statusCode = HttpStatus.requestedRangeNotSatisfiable;
+          await request.response.close();
+          return;
+        }
+        if (range != null) {
+          request.response.statusCode = HttpStatus.partialContent;
+          request.response.headers.set(
+            HttpHeaders.contentRangeHeader,
+            'bytes $start-$end/$bytes',
+          );
+        }
+        request.response.contentLength = end - start + 1;
+        await request.response.addStream(file.openRead(start, end + 1));
+        await request.response.close();
+      });
+      final repository = WindowsFlowRepository(
+        'http://127.0.0.1:${server.port}',
+      );
+      repository.native.access = store;
+      await repository.initialize();
+      final samples = <Map<String, Object?>>[];
+
+      Future<void> until(bool Function() ready, String step) async {
+        final timer = Stopwatch()..start();
+        while (!ready()) {
+          if (timer.elapsed > const Duration(seconds: 40)) {
+            fail('Windows flow timeout: $step');
+          }
+          await tester.pump(const Duration(milliseconds: 100));
+        }
+      }
+
+      Player player() =>
+          tester.widget<Video>(find.byType(Video)).controller.player;
+      Future<void> decoded(int number) async {
+        await until(
+          () => find.byType(Video).evaluate().isNotEmpty,
+          'video widget',
+        );
+        await player().setVolume(0);
+        await until(
+          () =>
+              repository.selected.lastOrNull == number &&
+              (player().state.width ?? 0) == 320 &&
+              player().state.duration.inSeconds >= 18 &&
+              player().state.position.inMilliseconds >= 500,
+          'decode episode $number',
+        );
+        expect(find.text('暂时无法播放'), findsNothing);
+        samples.add({
+          'episode': number,
+          'width': player().state.width,
+          'height': player().state.height,
+          'positionMs': player().state.position.inMilliseconds,
+          'durationMs': player().state.duration.inMilliseconds,
+        });
+      }
+
+      try {
+        await tester.pumpWidget(
+          DuanjuApp(repository: repository, store: store),
+        );
+        await until(
+          () => find.text('Windows 合成流程验证').evaluate().isNotEmpty,
+          'browse',
+        );
+        expect(
+          store.sources.length,
+          allSourcesEnabled ? SourceSite.primaryValues.length : 1,
+        );
+        await tester.tap(find.byKey(const ValueKey('toggle-search')));
+        await tester.pumpAndSettle();
+        await tester.enterText(find.byType(TextField).first, '合成');
+        await tester.testTextInput.receiveAction(TextInputAction.search);
+        await until(() => repository.searches.contains('hongguo:合成'), 'search');
+        debugPrint('WINDOWS_FLOW_SEARCH_PASSED');
+        await tester.tap(find.text('Windows 合成流程验证').first);
+        await until(
+          () => find
+              .byKey(const ValueKey('play-episode-1'))
+              .evaluate()
+              .isNotEmpty,
+          'episode list',
+        );
+        await decoded(1);
+        debugPrint('WINDOWS_FLOW_MP4_DECODED');
+        await player().seek(const Duration(seconds: 5));
+        await until(() => player().state.position.inSeconds >= 5, 'seek');
+        await tester.ensureVisible(
+          find.byKey(const ValueKey('play-episode-2')),
+        );
+        await tester.tap(find.byKey(const ValueKey('play-episode-2')));
+        await decoded(2);
+        debugPrint('WINDOWS_FLOW_AES_HLS_DECODED');
+        await player().pause();
+        await until(() => !player().state.playing, 'pause');
+        await player().play();
+        await until(() => player().state.playing, 'resume');
+        debugPrint('WINDOWS_FLOW_SEEK_PAUSE_RESUME_PASSED');
+        await tester.ensureVisible(
+          find.byKey(const ValueKey('play-episode-3')),
+        );
+        await tester.tap(find.byKey(const ValueKey('play-episode-3')));
+        await decoded(3);
+        debugPrint('WINDOWS_FLOW_CENC_DECODED');
+        await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+        await tester.pump(const Duration(milliseconds: 300));
+        if (find.byType(Video).evaluate().isNotEmpty) {
+          await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+        }
+        await until(
+          () => find.byType(Video).evaluate().isEmpty,
+          'return to catalog',
+        );
+        debugPrint('WINDOWS_FLOW_RETURNED_TO_CATALOG');
+        await until(
+          () => store.watched('hongguo:700001')?.episode == 3,
+          'saved progress',
+        );
+        expect(repository.released, isNotEmpty);
+        expect(tester.takeException(), isNull);
+        binding.reportData ??= {};
+        binding.reportData!['windowsFlow'] = {
+          'allSources': allSourcesEnabled,
+          'edition': appName,
+          'availablePrimarySources': store.sources
+              .map((source) => source.id)
+              .toList(),
+          'browse': true,
+          'searches': repository.searches,
+          'selectedEpisodes': repository.selected,
+          'decodedSamples': samples,
+          'seekPauseResume': true,
+          'savedEpisode': store.watched('hongguo:700001')?.episode,
+          'releasedSessions': repository.released.length,
+          'isolatedPreferences': true,
+          'isolatedNativeDirectory': directory.path,
+          'remoteImagesDisabled': true,
+          'fixtureGeneratedByBundledFFmpeg': true,
+        };
+      } finally {
+        await tester.pumpWidget(const SizedBox.shrink());
+        await repository.cancelPlayback();
+        await server.close(force: true);
+        store.dispose();
+        PathProviderPlatform.instance = originalPaths;
+        debugDefaultTargetPlatformOverride = originalPlatform;
+      }
+    },
+    timeout: const Timeout(Duration(minutes: 4)),
   );
 }

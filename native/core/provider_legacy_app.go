@@ -10,10 +10,12 @@ import (
 	"strings"
 )
 
+// fetchLegacyCatalogPage 获取旧接口目录页。
 func (d *Downloader) fetchLegacyCatalogPage(ctx context.Context, page int) ([]Drama, bool, error) {
 	return d.fetchLegacyCatalogCategoryPage(ctx, page, "")
 }
 
+// fetchLegacyCatalogCategoryPage 获取旧接口目录分类页面。
 func (d *Downloader) fetchLegacyCatalogCategoryPage(ctx context.Context, page int, category string) ([]Drama, bool, error) {
 	var tabs legacyTabList
 	if err := d.fetchAPI(ctx, "/api/app/playlet-tab/all", nil, &tabs); err != nil {
@@ -74,11 +76,13 @@ func (d *Downloader) fetchLegacyCatalogCategoryPage(ctx context.Context, page in
 	return items, hasMore, errors.Join(failures...)
 }
 
+// fetchLegacyChapters 获取旧接口分集列表。
 func (d *Downloader) fetchLegacyChapters(ctx context.Context, sourceID string) (string, []Chapter, error) {
 	drama, chapters, err := d.fetchLegacyDetail(ctx, sourceID)
 	return drama.DisplayTitle(), chapters, err
 }
 
+// fetchLegacyDetail 获取旧接口详情。
 func (d *Downloader) fetchLegacyDetail(ctx context.Context, sourceID string) (Drama, []Chapter, error) {
 	var detail detailResponse
 	if err := d.fetchAPI(ctx, "/api/app/playlet/detail/"+url.PathEscape(sourceID), nil, &detail); err != nil {
@@ -117,6 +121,7 @@ func (d *Downloader) fetchLegacyDetail(ctx context.Context, sourceID string) (Dr
 	return drama, chapters, nil
 }
 
+// resolveLegacyMedia 解析旧接口媒体。
 func (d *Downloader) resolveLegacyMedia(ctx context.Context, task Task) (providerMedia, error) {
 	if task.Chapter.VideoURL == "" {
 		return providerMedia{}, errors.New("此分集没有可用的播放地址")

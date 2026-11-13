@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:math';
 
 import 'package:flutter/material.dart';
+import 'cache_settings.dart';
 
 class SearchInput extends StatefulWidget {
   const SearchInput({
@@ -33,6 +34,12 @@ class _SearchInputState extends State<SearchInput> {
   bool _selected = false;
   final _cache = <String, List<String>>{};
 
+  @override
+  void initState() {
+    super.initState();
+    CacheRuntime.registerInput(this, _cache);
+  }
+
   void _cancel() {
     _timer?.cancel();
     widget.onCancel?.call();
@@ -50,6 +57,7 @@ class _SearchInputState extends State<SearchInput> {
 
   @override
   void dispose() {
+    CacheRuntime.unregisterInput(this);
     _cancel();
     _focus.dispose();
     super.dispose();
@@ -74,7 +82,9 @@ class _SearchInputState extends State<SearchInput> {
           query,
         )).where((s) => s.trim().isNotEmpty).toSet().take(10).toList();
         if (generation == _generation && mounted) {
-          if (_cache.length >= 32) _cache.remove(_cache.keys.first);
+          while (_cache.length >= CacheRuntime.limits.value('inputEntries')) {
+            _cache.remove(_cache.keys.first);
+          }
           _cache[query] = result;
           if (!pending.isCompleted) pending.complete(result);
         }

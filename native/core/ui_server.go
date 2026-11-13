@@ -6,6 +6,7 @@ import (
 	"strings"
 )
 
+// coverPathFromAny 从通用字段值中提取本地海报路径。
 func coverPathFromAny(v any) string {
 	switch x := v.(type) {
 	case nil:
@@ -45,6 +46,7 @@ func coverPathFromAny(v any) string {
 	return ""
 }
 
+// sourceFromDramaID 从统一作品标识中取得所属站源。
 func sourceFromDramaID(id string) string {
 	if source, _, ok := splitProviderDramaID(id); ok {
 		return source

@@ -8,6 +8,7 @@ import (
 	"time"
 )
 
+// TestProbeRegression 验证「Probe Regression」回归场景。
 func TestProbeRegression(t *testing.T) {
 	if os.Getenv("HG_PROBE") == "" {
 		t.Skip("probe disabled")

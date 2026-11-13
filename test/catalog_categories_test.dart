@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:duanju_app/app_build.dart';
 import 'package:duanju_app/catalog_browser.dart';
+import 'package:duanju_app/catalog_filters.dart';
 import 'package:duanju_app/core_bridge.dart';
 import 'package:duanju_app/local_store.dart';
 import 'package:duanju_app/main.dart';
@@ -108,6 +109,59 @@ class CategoryRepository extends FixtureRepository {
   }
 }
 
+class HuangjuCategoryRepository extends CategoryRepository {
+  bool failCategories = false;
+  static const rows = [
+    Drama(
+      id: 'huangju:cached-1',
+      source: 'huangju',
+      title: '缓存都市剧',
+      category: '都市，重生； 都市',
+    ),
+    Drama(
+      id: 'huangju:cached-2',
+      source: 'huangju',
+      title: '缓存青春剧',
+      category: '青春',
+    ),
+  ];
+
+  @override
+  Future<CatalogPage> cached(String source, {String category = ''}) async =>
+      CatalogPage(rows, fresh: true, hasMore: false);
+
+  @override
+  Future<List<CatalogCategory>> categories(
+    String source, {
+    bool force = false,
+  }) async {
+    if (failCategories) throw AppFailure('合成分类接口不可用');
+    return const [
+      CatalogCategory.all,
+      CatalogCategory('@new', '最新'),
+      CatalogCategory('urban', '都市'),
+      CatalogCategory('qing-chun', '青春'),
+      CatalogCategory('invalid-combined', '都市，重生'),
+    ];
+  }
+
+  @override
+  Future<CatalogPage> catalog(
+    String source, {
+    int page = 1,
+    String query = '',
+    String category = '',
+    bool force = false,
+  }) async {
+    categoryRequests.add('$source|$category|$page');
+    return CatalogPage(
+      category == 'urban' ? [rows.first] : rows,
+      hasMore: false,
+      page: page,
+    );
+  }
+}
+
 void main() {
   Future<LocalStore> mount(
     WidgetTester tester,
@@ -121,9 +175,10 @@ void main() {
     tester.platformDispatcher.textScaleFactorTestValue = scale;
     addTearDown(tester.view.reset);
     addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
-    SharedPreferences.setMockInitialValues({});
-    final store = LocalStore(await SharedPreferences.getInstance());
+    SharedPreferences.setMockInitialValues(await gatePreferences());
+    final store = testStore(await SharedPreferences.getInstance());
     addTearDown(store.dispose);
+    await unlockGate(store);
     await store.setSource(source);
     await tester.pumpWidget(DuanjuApp(repository: repository, store: store));
     await tester.pumpAndSettle();
@@ -142,7 +197,13 @@ void main() {
       );
       expect(find.byType(TextField), findsNothing);
       final coverTop = tester.getTopLeft(find.byType(DramaCover).first).dy;
-      expect(coverTop, lessThan(150));
+      expect(
+        coverTop,
+        greaterThanOrEqualTo(
+          tester.getBottomLeft(find.byType(CatalogFilters)).dy,
+        ),
+      );
+      expect(coverTop, lessThan(tester.view.physicalSize.height / 2));
       final switcher = find.byKey(const ValueKey('source-switch'));
       final rankings = find.byKey(const ValueKey('open-rankings'));
       expect(
@@ -161,17 +222,15 @@ void main() {
   }
 
   testWidgets(
-    'one Huangguo source merges catalogs and categories and rejects stale replies',
+    'Huangguo AI has independent catalogs and categories and rejects stale replies',
     (tester) async {
       final repository = CategoryRepository();
       await mount(tester, repository, source: 'huangguoai');
-      expect(find.text('黄果'), findsOneWidget);
+      expect(find.text('黄果AI'), findsOneWidget);
+      expect(find.text('黄果'), findsNothing);
       expect(find.text('入口'), findsNothing);
       expect(find.text('旧版'), findsNothing);
-      expect(
-        repository.categoryRequests.toSet(),
-        containsAll(['huangguo-video||1', 'huangguoai||1', 'cloudfront||1']),
-      );
+      expect(repository.categoryRequests.toSet(), equals({'huangguoai||1'}));
       expect(find.text('AI成人短剧'), findsNothing);
       expect(find.text('AI 短剧'), findsOneWidget);
       Future<void> choose(String name) async {
@@ -194,12 +253,17 @@ void main() {
       );
       await tester.pumpAndSettle();
       expect(find.text('过期分类结果'), findsNothing);
-      expect(
-        repository.categoryRequests,
-        containsAll(['huangguoai|ai-duanju|1', 'cloudfront|old-short|1']),
-      );
+      expect(repository.categoryRequests, contains('huangguoai|ai-duanju|1'));
       expect(find.text('huangguoai · ai-duanju'), findsOneWidget);
-      expect(find.text('cloudfront · old-short'), findsOneWidget);
+      expect(find.text('cloudfront · old-short'), findsNothing);
+      expect(
+        repository.categoryRequests.any(
+          (request) =>
+              request.startsWith('cloudfront|') ||
+              request.startsWith('huangguo-video|'),
+        ),
+        isFalse,
+      );
       expect(tester.takeException(), isNull);
     },
     skip: !allSourcesEnabled,
@@ -237,15 +301,112 @@ void main() {
   );
 
   test(
+    'Huangju cached tags become atomic choices without inventing server slugs',
+    () async {
+      final repository = HuangjuCategoryRepository();
+      final browser = CatalogBrowser(repository);
+      final group = SourceGroup('huangju', '剧果', [SourceSite.byId('huangju')]);
+      await browser.loadCategories(group);
+      final categories = browser.categories(group);
+      expect(categories.map((entry) => entry.name), [
+        '全部',
+        '最新',
+        '都市',
+        '青春',
+        '重生',
+      ]);
+      expect(categories.where((entry) => entry.name == '都市'), hasLength(1));
+      await browser.load(group, category: 'category:都市');
+      expect(repository.categoryRequests.last, 'huangju|urban|1');
+      final local = await browser.load(group, category: 'local:重生');
+      expect(repository.categoryRequests.last, 'huangju||1');
+      expect(local.items.map((drama) => drama.id), ['huangju:cached-1']);
+      expect(HuangjuCategoryRepository.rows.first.category, '都市，重生； 都市');
+    },
+  );
+
+  test('Huangju offline fallback keeps atomic cached filters', () async {
+    final repository = HuangjuCategoryRepository()..failCategories = true;
+    final browser = CatalogBrowser(repository);
+    final group = SourceGroup('huangju', '剧果', [SourceSite.byId('huangju')]);
+    expect(await browser.loadCategories(group), isNotNull);
+    expect(browser.categories(group).map((category) => category.name).toSet(), {
+      '全部',
+      '都市',
+      '重生',
+      '青春',
+    });
+    final page = await browser.load(
+      group,
+      category: 'local:重生',
+      cacheOnly: true,
+    );
+    expect(page.items.map((drama) => drama.id), ['huangju:cached-1']);
+    expect(repository.categoryRequests, isEmpty);
+  });
+
+  for (final source in ['fanguo', 'guanguo']) {
+    test(
+      '$source cached comma-separated tags are independent categories',
+      () async {
+        final repository = CategoryRepository();
+        repository.cachedPages[source] = CatalogPage([
+          Drama(
+            id: '$source:one',
+            source: source,
+            title: '缓存剧甲',
+            category: '都市, 重生，都市',
+          ),
+          Drama(
+            id: '$source:two',
+            source: source,
+            title: '缓存剧乙',
+            category: '青春',
+          ),
+        ]);
+        final browser = CatalogBrowser(repository);
+        final group = SourceGroup(source, source, [SourceSite.byId(source)]);
+        await browser.loadCategories(group);
+        expect(browser.categories(group).map((c) => c.name).toSet(), {
+          '全部',
+          '都市',
+          '重生',
+          '青春',
+        });
+        final page = await browser.load(group, category: 'local:都市');
+        expect(page.items.map((d) => d.id), ['$source:one']);
+      },
+    );
+  }
+
+  testWidgets('Huangju category chips and old cached-title selection agree', (
+    tester,
+  ) async {
+    final repository = HuangjuCategoryRepository();
+    await mount(tester, repository, source: 'huangju', width: 1200);
+    expect(find.widgetWithText(ChoiceChip, '都市，重生'), findsNothing);
+    expect(find.widgetWithText(ChoiceChip, '都市'), findsOneWidget);
+    final rebirth = find.widgetWithText(ChoiceChip, '重生');
+    await tester.ensureVisible(rebirth);
+    await tester.tap(rebirth);
+    await tester.pumpAndSettle();
+    expect(find.text('缓存都市剧'), findsWidgets);
+    expect(find.text('缓存青春剧'), findsNothing);
+    expect(tester.takeException(), isNull);
+  }, skip: !allSourcesEnabled);
+
+  test(
     'group pagination retries failed member without skipping or reloading exhausted members',
     () async {
       final repository = CategoryRepository()
         ..failLegacy = true
         ..paginate = true;
       final browser = CatalogBrowser(repository);
-      final group = SourceGroup.fromSources(
-        SourceSite.knownValues,
-      ).firstWhere((group) => group.id == 'huangguo');
+      final group = SourceGroup('all', '全部站源', [
+        SourceSite.byId('huangguo-video'),
+        SourceSite.byId('huangguoai'),
+        SourceSite.byId('cloudfront'),
+      ]);
       final first = await browser.load(group);
       expect(first.items.length, 2);
       expect(first.warning, '合成入口失败');

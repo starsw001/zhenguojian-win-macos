@@ -213,49 +213,42 @@ void main() {
           ),
         );
         await tester.pumpAndSettle();
-        final menu = find.byKey(const ValueKey('download-queue-actions'));
+        final pause = find.byTooltip('全部暂停');
+        final resume = find.byTooltip('全部继续');
         final filters = find.byKey(const ValueKey('download-filters'));
         final local = find.byKey(const ValueKey('download-local-media'));
+        final search = find.byType(TextField).first;
         expect(
-          tester.getCenter(menu).dy,
-          closeTo(tester.getCenter(find.text('下载任务')).dy, .01),
-        );
-        expect(tester.getRect(menu).left, greaterThan(layout.$1.width / 2));
-        expect(
-          tester.getRect(menu).bottom,
-          lessThan(tester.getRect(filters).top),
-        );
-        expect(
-          tester.getRect(local).bottom,
-          lessThanOrEqualTo(tester.getRect(filters).top),
-        );
-        final completed = find.byKey(
-          const ValueKey('download-filter-completed'),
-        );
-        final all = find.byKey(const ValueKey('download-filter-all'));
-        expect(tester.getRect(completed).top, tester.getRect(all).top);
-        await tester.ensureVisible(completed);
-        await tester.tap(completed);
-        await tester.pumpAndSettle();
-        expect(
-          find.byKey(const ValueKey('download-task-task-0')),
+          find.byKey(const ValueKey('download-queue-actions')),
           findsNothing,
         );
         expect(
-          find.byKey(const ValueKey('download-task-task-2')),
-          findsOneWidget,
+          tester.getRect(pause).bottom,
+          lessThan(tester.getRect(search).top),
         );
-        await tester.tap(menu);
+        expect(
+          tester.getRect(resume).bottom,
+          lessThan(tester.getRect(search).top),
+        );
+        expect(
+          tester.getRect(local).bottom,
+          lessThanOrEqualTo(tester.getRect(search).top),
+        );
+        await tester.tap(filters);
         await tester.pumpAndSettle();
-        await tester.tap(find.text('全部暂停'));
+        await tester.tap(find.widgetWithText(ChoiceChip, '已下载'));
+        await tester.tap(find.text('应用'));
         await tester.pumpAndSettle();
-        expect(repository.commands, ['pauseAll:']);
+        await tester.tap(pause);
+        await tester.pumpAndSettle();
+        expect(repository.commands, ['pause:task-0']);
         expect(repository.jobs.where((job) => job.active), isEmpty);
-        await tester.tap(menu);
+        await tester.tap(resume);
         await tester.pumpAndSettle();
-        await tester.tap(find.text('全部继续'));
-        await tester.pumpAndSettle();
-        expect(repository.commands.last, 'resumeAll:');
+        expect(
+          repository.commands,
+          containsAll(['resume:task-0', 'resume:task-1']),
+        );
         expect(repository.jobs.where((job) => job.active).length, 2);
         expect(tester.takeException(), isNull);
         await tester.pumpWidget(const SizedBox.shrink());

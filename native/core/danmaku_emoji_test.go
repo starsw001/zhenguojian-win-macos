@@ -5,6 +5,7 @@ import (
 	"testing"
 )
 
+// TestDanmakuEmojiExpandsVerifiedShortcodes 验证「Danmaku Emoji Expands Verified Shortcodes」回归场景。
 func TestDanmakuEmojiExpandsVerifiedShortcodes(t *testing.T) {
 	cases := map[string]string{
 		"这不是韩立老魔？？？？？[笑哭]": "这不是韩立老魔？？？？？😂",
@@ -25,6 +26,7 @@ func TestDanmakuEmojiExpandsVerifiedShortcodes(t *testing.T) {
 	}
 }
 
+// TestDanmakuEmojiKeepsUnknownTokensAndPlainText 验证「Danmaku Emoji Keeps Unknown Tokens And Plain Text」回归场景。
 func TestDanmakuEmojiKeepsUnknownTokensAndPlainText(t *testing.T) {
 	for _, input := range []string{
 		"普通弹幕没有表情",
@@ -39,6 +41,7 @@ func TestDanmakuEmojiKeepsUnknownTokensAndPlainText(t *testing.T) {
 	}
 }
 
+// TestDanmakuEmojiIsCaseInsensitiveForLatinTokens 验证「Danmaku Emoji Is Case Insensitive For Latin Tokens」回归场景。
 func TestDanmakuEmojiIsCaseInsensitiveForLatinTokens(t *testing.T) {
 	if got := expandDanmakuEmoji("[OK]"); got != "👌" {
 		t.Fatalf("[OK] => %q", got)
@@ -48,6 +51,7 @@ func TestDanmakuEmojiIsCaseInsensitiveForLatinTokens(t *testing.T) {
 	}
 }
 
+// TestDanmakuEmojiTableHasNoEmptyValues 验证「Danmaku Emoji Table Has No Empty Values」回归场景。
 func TestDanmakuEmojiTableHasNoEmptyValues(t *testing.T) {
 	for token, emoji := range danmakuEmoji {
 		if emoji == "" {
@@ -62,6 +66,7 @@ func TestDanmakuEmojiTableHasNoEmptyValues(t *testing.T) {
 	}
 }
 
+// TestDanmakuTruncationKeepsEmojiIntact 验证「Danmaku Truncation Keeps Emoji Intact」回归场景。
 func TestDanmakuTruncationKeepsEmojiIntact(t *testing.T) {
 	joined := strings.Repeat("字", 4) + "❤️"
 	if got := trimDanmakuText(joined, 5); got != strings.Repeat("字", 4) {

@@ -1,11 +1,11 @@
-"""构建红果鉴 / 真果鉴 macOS 通用版（Apple Silicon + Intel）。
+"""构建红果赏 / 真果赏 macOS 通用版（Apple Silicon + Intel）。
 
 必须在一台 Mac（macOS 12+，已安装 Xcode 与命令行工具）上运行；
 Windows / Linux 无法交叉编译 Flutter macOS 应用。
 
 用法：
-    python3 scripts/build_macos.py                # 红果鉴（仅红果站源）
-    python3 scripts/build_macos.py --all-sources  # 真果鉴（全部站源）
+    python3 scripts/build_macos.py                # 红果赏（仅红果站源）
+    python3 scripts/build_macos.py --all-sources  # 真果赏（全部站源）
     python3 scripts/build_macos.py --all-sources --cn-mirrors
     python3 scripts/build_macos.py --core-only    # 只编译 Go 核心（调试用）
 
@@ -22,7 +22,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from app_build import BuildVariant, add_variant_argument
+from app_build import BuildVariant, add_variant_argument, write_app_version
 
 root = Path(__file__).resolve().parents[1]
 
@@ -99,7 +99,7 @@ def main():
     if platform.system() != 'Darwin':
         raise SystemExit('macOS 构建需要一台 Mac（macOS 12+，已安装完整 Xcode）；'
                          'Windows / Linux 无法交叉编译 Flutter macOS 应用。')
-    parser = argparse.ArgumentParser(description='构建红果鉴 / 真果鉴 macOS 通用版')
+    parser = argparse.ArgumentParser(description='构建红果赏 / 真果赏 macOS 通用版')
     parser.add_argument('--core-only', action='store_true', help='只编译 Go 核心，不构建应用')
     parser.add_argument('--cn-mirrors', action='store_true', help='使用 Flutter / pub 中国镜像')
     add_variant_argument(parser)
@@ -109,6 +109,7 @@ def main():
     build_core(variant)
     if options.core_only:
         return
+    write_app_version(root)
     flutter = shutil.which('flutter')
     if not flutter or not shutil.which('pod'):
         raise SystemExit('请安装 Flutter（3.47.4 或更新，见 README 开发与构建一节）和 CocoaPods'

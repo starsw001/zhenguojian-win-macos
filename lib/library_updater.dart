@@ -57,14 +57,16 @@ class LibraryUpdater extends ChangeNotifier {
     final revision =
         '${status.operation}|${status.startedAt}|${status.finishedAt}|'
         '${status.updatedAt}|${status.count}|${status.storageError}';
-    if (!status.running &&
-        (status.finishedAt != null || submitted) &&
+    final liveIndexUpdate = status.operation == 'refreshAll' && status.running;
+    if ((liveIndexUpdate || !status.running) &&
+        (liveIndexUpdate || status.finishedAt != null || submitted) &&
         {
           'update',
           'more',
           'metadata',
           'vipMetadata',
           'retrySave',
+          'refreshAll',
         }.contains(status.operation) &&
         _delivered[status.source] != revision) {
       _delivered[status.source] = revision;

@@ -24,6 +24,7 @@ var duanjuTokens struct {
 	entries map[string]duanjuTokenEntry
 }
 
+// duanjuCachedToken 返回短剧已缓存令牌。
 func (d *Downloader) duanjuCachedToken(source string, ttl time.Duration, fetch func(context.Context) (string, error)) (string, error) {
 	duanjuTokens.Lock()
 	entry, found := duanjuTokens.entries[source]
@@ -44,6 +45,7 @@ func (d *Downloader) duanjuCachedToken(source string, ttl time.Duration, fetch f
 	return token, nil
 }
 
+// duanjuYaguoLoginURL 处理登录：短剧芽果URL。
 func (d *Downloader) duanjuYaguoLoginURL() string {
 	if host := d.providerHosts[sourceYaguo]; host != "" && strings.TrimRight(host, "/") != yaguoBaseURL {
 		return strings.TrimRight(host, "/") + "/user/v1/account/login"
@@ -51,6 +53,7 @@ func (d *Downloader) duanjuYaguoLoginURL() string {
 	return yaguoLoginURL
 }
 
+// duanjuYaguoToken 返回短剧芽果令牌。
 func (d *Downloader) duanjuYaguoToken(ctx context.Context) (string, error) {
 	return d.duanjuCachedToken(sourceYaguo, 6*time.Hour, func(_ context.Context) (string, error) {
 		payload, err := json.Marshal(map[string]any{"device": "24250683a3bdb3f118dff25ba4b1cba1a"})
@@ -79,6 +82,7 @@ func (d *Downloader) duanjuYaguoToken(ctx context.Context) (string, error) {
 	})
 }
 
+// duanjuYaguoRequest 请求短剧芽果。
 func (d *Downloader) duanjuYaguoRequest(ctx context.Context, path string, query url.Values) (map[string]any, error) {
 	token, err := d.duanjuYaguoToken(ctx)
 	if err != nil {
@@ -100,6 +104,7 @@ func (d *Downloader) duanjuYaguoRequest(ctx context.Context, path string, query 
 	})
 }
 
+// yaguoDramaFromNode 将芽果响应节点转换为统一作品模型。
 func yaguoDramaFromNode(node map[string]any, base string) Drama {
 	theater := duanjuFindMap(node, "theater")
 	if theater == nil {
@@ -123,11 +128,17 @@ func yaguoDramaFromNode(node map[string]any, base string) Drama {
 	}
 }
 
+// fetchYaguoCategories 获取芽果分类列表。
 func (d *Downloader) fetchYaguoCategories(ctx context.Context) ([]nativeCategory, error) {
 	response, err := d.duanjuYaguoRequest(ctx, "/cloud/v2/theater/classes", nil)
 	if err != nil {
 		return nil, err
 	}
+	return yaguoCategoriesFromResponse(response)
+}
+
+// yaguoCategoriesFromResponse 返回芽果分类列表来源响应。
+func yaguoCategoriesFromResponse(response map[string]any) ([]nativeCategory, error) {
 	var categories []nativeCategory
 	seen := map[string]bool{}
 	appendClass := func(entries []any) {
@@ -145,12 +156,35 @@ func (d *Downloader) fetchYaguoCategories(ctx context.Context) ([]nativeCategory
 			categories = append(categories, nativeCategory{ID: id, Name: name})
 		}
 	}
-	for _, group := range duanjuFindList(response, "data") {
+	groups := duanjuFindList(response, "data")
+	if groups == nil {
+		groups = duanjuFindList(duanjuFindMap(response, "data"), "list")
+	}
+	for _, group := range groups {
 		mapped, ok := group.(map[string]any)
 		if !ok {
 			continue
 		}
-		appendClass(duanjuFindList(mapped, "alg_class"))
+		groupID := duanjuFindString(mapped, "id")
+		groupName := duanjuFindString(mapped, "class_name", "name")
+		if webProviderNumericID.MatchString(groupID) && groupName != "" && !seen[groupID] {
+			seen[groupID] = true
+			categories = append(categories, nativeCategory{ID: groupID, Name: groupName})
+			for _, child := range duanjuFindList(mapped, "alg_class") {
+				node, ok := child.(map[string]any)
+				if !ok {
+					continue
+				}
+				id, name := duanjuFindString(node, "id"), duanjuFindString(node, "class_name", "name")
+				key := groupID + "-" + id
+				if id != "0" && webProviderNumericID.MatchString(id) && name != "" && !seen[key] {
+					seen[key] = true
+					categories = append(categories, nativeCategory{ID: key, Name: groupName + "·" + name})
+				}
+			}
+		} else {
+			appendClass(duanjuFindList(mapped, "alg_class"))
+		}
 	}
 	if len(categories) == 0 {
 		return nil, errors.New("芽果未返回有效分类")
@@ -158,9 +192,14 @@ func (d *Downloader) fetchYaguoCategories(ctx context.Context) ([]nativeCategory
 	return categories, nil
 }
 
+// fetchYaguoCatalogPage 获取芽果目录页。
 func (d *Downloader) fetchYaguoCatalogPage(ctx context.Context, page int, category string) ([]Drama, bool, error) {
 	base := d.duanjuBaseURL(sourceYaguo)
 	classID := strings.TrimSpace(category)
+	class2 := "0"
+	if parent, child, found := strings.Cut(classID, "-"); found {
+		classID, class2 = parent, child
+	}
 	if classID == "9" {
 		response, err := d.duanjuYaguoRequest(ctx, "/cloud/v1/first_level_ranking/detail", url.Values{"id": {"1"}})
 		if err != nil {
@@ -183,8 +222,8 @@ func (d *Downloader) fetchYaguoCatalogPage(ctx context.Context, page int, catego
 	}
 	response, err := d.duanjuYaguoRequest(ctx, "/cloud/v2/theater/home_page", url.Values{
 		"theater_class_id": {classID},
-		"type":             {"1"},
-		"class2_ids":       {"0"},
+		"type":             {firstNonEmpty(classID, "1")},
+		"class2_ids":       {class2},
 		"page_num":         {strconv.Itoa(page)},
 		"page_size":        {"24"},
 	})
@@ -207,6 +246,7 @@ func (d *Downloader) fetchYaguoCatalogPage(ctx context.Context, page int, catego
 	return items, hasMore, nil
 }
 
+// duanjuFindBool 查找短剧布尔值。
 func duanjuFindBool(node map[string]any, keys ...string) bool {
 	for _, key := range keys {
 		if value, found := node[key]; found {
@@ -223,6 +263,7 @@ func duanjuFindBool(node map[string]any, keys ...string) bool {
 	return false
 }
 
+// fetchYaguoDetail 获取芽果详情。
 func (d *Downloader) fetchYaguoDetail(ctx context.Context, sourceID string) (Drama, []Chapter, error) {
 	base := d.duanjuBaseURL(sourceYaguo)
 	response, err := d.duanjuYaguoRequest(ctx, "/v2/theater_parent/detail", url.Values{"theater_parent_id": {sourceID}})
@@ -275,6 +316,7 @@ func (d *Downloader) fetchYaguoDetail(ctx context.Context, sourceID string) (Dra
 	return drama, chapters, nil
 }
 
+// searchYaguo 搜索芽果。
 func (d *Downloader) searchYaguo(ctx context.Context, query string) ([]Drama, error) {
 	token, err := d.duanjuYaguoToken(ctx)
 	if err != nil {
@@ -296,6 +338,9 @@ func (d *Downloader) searchYaguo(ctx context.Context, query string) ([]Drama, er
 	if err != nil {
 		return nil, err
 	}
+	if err := sourceSearchEnvelope(response, sourceYaguo); err != nil {
+		return nil, err
+	}
 	rows := duanjuFindList(duanjuFindMap(response, "data"), "list")
 	if rows == nil {
 		rows = duanjuFindList(duanjuFindMap(duanjuFindMap(response, "data"), "theater"), "search_data")
@@ -313,6 +358,7 @@ func (d *Downloader) searchYaguo(ctx context.Context, query string) ([]Drama, er
 	return items, nil
 }
 
+// sortDuanjuChapters 排序短剧分集列表。
 func sortDuanjuChapters(chapters []Chapter) {
 	sort.SliceStable(chapters, func(i, j int) bool {
 		left, _ := strconv.Atoi(chapters[i].EpisodeString(i + 1))

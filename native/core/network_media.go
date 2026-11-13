@@ -21,6 +21,7 @@ type huangguoPreviewSession struct {
 	pending chan struct{}
 }
 
+// mediaRequestHeaders 构造媒体请求需要的 HTTP 请求头。
 func mediaRequestHeaders(request *http.Request, referer string) {
 	request.Header.Set("User-Agent", userAgent)
 	request.Header.Set("Referer", referer)
@@ -33,11 +34,13 @@ func mediaRequestHeaders(request *http.Request, referer string) {
 	}
 }
 
+// isHuangguoVideoURL 判断是否为黄果视频URL。
 func (d *Downloader) isHuangguoVideoURL(address *url.URL) bool {
 	configured, err := url.Parse(d.providerBaseURL(sourceHuangguoVideo))
-	return address != nil && (strings.EqualFold(address.Hostname(), "huangguo.video") || err == nil && strings.EqualFold(address.Host, configured.Host))
+	return address != nil && (strings.EqualFold(address.Hostname(), "huangguo.video") || err == nil && strings.EqualFold(address.Host, configured.Host) || d.huangguoKindForURL(address.String()) == sourceHuangguoVideo)
 }
 
+// previewSession 返回预览会话。
 func (d *Downloader) previewSession(origin string) *huangguoPreviewSession {
 	d.previewMu.Lock()
 	defer d.previewMu.Unlock()
@@ -50,6 +53,7 @@ func (d *Downloader) previewSession(origin string) *huangguoPreviewSession {
 	return d.previewSessions[origin]
 }
 
+// huangguoPreviewToken 返回黄果预览令牌。
 func (d *Downloader) huangguoPreviewToken(ctx context.Context, origin, referer string) (string, error) {
 	session := d.previewSession(origin)
 	for {
@@ -86,6 +90,7 @@ func (d *Downloader) huangguoPreviewToken(ctx context.Context, origin, referer s
 	}
 }
 
+// fetchHuangguoPreviewToken 获取黄果预览令牌。
 func (d *Downloader) fetchHuangguoPreviewToken(ctx context.Context, origin, referer string) (string, time.Time, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, origin+"/api/preview-token", nil)
 	if err != nil {
@@ -124,11 +129,19 @@ func (d *Downloader) fetchHuangguoPreviewToken(ctx context.Context, origin, refe
 	return result.Token, expiry, nil
 }
 
+// doMediaRequest 执行媒体请求。
 func (d *Downloader) doMediaRequest(request *http.Request) (*http.Response, error) {
 	return d.doMediaRequestWithClient(request, d.client)
 }
 
+// doMediaRequestWithClient 取得执行媒体请求包含请求使用的客户端。
 func (d *Downloader) doMediaRequestWithClient(request *http.Request, client *http.Client) (*http.Response, error) {
+	manager, _ := request.Context().Value(nativeDownloadManagerKey{}).(*nativeDownloads)
+	if manager != nil {
+		if err := manager.downloadSourceBackoff(request.Context()); err != nil {
+			return nil, err
+		}
+	}
 	mediaRequestHeaders(request, request.Header.Get("Referer"))
 	if credentials, _ := request.Context().Value(providerMediaCredentialsKey{}).(*providerMediaCredentials); credentials != nil {
 		if err := credentials.apply(request); err != nil {
@@ -149,6 +162,12 @@ func (d *Downloader) doMediaRequestWithClient(request *http.Request, client *htt
 		response, err := client.Do(request)
 		if err != nil {
 			return nil, err
+		}
+		if manager != nil {
+			if backoff := manager.observeDownloadBackoff(request.Context(), response); backoff != nil {
+				response.Body.Close()
+				return nil, backoff
+			}
 		}
 		if keyRequest && attempt == 0 && (response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden) {
 			body, readErr := io.ReadAll(io.LimitReader(response.Body, 64<<10))
@@ -173,6 +192,7 @@ func (d *Downloader) doMediaRequestWithClient(request *http.Request, client *htt
 	return nil, errors.New("播放凭证刷新失败")
 }
 
+// fetchMediaPlaylist 获取媒体播放列表。
 func (d *Downloader) fetchMediaPlaylist(ctx context.Context, address, referer string) (string, string, error) {
 	if !isProviderHTTPMediaURL(address) {
 		return "", "", errors.New("播放列表地址无效")

@@ -129,8 +129,155 @@ MediaProbe fixtureProbe({
   ],
 });
 
+class RecordingExportExecutor implements MediaExecutor {
+  final commands = <List<String>>[];
+
+  @override
+  Future<void> run(
+    List<String> arguments, {
+    double duration = 0,
+    void Function(double)? progress,
+  }) async {
+    commands.add(List.from(arguments));
+    await File(arguments.last).writeAsString('synthetic-mp4-fixture');
+  }
+
+  @override
+  Future<MediaProbe> probe(String file) async => fixtureProbe();
+
+  @override
+  Future<void> cancel() async {}
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+  test('exports independent MP4 episodes without a series merge', () async {
+    final directory = await Directory.systemTemp.createTemp('zgj-mp4-');
+    SharedPreferences.setMockInitialValues({});
+    final store = LocalStore(await SharedPreferences.getInstance());
+    const drama = Drama(id: 'hongguo:mp4', source: 'hongguo', title: 'MP4 测试');
+    final jobs = [
+      for (var i = 1; i <= 2; i++)
+        DownloadJob(
+          id: 'mp4-$i',
+          drama: drama,
+          episode: Episode({'id': '$i', 'currentEpisode': i}, i),
+          state: 'completed',
+          created: i,
+        ),
+    ];
+    final repository = FileRepository(directory.path, [
+      'one.mp4',
+      'two.mp4',
+    ], jobs);
+    final executor = RecordingExportExecutor();
+    final library = MediaLibrary(repository, store, executor: executor);
+    try {
+      await library.exportJobs(jobs);
+      expect(library.items, hasLength(2));
+      expect(
+        library.items.every(
+          (item) => item.kind == 'export' && item.episodes.length == 1,
+        ),
+        isTrue,
+      );
+      expect(library.items.map((item) => path.basename(item.file)).toSet(), {
+        'S01E001.mp4',
+        'S01E002.mp4',
+      });
+      expect(
+        library.items.every(
+          (item) =>
+              path.split(item.file).length == 3 &&
+              !item.file.contains('Season'),
+        ),
+        isTrue,
+      );
+      expect(
+        directory
+            .listSync(recursive: true)
+            .whereType<File>()
+            .where((file) => file.path.endsWith('.nfo')),
+        isEmpty,
+      );
+      expect(executor.commands, hasLength(2));
+      expect(
+        executor.commands.every(
+          (arguments) =>
+              arguments.contains('+faststart') &&
+              arguments.last.endsWith('.mp4'),
+        ),
+        isTrue,
+      );
+      expect(
+        executor.commands.any((arguments) => arguments.contains('concat')),
+        isFalse,
+      );
+      await library.exportJobs(jobs);
+      expect(executor.commands, hasLength(2));
+      final selected = library.items.first;
+      final flatFile = File(library.fileFor(selected));
+      final season = Directory(path.join(flatFile.parent.path, 'Season 01'));
+      await season.create();
+      final legacyFile = await flatFile.rename(
+        path.join(season.path, path.basename(flatFile.path)),
+      );
+      await File(
+        path.setExtension(legacyFile.path, '.nfo'),
+      ).writeAsString('legacy episode');
+      await File(
+        path.join(season.parent.path, 'tvshow.nfo'),
+      ).writeAsString('legacy show');
+      final index = File(path.join(directory.path, 'media-library.json'));
+      final saved =
+          jsonDecode(await index.readAsString()) as Map<String, dynamic>;
+      for (final row in saved['items'] as List) {
+        if (row['id'] == selected.id) {
+          row['file'] = path.relative(legacyFile.path, from: directory.path);
+        }
+      }
+      await index.writeAsString(jsonEncode(saved));
+      await library.exportJobs(jobs);
+      expect(executor.commands, hasLength(2));
+      expect(await flatFile.readAsString(), 'synthetic-mp4-fixture');
+      expect(await season.exists(), isFalse);
+      final removed = library.items.first;
+      final jobIndex = jobs.indexWhere((job) => job.id == removed.jobId);
+      final oldJob = jobs[jobIndex];
+      await library.remove(removed);
+      await library.maybeExport();
+      expect(executor.commands, hasLength(2));
+      expect(await File(library.fileFor(removed)).exists(), isFalse);
+      jobs[jobIndex] = DownloadJob(
+        id: oldJob.id,
+        drama: oldJob.drama,
+        episode: oldJob.episode,
+        state: 'completed',
+        created: oldJob.created,
+        revision: 1,
+      );
+      await library.maybeExport();
+      expect(executor.commands, hasLength(3));
+      expect(
+        library.items.any(
+          (item) =>
+              item.jobId == removed.jobId && item.sourceVersion.endsWith('-1'),
+        ),
+        isTrue,
+      );
+      expect(
+        directory
+            .listSync(recursive: true)
+            .whereType<File>()
+            .where((f) => f.path.endsWith('.nfo')),
+        isEmpty,
+      );
+    } finally {
+      library.dispose();
+      store.dispose();
+      await directory.delete(recursive: true);
+    }
+  });
   test(
     'merge retains every matching video and normalizes only the minority',
     () {
@@ -148,7 +295,7 @@ void main() {
         fixtureProbe(rate: 48000),
       ]);
       expect(audioOnly.videoTranscodes, 0);
-      expect(audioOnly.audioTranscodes, 1);
+      expect(audioOnly.audioTranscodes, 3);
       final identical = MergePlan.create([fixtureProbe(), fixtureProbe()]);
       expect(identical.videoTranscodes, 0);
       expect(identical.audioTranscodes, 0);
@@ -163,7 +310,7 @@ void main() {
     ]);
     expect(plan.audio, isNotNull);
     expect(plan.videoTranscodes, 0);
-    expect(plan.audioTranscodes, 2);
+    expect(plan.audioTranscodes, 3);
   });
 
   test(
@@ -233,7 +380,7 @@ void main() {
         await expectLater(
           library.merge(jobs),
           throwsA(
-            predicate((Object error) => error.toString().contains('已取消')),
+            predicate((Object error) => error.toString().contains('已停止')),
           ),
         );
         expect(executor.commands, isEmpty);
@@ -258,7 +405,7 @@ void main() {
   test(
     'real offline merge, CENC remux and Emby export remain playable after deleting inputs',
     () async {
-      final directory = await Directory.systemTemp.createTemp("真果鉴 '合成-");
+      final directory = await Directory.systemTemp.createTemp("真果赏 '合成-");
       SharedPreferences.setMockInitialValues({});
       final store = LocalStore(await SharedPreferences.getInstance());
       final executor = ProcessMediaExecutor();
@@ -333,25 +480,25 @@ void main() {
         await library.exportJobs(jobs);
         final exported = library.items.where((i) => !i.merged).toList();
         expect(exported, hasLength(3));
-        final show = File(library.fileFor(exported.first)).parent.parent;
-        await File(path.join(show.path, 'tvshow.nfo')).delete();
-        final episodeNfo = File(
-          path.setExtension(library.fileFor(exported.first), '.nfo'),
-        );
-        await episodeNfo.delete();
+        expect(exported.every((item) => item.file.endsWith('.mp4')), isTrue);
+        final show = File(library.fileFor(exported.first)).parent;
         final commandsBefore = executor.commands.length;
         await library.exportJobs(jobs);
-        expect(await episodeNfo.exists(), isTrue);
         expect(
           executor.commands.length,
           commandsBefore,
           reason: 'unchanged exports should not be remuxed again',
         );
-        final nfo = await File(
-          path.join(show.path, 'tvshow.nfo'),
-        ).readAsString();
-        expect(nfo, contains('合成 &lt;&amp;&gt; 测试'));
-        expect(nfo, contains('https://example.invalid/poster.jpg'));
+        expect(
+          await File(path.join(show.path, 'tvshow.nfo')).exists(),
+          isFalse,
+        );
+        expect(
+          show.listSync().every(
+            (file) => file is File && file.path.endsWith('.mp4'),
+          ),
+          isTrue,
+        );
         for (final file in files) {
           await File(file).delete();
         }

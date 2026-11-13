@@ -23,6 +23,7 @@ var (
 	dsdVPathAssignment  = regexp.MustCompile(`\bvar\s+vPath\s*=\s*["']([^"']+)["']`)
 )
 
+// parseDSDPlayer 解析DSD播放器。
 func parseDSDPlayer(document *html.Node) (map[string]any, bool, error) {
 	for _, script := range providerHTMLNodes(document, func(node *html.Node) bool { return node.Data == "script" }) {
 		if script.FirstChild == nil {
@@ -44,6 +45,7 @@ func parseDSDPlayer(document *html.Node) (map[string]any, bool, error) {
 	return nil, false, nil
 }
 
+// dsdPlayerIdentity 提取 DSD 播放页中的身份字段。
 func dsdPlayerIdentity(player map[string]any, sourceID string) (int, int, error) {
 	line, lineValid := webProviderInteger(player["sid"], 1000000)
 	episode, episodeValid := webProviderInteger(player["nid"], 1000000)
@@ -53,10 +55,12 @@ func dsdPlayerIdentity(player map[string]any, sourceID string) (int, int, error)
 	return line, episode, nil
 }
 
+// dsdEpisodePage 构造 DSD 分集对应的页面地址。
 func dsdEpisodePage(site, sourceID string, line, episode int) string {
 	return fmt.Sprintf("%s/index.php/vod/play/id/%s/sid/%d/nid/%d.html", site, sourceID, line, episode)
 }
 
+// dsdChapter 将 DSD 分集信息转换为统一分集记录。
 func dsdChapter(sourceID string, line, episode int, title, site string, vip bool) Chapter {
 	key := fmt.Sprintf("%d-%d", line, episode)
 	return Chapter{ID: providerChapterID(sourceDSD, sourceID, key), Source: sourceDSD,
@@ -64,6 +68,7 @@ func dsdChapter(sourceID string, line, episode int, title, site string, vip bool
 		PageURL: dsdEpisodePage(site, sourceID, line, episode), Referer: site + "/", VIP: vip}
 }
 
+// dsdDetailIdentity 提取 DSD 详情页中的作品身份字段。
 func dsdDetailIdentity(document *html.Node, sourceID string, player map[string]any, found bool) error {
 	if found {
 		_, _, err := dsdPlayerIdentity(player, sourceID)
@@ -80,6 +85,7 @@ func dsdDetailIdentity(document *html.Node, sourceID string, player map[string]a
 	return errors.New("帝果未返回所请求视频的详情")
 }
 
+// parseDSDDetail 解析DSD详情。
 func parseDSDDetail(document *html.Node, pageURL, sourceID, site string) (Drama, []Chapter, error) {
 	player, found, err := parseDSDPlayer(document)
 	if err != nil {
@@ -163,6 +169,7 @@ func parseDSDDetail(document *html.Node, pageURL, sourceID, site string) (Drama,
 	return drama, chapters, nil
 }
 
+// fetchDSDDetail 获取DSD详情。
 func (d *Downloader) fetchDSDDetail(ctx context.Context, sourceID string) (Drama, []Chapter, error) {
 	if !webProviderNumericID.MatchString(sourceID) {
 		return Drama{}, nil, errors.New("帝果视频 ID 无效")
@@ -175,6 +182,7 @@ func (d *Downloader) fetchDSDDetail(ctx context.Context, sourceID string) (Drama
 	return parseDSDDetail(document, address, sourceID, site)
 }
 
+// dsdIssuedMedia 判断地址是否符合 DSD 媒体签发格式。
 func dsdIssuedMedia(player map[string]any, pageURL string) (string, error) {
 	address := mapString(player, "url")
 	if address == "" {
@@ -215,6 +223,7 @@ func dsdIssuedMedia(player map[string]any, pageURL string) (string, error) {
 	return address, nil
 }
 
+// dsdSplitTopLevel 拆分DSD顶层级别。
 func dsdSplitTopLevel(value string) []string {
 	var parts []string
 	depth, start := 0, 0
@@ -247,12 +256,14 @@ type dsdExpressionParser struct {
 	depth int
 }
 
+// skipSpaces 跳过表达式读取位置处的空白字符。
 func (parser *dsdExpressionParser) skipSpaces() {
 	for parser.index < len(parser.text) && strings.ContainsRune(" \t\r\n", rune(parser.text[parser.index])) {
 		parser.index++
 	}
 }
 
+// parseExpression 解析表达式。
 func (parser *dsdExpressionParser) parseExpression() (int, bool) {
 	value, ok := parser.parseTerm()
 	if !ok {
@@ -277,6 +288,7 @@ func (parser *dsdExpressionParser) parseExpression() (int, bool) {
 	}
 }
 
+// parseTerm 解析表达式项。
 func (parser *dsdExpressionParser) parseTerm() (int, bool) {
 	value, ok := parser.parseFactor()
 	if !ok {
@@ -307,6 +319,7 @@ func (parser *dsdExpressionParser) parseTerm() (int, bool) {
 	}
 }
 
+// parseFactor 解析因子。
 func (parser *dsdExpressionParser) parseFactor() (int, bool) {
 	parser.skipSpaces()
 	sign := 1
@@ -346,6 +359,7 @@ func (parser *dsdExpressionParser) parseFactor() (int, bool) {
 	return sign * value, err == nil
 }
 
+// dsdEvaluateDigitExpression 计算 DSD 页面中的数字表达式。
 func dsdEvaluateDigitExpression(value string) (int, bool) {
 	if len(value) > 4096 || strings.Trim(value, "0123456789()+-*/% \t\r\n") != "" {
 		return 0, false
@@ -356,6 +370,7 @@ func dsdEvaluateDigitExpression(value string) (int, bool) {
 	return result, ok && parser.index == len(parser.text)
 }
 
+// dsdAaDigit 解析 DSD 编码中表示数字的片段。
 func dsdAaDigit(part string) (string, bool) {
 	part = strings.TrimSpace(part)
 	if part == "" {
@@ -386,6 +401,7 @@ func dsdAaDigit(part string) (string, bool) {
 	return strconv.Itoa(value), true
 }
 
+// decodeDSDAaencode 解码DSDAaencode。
 func decodeDSDAaencode(raw string) (string, bool) {
 	if len(raw) > 1<<20 {
 		return "", false
@@ -433,6 +449,7 @@ func decodeDSDAaencode(raw string) (string, bool) {
 	return decoded.String(), true
 }
 
+// dsdSignedPathFromVplayer 从 Vplayer 数据中提取已签名的媒体路径。
 func dsdSignedPathFromVplayer(body string) (string, bool) {
 	for _, match := range dsdScriptBlock.FindAllStringSubmatch(body, -1) {
 		if !strings.Contains(match[1], "(ﾟДﾟ)") {
@@ -449,6 +466,7 @@ func dsdSignedPathFromVplayer(body string) (string, bool) {
 	return "", false
 }
 
+// dsdVplayerMediaPath 从 Vplayer 页面数据中取得媒体路径。
 func dsdVplayerMediaPath(address string) string {
 	if parsed, err := url.Parse(address); err == nil && parsed.IsAbs() {
 		path := parsed.EscapedPath()
@@ -463,10 +481,12 @@ func dsdVplayerMediaPath(address string) string {
 	return address
 }
 
+// dsdVplayerReferer 构造 Vplayer 媒体请求所需的引用页。
 func dsdVplayerReferer(site string) string {
 	return strings.TrimRight(site, "/") + "/addons/vplayer/"
 }
 
+// signDSDMedia 签名DSD媒体。
 func (d *Downloader) signDSDMedia(ctx context.Context, address, pageURL, site string) (string, bool, error) {
 	if strings.Contains(address, "sign=") {
 		return address, false, nil
@@ -497,6 +517,7 @@ func (d *Downloader) signDSDMedia(ctx context.Context, address, pageURL, site st
 	return resolved, true, nil
 }
 
+// dsdMediaFromPagePath 从 DSD 播放页路径中整理媒体信息。
 func dsdMediaFromPagePath(cover, pageURL string) string {
 	address, err := url.Parse(cover)
 	page, pageErr := url.Parse(pageURL)
@@ -509,6 +530,7 @@ func dsdMediaFromPagePath(cover, pageURL string) string {
 	return address.String()
 }
 
+// resolveDSDMedia 解析DSD媒体。
 func (d *Downloader) resolveDSDMedia(ctx context.Context, task Task) (providerMedia, error) {
 	source, sourceID, valid := splitProviderDramaID(task.DramaID)
 	prefix := providerChapterID(sourceDSD, sourceID, "")

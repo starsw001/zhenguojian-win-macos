@@ -10,6 +10,21 @@ void main() {
     routeCount: count,
   );
 
+  test(
+    'Hongguo recovery stops after same-episode candidates are exhausted',
+    () {
+      final recovery = PlaybackRecovery();
+      expect(
+        recovery.next(route(0, count: 2), allowRefresh: false),
+        PlaybackRecoveryAction.alternative,
+      );
+      expect(
+        recovery.next(route(1, count: 2), allowRefresh: false),
+        PlaybackRecoveryAction.stop,
+      );
+    },
+  );
+
   test('tries alternate routes before one fresh resolution, then stops', () {
     final recovery = PlaybackRecovery();
     expect(recovery.next(route(0)), PlaybackRecoveryAction.alternative);

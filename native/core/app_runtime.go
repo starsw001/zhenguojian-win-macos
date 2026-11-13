@@ -10,9 +10,11 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -45,138 +47,182 @@ type Config struct {
 }
 
 type Downloader struct {
-	rankings              rankingCache
-	cfg                   Config
-	client                *http.Client
-	huangdouDetails       map[string]huangdouDetailEntry
-	huangdouDetailPending map[string]*huangdouDetailCall
-	providerMu            sync.Mutex
-	providerHosts         map[string]string
-	limiter               *requestLimiter
-	proxyRouter           *proxyRouter
-	hongguoOnce           sync.Once
-	hongguo               *hongguoAppClient
-	huangjuOnce           sync.Once
-	huangju               *huangjuAPIClient
-	yeguoOnce             sync.Once
-	yeguo                 *yeguoAPIClient
-	soraniOnce            sync.Once
-	sorani                *soraniAPIClient
-	dsdCatalog            dsdCatalogState
-	diagnostics           *diagnosticLog
-	apiMu                 sync.Mutex
-	apiBase               string
-	apiFailures           map[string]time.Time
-	legacyOnce            sync.Once
-	legacy                *legacyAPIClient
-	previewMu             sync.Mutex
-	previewSessions       map[string]*huangguoPreviewSession
+	cachePolicy             atomic.Pointer[nativeCacheLimits]
+	rankings                rankingCache
+	cfg                     Config
+	client                  *http.Client
+	huangdouDetails         map[string]huangdouDetailEntry
+	huangdouDetailPending   map[string]*huangdouDetailCall
+	providerMu              sync.Mutex
+	providerHosts           map[string]string
+	huangguoCatalogOrigin   string
+	huangguoCatalogSections []nativeCategory
+	limiter                 *requestLimiter
+	proxyRouter             *proxyRouter
+	hongguoMediaCache       hongguoMediaCache
+	hongguoOnce             sync.Once
+	hongguo                 *hongguoAppClient
+	huangjuOnce             sync.Once
+	huangju                 *huangjuAPIClient
+	yeguoOnce               sync.Once
+	yeguo                   *yeguoAPIClient
+	soraniOnce              sync.Once
+	sorani                  *soraniAPIClient
+	dsdCatalog              dsdCatalogState
+	diagnostics             *diagnosticLog
+	apiMu                   sync.Mutex
+	apiBase                 string
+	apiFailures             map[string]time.Time
+	legacyOnce              sync.Once
+	legacy                  *legacyAPIClient
+	previewMu               sync.Mutex
+	previewSessions         map[string]*huangguoPreviewSession
+	huangguoMirrorOnce      sync.Once
+	huangguoMirrors         *huangguoMirrorRegistry
+	huangguoDecode          func(context.Context, providerMedia) (huangguoDecodeResult, error)
+	huangguoPoster          func(context.Context, Drama, string) (huangguoPosterResult, error)
 }
 
+// defaultConfig 构造默认配置。
 func defaultConfig() Config { return Config{MaxPagesPerSort: 50, PageSize: 30, Retries: 2} }
 
 type nativeDrama struct {
-	MetadataSchema int      `json:"metadataSchema"`
-	ID             string   `json:"id"`
-	Source         string   `json:"source"`
-	SourceID       string   `json:"sourceId"`
-	Title          string   `json:"title"`
-	Description    string   `json:"description"`
-	Cover          string   `json:"cover"`
-	Episodes       int      `json:"episodes"`
-	Category       string   `json:"category"`
-	VIP            *bool    `json:"vip"`
-	Heat           string   `json:"heat,omitempty"`
-	Views          string   `json:"views,omitempty"`
-	OnlineDate     string   `json:"onlineDate,omitempty"`
-	Tags           []string `json:"tags,omitempty"`
-	ReleaseStatus  string   `json:"releaseStatus,omitempty"`
+	EpisodeCountVerified bool     `json:"episodeCountVerified,omitempty"`
+	MetadataSchema       int      `json:"metadataSchema"`
+	ID                   string   `json:"id"`
+	Source               string   `json:"source"`
+	SourceID             string   `json:"sourceId"`
+	Title                string   `json:"title"`
+	Description          string   `json:"description"`
+	Cover                string   `json:"cover"`
+	Episodes             int      `json:"episodes"`
+	Category             string   `json:"category"`
+	VIP                  *bool    `json:"vip"`
+	Heat                 string   `json:"heat,omitempty"`
+	Views                string   `json:"views,omitempty"`
+	OnlineDate           string   `json:"onlineDate,omitempty"`
+	Tags                 []string `json:"tags,omitempty"`
+	ReleaseStatus        string   `json:"releaseStatus,omitempty"`
 }
 
 type nativeInput struct {
-	LAN              json.RawMessage         `json:"lan"`
-	ExpectedVersions map[string]string       `json:"expectedVersions"`
-	SystemProxy      nativeSystemProxy       `json:"systemProxy"`
-	Settings         nativeResourceSettings  `json:"settings"`
-	JobIDs           []string                `json:"jobIds"`
-	PlaybackSession  string                  `json:"playbackSession"`
-	StartMS          int64                   `json:"startMs"`
-	DurationMS       int64                   `json:"durationMs"`
-	Board            string                  `json:"board"`
-	Entries          []nativeDownloadEpisode `json:"entries"`
-	JobID            string                  `json:"jobId"`
-	Command          string                  `json:"command"`
-	Action           string                  `json:"action"`
-	Directory        string                  `json:"directory"`
-	Source           string                  `json:"source"`
-	Page             int                     `json:"page"`
-	Query            string                  `json:"query"`
-	Category         string                  `json:"category"`
-	Drama            nativeDrama             `json:"drama"`
-	Chapter          Chapter                 `json:"chapter"`
-	Index            int                     `json:"index"`
-	Quality          int                     `json:"quality"`
-	Session          string                  `json:"session"`
-	Sequence         int64                   `json:"sequence"`
-	Force            bool                    `json:"force"`
+	Username                string                  `json:"username"`
+	Password                string                  `json:"password"`
+	LicenseKey              string                  `json:"licenseKey"`
+	CheckOnly               bool                    `json:"checkOnly"`
+	PageOnly                bool                    `json:"pageOnly"`
+	RebuildOrdinaryCatalogs bool                    `json:"rebuildOrdinaryCatalogs"`
+	OnlineOnly              bool                    `json:"onlineOnly"`
+	RefreshPublications     bool                    `json:"refreshPublications"`
+	RefreshAICatalog        bool                    `json:"refreshAICatalog"`
+	StopStartupCatalog      bool                    `json:"stopStartupCatalog"`
+	PublishedFile           string                  `json:"publishedFile"`
+	PublishedBytes          int64                   `json:"publishedBytes"`
+	PublishedSHA256         string                  `json:"publishedSHA256"`
+	Health                  *nativeSourceHealth     `json:"health"`
+	LAN                     json.RawMessage         `json:"lan"`
+	ExpectedVersions        map[string]string       `json:"expectedVersions"`
+	SystemProxy             nativeSystemProxy       `json:"systemProxy"`
+	Settings                nativeResourceSettings  `json:"settings"`
+	JobIDs                  []string                `json:"jobIds"`
+	PlaybackSession         string                  `json:"playbackSession"`
+	StartMS                 int64                   `json:"startMs"`
+	DurationMS              int64                   `json:"durationMs"`
+	Board                   string                  `json:"board"`
+	Entries                 []nativeDownloadEpisode `json:"entries"`
+	JobID                   string                  `json:"jobId"`
+	Command                 string                  `json:"command"`
+	Action                  string                  `json:"action"`
+	Directory               string                  `json:"directory"`
+	DownloadDirectory       string                  `json:"downloadDirectory"`
+	DefaultLogDirectory     string                  `json:"defaultLogDirectory"`
+	Source                  string                  `json:"source"`
+	Page                    int                     `json:"page"`
+	Query                   string                  `json:"query"`
+	Category                string                  `json:"category"`
+	Drama                   nativeDrama             `json:"drama"`
+	Chapter                 Chapter                 `json:"chapter"`
+	Index                   int                     `json:"index"`
+	Quality                 int                     `json:"quality"`
+	RouteIndex              int                     `json:"routeIndex"`
+	PreferredRoute          int                     `json:"preferredRoute"`
+	Session                 string                  `json:"session"`
+	Sequence                int64                   `json:"sequence"`
+	Force                   bool                    `json:"force"`
 }
 
 type nativeCatalogResult struct {
-	Items       []nativeDrama `json:"items"`
-	HasMore     bool          `json:"hasMore"`
-	Page        int           `json:"page"`
-	Warning     string        `json:"warning,omitempty"`
-	LocalSearch bool          `json:"localSearch"`
-	Fresh       bool          `json:"fresh"`
-	hongguo     *hongguoCatalogState
-	saveError   error
+	Pagination    *nativeCatalogPagination `json:"pagination,omitempty"`
+	NextPage      int                      `json:"nextPage,omitempty"`
+	SearchState   string                   `json:"searchState,omitempty"`
+	Items         []nativeDrama            `json:"items"`
+	HasMore       bool                     `json:"hasMore"`
+	Page          int                      `json:"page"`
+	Warning       string                   `json:"warning,omitempty"`
+	LocalSearch   bool                     `json:"localSearch"`
+	Fresh         bool                     `json:"fresh"`
+	Authoritative bool                     `json:"authoritative,omitempty"`
+	hongguo       *hongguoCatalogState
+	saveError     error
 }
 
 type nativePlan struct {
-	ExpiresAt       int64             `json:"expiresAt,omitempty"`
-	PrefetchedBytes int64             `json:"prefetchedBytes,omitempty"`
-	DanmakuID       string            `json:"danmakuId,omitempty"`
-	Local           bool              `json:"local"`
-	URL             string            `json:"url"`
-	Headers         map[string]string `json:"headers"`
-	Key             string            `json:"decryptionKey,omitempty"`
-	Quality         int               `json:"quality"`
-	Qualities       []int             `json:"qualities"`
-	Session         string            `json:"session,omitempty"`
-	RouteIndex      int               `json:"routeIndex"`
-	RouteCount      int               `json:"routeCount"`
+	Routes          []nativeRouteStatus `json:"routes,omitempty"`
+	ExpiresAt       int64               `json:"expiresAt,omitempty"`
+	PrefetchedBytes int64               `json:"prefetchedBytes,omitempty"`
+	DanmakuID       string              `json:"danmakuId,omitempty"`
+	Local           bool                `json:"local"`
+	URL             string              `json:"url"`
+	Headers         map[string]string   `json:"headers"`
+	Key             string              `json:"decryptionKey,omitempty"`
+	Quality         int                 `json:"quality"`
+	Qualities       []int               `json:"qualities"`
+	Session         string              `json:"session,omitempty"`
+	RouteIndex      int                 `json:"routeIndex"`
+	RouteCount      int                 `json:"routeCount"`
 }
 
 type nativeEngine struct {
-	lanMu            sync.Mutex
-	lan              *nativeLANServer
-	settingsMu       sync.Mutex
-	settings         nativeResourceSettings
-	readMu           sync.Mutex
-	reads            map[string]nativeReadRequest
-	readCount        int
-	work             map[string]bool
-	downloads        *nativeDownloads
-	downloader       *Downloader
-	directory        string
-	mu               sync.Mutex
-	catalogs         map[string][]nativeDrama
-	catalogStates    map[string]nativeCatalogState
-	categoryOptions  map[string][]nativeCategory
-	hongguoCatalog   *hongguoCatalogState
-	recommendations  map[string]nativeRecommendationState
-	catalogSaveError error
-	sourceSaveError  error
-	covers           *nativeCoverCache
-	stream           *nativeStreamServer
-	playbacks        map[string]nativePlaybackChoice
-	playbackMu       sync.Mutex
-	playbackSequence int64
-	playbackCancel   context.CancelFunc
-	sourceTasks      map[string]*nativeSourceTask
-	sourceRecords    map[string]nativeSourceRecord
-	sourceCatalogMu  sync.Mutex
-	sourceCatalogs   map[string]chan struct{}
+	updateClientOnce         sync.Once
+	publicUpdateClient       *http.Client
+	updateHandoff            bool
+	ordinaryCachesReset      bool
+	catalogEpochs            map[string]string
+	huangguoFreshMetadata    map[string]nativeDrama
+	lanMu                    sync.Mutex
+	lan                      *nativeLANServer
+	settingsMu               sync.Mutex
+	settings                 nativeResourceSettings
+	readMu                   sync.Mutex
+	reads                    map[string]nativeReadRequest
+	readCount                int
+	work                     map[string]bool
+	downloads                *nativeDownloads
+	downloader               *Downloader
+	directory                string
+	defaultDownloadDirectory string
+	defaultLogDirectory      string
+	mu                       sync.Mutex
+	catalogs                 map[string][]nativeDrama
+	catalogStates            map[string]nativeCatalogState
+	categoryOptions          map[string][]nativeCategory
+	hongguoCatalog           *hongguoCatalogState
+	recommendations          map[string]nativeRecommendationState
+	catalogSaveError         error
+	sourceSaveError          error
+	covers                   *nativeCoverCache
+	stream                   *nativeStreamServer
+	playbacks                map[string]nativePlaybackChoice
+	playbackMu               sync.Mutex
+	playbackSequence         int64
+	playbackCancel           context.CancelFunc
+	sourceTasks              map[string]*nativeSourceTask
+	sourceRecords            map[string]nativeSourceRecord
+	sourceCatalogMu          sync.Mutex
+	sourceCatalogs           map[string]chan struct{}
+	startupAIRequested       bool
+	startupAITask            *nativeSourceTask
+	startupAICancel          context.CancelFunc
 }
 
 var nativeState struct {
@@ -184,6 +230,7 @@ var nativeState struct {
 	engine *nativeEngine
 }
 
+// nativeText 将通用值转换为原生请求使用的字符串。
 func nativeText(value any) string {
 	switch v := value.(type) {
 	case string:
@@ -210,6 +257,7 @@ func nativeText(value any) string {
 	return ""
 }
 
+// nativeNormalize 规整原生请求输入中的字段与默认值。
 func nativeNormalize(drama Drama) nativeDrama {
 	cover := ""
 	for _, value := range []any{drama.Cover, drama.CoverURL, drama.CoverURLSnake, drama.Image, drama.ImageURL, drama.ImageURLSnake, drama.Img, drama.Pic, drama.Picture, drama.Poster, drama.Thumb, drama.Thumbnail} {
@@ -236,6 +284,7 @@ func nativeNormalize(drama Drama) nativeDrama {
 		Tags: append([]string(nil), drama.Tags...), ReleaseStatus: drama.ReleaseStatus}
 }
 
+// nativeDramaCategory 返回原生作品分类。
 func nativeDramaCategory(drama Drama) string {
 	category := firstNonEmpty(drama.CategoryName, drama.CategoryNameSnake, drama.TypeName, drama.TypeNameSnake, drama.SortName, drama.SortNameSnake, drama.Category)
 	if category != "" {
@@ -248,7 +297,8 @@ func nativeDramaCategory(drama Drama) string {
 	return ""
 }
 
-func newNativeEngine(directory string) (*nativeEngine, error) {
+// newNativeEngine 创建原生引擎。
+func newNativeEngine(directory string, defaultDownloads ...string) (*nativeEngine, error) {
 	if !filepath.IsAbs(directory) {
 		return nil, errors.New("应用数据目录无效")
 	}
@@ -266,7 +316,7 @@ func newNativeEngine(directory string) (*nativeEngine, error) {
 	transport.ResponseHeaderTimeout = 20 * time.Second
 	transport.Proxy = router.proxy
 	cdn := newCDNTransport(transport, newDNSResolver(transport))
-	d.client = &http.Client{Transport: newHuangguoBrowserTransport(cdn, d), Timeout: 45 * time.Second,
+	d.client = &http.Client{Transport: newAutoProxyFallbackTransport(newHuangguoBrowserTransport(cdn, d), router, d.recordDiagnostic), Timeout: 45 * time.Second,
 		CheckRedirect: func(request *http.Request, via []*http.Request) error {
 			if len(via) >= 10 {
 				return errors.New("站源重定向次数过多")
@@ -277,15 +327,43 @@ func newNativeEngine(directory string) (*nativeEngine, error) {
 			return nil
 		}}
 	engine := &nativeEngine{downloader: d, directory: directory, catalogs: map[string][]nativeDrama{}, catalogStates: map[string]nativeCatalogState{}}
+	engine.defaultLogDirectory = filepath.Join(directory, "logs")
+	if len(defaultDownloads) > 1 && defaultDownloads[1] != "" {
+		if !filepath.IsAbs(defaultDownloads[1]) {
+			return nil, errors.New("默认日志目录必须是绝对路径")
+		}
+		engine.defaultLogDirectory = filepath.Clean(defaultDownloads[1])
+	}
+	if len(defaultDownloads) > 0 && defaultDownloads[0] != "" {
+		if !filepath.IsAbs(defaultDownloads[0]) {
+			return nil, errors.New("默认下载目录必须是绝对路径")
+		}
+		engine.defaultDownloadDirectory = filepath.Clean(defaultDownloads[0])
+	}
 	engine.loadResourceSettings()
 	d.loadRankingCache()
 	engine.loadCatalogCache()
 	engine.loadSourceRecords()
+	if origin := publicHuangguoOrigin(engine.sourceRecords[sourceHuangguoAI].CatalogOrigin); origin != "" {
+		d.huangguoCatalogOrigin = origin
+	}
 	engine.covers = newNativeCoverCache(directory, d)
 	engine.downloads = newNativeDownloads(engine)
+	d.huangguoPoster = func(ctx context.Context, drama Drama, origin string) (huangguoPosterResult, error) {
+		return engine.checkHuangguoPoster(ctx, drama, origin, decodeHuangguoMirrorPoster)
+	}
+	d.huangguoDecode = func(ctx context.Context, media providerMedia) (huangguoDecodeResult, error) {
+		plan, err := engine.nativeOpenPlayback(ctx, nativePlaybackChoices(media, 480))
+		if err != nil {
+			return huangguoDecodeResult{}, err
+		}
+		defer engine.nativeReleasePlayback(plan.Session)
+		return decodeHuangguoMirrorPlayback(ctx, plan.URL)
+	}
 	return engine, nil
 }
 
+// NativeRequest 将 JSON 请求分派到原生应用引擎，并序列化结果与错误信息。
 func NativeRequest(raw string) (result string) {
 	defer func() {
 		if recover() != nil {
@@ -300,6 +378,9 @@ func NativeRequest(raw string) (result string) {
 	envelope := map[string]any{"ok": err == nil}
 	if err != nil {
 		envelope["error"] = publicError(err).Error()
+		if errors.Is(err, errNativeLicense) {
+			envelope["code"] = "license_required"
+		}
 		if errors.Is(err, errNativeLocalFile) {
 			envelope["code"] = "local_media"
 		}
@@ -312,7 +393,7 @@ func NativeRequest(raw string) (result string) {
 		if source == "" {
 			source = sourceFromDramaID(input.Drama.ID)
 		}
-		if !errors.Is(err, context.Canceled) && (input.Action == "catalog" || input.Action == "detail" || input.Action == "resolve") {
+		if !errors.Is(err, context.Canceled) && !errors.Is(err, errNativeLicense) && (input.Action == "catalog" || input.Action == "detail" || input.Action == "resolve") {
 			nativeState.Lock()
 			engine := nativeState.engine
 			nativeState.Unlock()
@@ -338,22 +419,46 @@ func NativeRequest(raw string) (result string) {
 	return string(body)
 }
 
+// nativeDispatch 根据请求动作选择原生业务处理分支。
 func nativeDispatch(input nativeInput) (any, error) {
+	if strings.HasPrefix(input.Action, "license") {
+		return nativeLicenseAction(input)
+	}
+	if err := nativeRequireLicense(input); err != nil {
+		return nil, err
+	}
 	if err := nativeAuthorizeInput(input); err != nil {
 		return nil, err
 	}
 	nativeState.Lock()
 	if input.Action == "initialize" {
 		if nativeState.engine == nil {
-			engine, err := newNativeEngine(input.Directory)
+			engine, err := newNativeEngine(input.Directory, input.DownloadDirectory, input.DefaultLogDirectory)
 			if err != nil {
 				nativeState.Unlock()
 				return nil, err
 			}
 			nativeState.engine = engine
 		}
+		engine := nativeState.engine
 		nativeState.Unlock()
-		return map[string]any{"version": "0.2.17", "standalone": true, "allSources": buildAllSources == "true"}, nil
+		if input.RebuildOrdinaryCatalogs {
+			if _, err := engine.rebuildOrdinaryCatalogsWithEpoch(buildCatalogEpoch); err != nil {
+				return nil, err
+			}
+			if _, err := engine.rebuildHuangguoIdentityCache(buildCatalogEpoch); err != nil {
+				return nil, err
+			}
+		}
+		if input.StopStartupCatalog {
+			engine.stopHuangguoStartupCatalog()
+		}
+		if input.RefreshAICatalog && buildAllSources == "true" {
+			engine.scheduleHuangguoStartupCatalog()
+		} else if input.RefreshPublications && buildAllSources == "true" {
+			engine.downloader.scheduleHuangguoDiscovery()
+		}
+		return map[string]any{"version": buildAppVersion, "standalone": true, "allSources": buildAllSources == "true", "catalogEpoch": buildCatalogEpoch, "cacheLimits": engine.resourceSettings().CacheLimits}, nil
 	}
 	engine := nativeState.engine
 	nativeState.Unlock()
@@ -365,6 +470,8 @@ func nativeDispatch(input nativeInput) (any, error) {
 		duration = 10 * time.Minute
 	} else if input.Action == "catalog" {
 		duration = 90 * time.Second
+	} else if input.Action == "downloadFolder" {
+		duration = 3 * time.Second
 	} else if input.Action == "danmaku" {
 		duration = 10 * time.Second
 	} else if input.Action == "preload" {
@@ -390,6 +497,9 @@ func nativeDispatch(input nativeInput) (any, error) {
 	case "saveResourceSettings":
 		return engine.saveResourceSettings(input.Settings)
 	case "controlDownloadBatch":
+		if input.Command == "remove" && input.Drama.ID != "" {
+			return engine.removeDownloadCollection(ctx, input.Drama)
+		}
 		return engine.downloads.controlBatchExpected(ctx, input.JobIDs, input.Command, input.ExpectedVersions)
 	case "preload":
 		return engine.nativePreload(ctx, input)
@@ -397,6 +507,8 @@ func nativeDispatch(input nativeInput) (any, error) {
 		return engine.nativeResolve(ctx, input)
 	case "danmaku":
 		return engine.nativeDanmaku(ctx, input)
+	case "updateBusy":
+		return map[string]any{"busy": engine.activity(false) != nil}, nil
 	case "updateCheck":
 		return engine.updateCheck(ctx, input.Query)
 	case "updateDownload":
@@ -433,20 +545,28 @@ func nativeDispatch(input nativeInput) (any, error) {
 	case "storage":
 		return engine.storage()
 	case "moveDownloads":
-		return true, engine.moveDownloads(ctx, input.Directory)
+		return true, engine.moveDownloads(ctx, input.Directory, input.Command == "exact")
 	case "workLease":
 		count, err := engine.workLease(input.JobID, input.Command)
 		return map[string]int{"count": count}, err
 	case "downloads":
 		jobs, err := engine.downloads.snapshot()
 		return map[string]any{"jobs": jobs}, err
+	case "downloadFolder":
+		directory, err := engine.downloads.downloadFolder(ctx, input.JobIDs)
+		return map[string]string{"directory": directory}, err
 	case "enqueueDownloads":
 		added, err := engine.downloads.enqueueContext(ctx, input)
 		return map[string]int{"added": added}, err
 	case "controlDownloads":
 		return true, engine.downloads.control(input.JobID, input.Command)
+	case "publishDownload":
+		return true, engine.downloads.publish(ctx, input)
 	case "localPlayback":
-		plan, _, err := engine.downloads.localPlan(input.Drama.ID, input.Index)
+		plan, found, err := engine.downloads.localPlan(input.Drama.ID, input.Index)
+		if found || err != nil {
+			engine.downloader.recordPlaybackResolution(input, true, err)
+		}
 		return plan, err
 	case "catalog":
 		return engine.nativeCatalog(ctx, input)
@@ -455,11 +575,18 @@ func nativeDispatch(input nativeInput) (any, error) {
 			return nil, errors.New("内容分类无效")
 		}
 		return engine.nativeCached(nativeCatalogKey(input.Source, input.Category)), nil
+	case "cachedCategories":
+		engine.mu.Lock()
+		items := append([]nativeCategory{}, engine.categoryOptions[canonicalProviderSource(input.Source)]...)
+		engine.mu.Unlock()
+		return map[string]any{"items": items}, nil
 	case "categories":
 		items, err := engine.nativeCategories(ctx, input.Source, input.Force)
 		return map[string]any{"items": items}, err
 	case "sourceStatus":
 		return engine.sourceStatus(input.Source), nil
+	case "saveSourceHealth":
+		return engine.saveSourceHealth(input.Source, input.Health)
 	case "sourceJob":
 		return engine.startSourceTask(input.Source, input.Command, input.Drama)
 	case "cancelSourceJob":
@@ -469,15 +596,25 @@ func nativeDispatch(input nativeInput) (any, error) {
 	case "prepareCover":
 		return engine.prepareCover(ctx, input.Drama)
 	case "detail":
+		if input.CheckOnly && ordinarySource(input.Drama.Source) {
+			ctx = context.WithValue(ctx, ordinaryDetailReadOnlyKey{}, true)
+		}
 		return engine.nativeDetail(ctx, input.Drama)
+	case "checkEpisodeConnection":
+		return engine.checkOrdinaryEpisodeConnection(ctx, input)
 	case "metadata":
 		return engine.nativeMetadata(ctx, input.Drama)
-	case "resolve", "fallback":
+	case "checkPlaybackRoute":
+		return engine.nativeCheckPlaybackRoute(ctx, input.Session, input.RouteIndex)
+	case "resolve", "fallback", "selectPlaybackRoute":
 		playback, finish, err := engine.nativeBeginPlayback(ctx, input.Sequence)
 		if err != nil {
 			return nil, err
 		}
 		defer finish()
+		if input.Action == "selectPlaybackRoute" {
+			return engine.nativeSelectPlaybackRoute(playback, input.Session, input.RouteIndex)
+		}
 		if input.Action == "fallback" {
 			return engine.nativeNextPlayback(playback, input.Session)
 		}
@@ -493,8 +630,12 @@ func nativeDispatch(input nativeInput) (any, error) {
 	}
 }
 
+// nativeCatalog 处理站源目录读取请求并汇总缓存与分页状态。
 func (engine *nativeEngine) nativeCatalog(ctx context.Context, input nativeInput) (nativeCatalogResult, error) {
 	source := canonicalProviderSource(input.Source)
+	if input.PageOnly && ordinarySource(source) {
+		ctx = context.WithValue(ctx, sourceRuleRefreshKey{}, true)
+	}
 	if !isHuangguoProviderSource(source) {
 		return nativeCatalogResult{}, errors.New("请选择有效站源")
 	}
@@ -511,7 +652,8 @@ func (engine *nativeEngine) nativeCatalog(ctx context.Context, input nativeInput
 	if query == "" {
 		if retried, err := engine.retryCatalogSave(); retried {
 			cached := engine.nativeCached(cacheKey)
-			if err != nil || len(cached.Items) > 0 {
+			refresh, _ := ctx.Value(sourceRuleRefreshKey{}).(bool)
+			if !refresh && (err != nil || len(cached.Items) > 0) {
 				return cached, nil
 			}
 		}
@@ -523,111 +665,14 @@ func (engine *nativeEngine) nativeCatalog(ctx context.Context, input nativeInput
 	}
 	d := engine.downloader
 	result := nativeCatalogResult{Items: []nativeDrama{}, Page: page}
-	if query != "" && source == sourceHongguo {
-		entry, err := d.searchHongguoDramas(ctx, query)
-		if err != nil {
-			return result, err
-		}
-		for _, drama := range entry.Dramas {
-			result.Items = append(result.Items, nativeNormalize(drama))
-		}
-		result.Warning, result.Page = entry.Warning, 1
-		if entry.Limited && result.Warning == "" {
-			result.Warning = "已显示当前可获取的匹配结果，使用更完整的剧名可继续查找"
-		}
-		return result, nil
-	}
-	if query != "" && source == sourceHuangju {
-		items, more, err := d.fetchHuangjuCatalogPage(ctx, page, "", query)
-		if err != nil {
-			return result, err
-		}
-		for _, drama := range items {
-			result.Items = append(result.Items, nativeNormalize(drama))
-		}
-		result.HasMore = more
-		return result, nil
-	}
-	if query != "" && source == sourceSorani {
-		items, more, err := d.fetchSoraniCatalogPage(ctx, page, "", query)
-		if err != nil {
-			return result, err
-		}
-		for _, drama := range items {
-			result.Items = append(result.Items, nativeNormalize(drama))
-		}
-		result.HasMore = more
-		return result, nil
-	}
-	if query != "" && source == sourceGuipian {
-		items, more, err := d.fetchGuipianCatalogPage(ctx, page, "", query)
-		if err != nil {
-			return result, err
-		}
-		for _, drama := range items {
-			result.Items = append(result.Items, nativeNormalize(drama))
-		}
-		result.HasMore = more
-		return result, nil
-	}
-	if query != "" && source == sourceHanxiaoquan {
-		items, more, err := d.fetchHanxiaoquanCatalogPage(ctx, page, "", query)
-		if err != nil {
-			return result, err
-		}
-		for _, drama := range items {
-			result.Items = append(result.Items, nativeNormalize(drama))
-		}
-		result.HasMore = more
-		return result, nil
-	}
-	if query != "" && (source == sourceYeguo || source == sourceDSD) {
-		var items []Drama
-		var more bool
-		var err error
-		if source == sourceYeguo {
-			items, more, err = d.fetchYeguoCatalogPage(ctx, page, "", query)
-		} else {
-			items, more, err = d.fetchDSDCatalogPage(ctx, page, "", query)
-		}
-		if err != nil {
-			return result, err
-		}
-		for _, drama := range items {
-			result.Items = append(result.Items, nativeNormalize(drama))
-		}
-		result.HasMore = more
-		return result, nil
-	}
-	if query != "" && isDuanjuProviderSource(source) {
-		if !duanjuSupportsSearch(source) {
-			return result, fmt.Errorf("%s 暂不支持在线搜索，可在已加载内容中筛选", duanjuSourceName(source))
-		}
-		items, err := d.searchDuanju(ctx, source, query)
-		if err != nil {
-			return result, err
-		}
-		for _, drama := range items {
-			result.Items = append(result.Items, nativeNormalize(drama))
-		}
-		return result, nil
-	}
 	if query != "" {
-		engine.mu.Lock()
-		items := append([]nativeDrama{}, engine.catalogs[source]...)
-		engine.mu.Unlock()
-		for _, item := range items {
-			text := hongguoSearchText(item.Title + " " + item.Description + " " + strings.Join(item.Tags, " "))
-			matches := true
-			for _, word := range strings.Fields(query) {
-				matches = matches && strings.Contains(text, hongguoSearchText(word))
-			}
-			if matches {
-				result.Items = append(result.Items, item)
-			}
+		if source == sourceHuangguoAI {
+			return engine.searchHuangguoCatalog(query, page), nil
 		}
-		result.LocalSearch = true
-		return result, nil
+		return engine.searchSourceCatalog(ctx, source, query, page, input.OnlineOnly)
+	}
+	if source != sourceHuangguoAI && input.Force {
+		ctx = context.WithValue(ctx, providerTextNoCacheKey{}, true)
 	}
 	unlock, lockErr := engine.lockSourceCatalog(ctx, source)
 	if lockErr != nil {
@@ -639,14 +684,30 @@ func (engine *nativeEngine) nativeCatalog(ctx context.Context, input nativeInput
 	}
 	var items []Drama
 	var err error
+	cursor := &sourceCatalogCursor{}
+	ctx = context.WithValue(ctx, sourceCatalogCursorKey{}, cursor)
 	switch source {
 	case sourceHongguo:
+		if _, _, _, web := hongguoWebCategory(category); web {
+			var response hongguoWebCatalogPage
+			response, err = d.fetchHongguoWebCatalogPage(ctx, category, page)
+			if err == nil {
+				items = response.Items
+				result.HasMore = response.Page < response.TotalPages
+				cursor.Next = response.Page + 1
+				sourceSetCatalogPagination(ctx, response.Page, response.TotalPages, "hongguo_web_category")
+			}
+			break
+		}
 		engine.mu.Lock()
 		known := make(map[string]bool, len(engine.catalogs[cacheKey]))
 		for _, drama := range engine.catalogs[cacheKey] {
 			known[drama.ID] = true
 		}
 		engine.mu.Unlock()
+		if refresh, _ := ctx.Value(sourceRuleRefreshKey{}).(bool); refresh {
+			known = map[string]bool{}
+		}
 		ctx = context.WithValue(ctx, libraryKnownKey{}, known)
 		if page > 1 {
 			ctx = context.WithValue(ctx, libraryMoreKey{}, true)
@@ -735,7 +796,7 @@ func (engine *nativeEngine) nativeCatalog(ctx context.Context, input nativeInput
 		if err == nil {
 			items = parseHuangguoVideoCards(body, address)
 		}
-		result.HasMore = len(items) >= 20
+		result.HasMore = sourceHTMLHasMore(body, address, page)
 	case sourceCloudFront:
 		items, result.HasMore, err = d.fetchLegacyCatalogCategoryPage(ctx, page, category)
 	default:
@@ -746,7 +807,8 @@ func (engine *nativeEngine) nativeCatalog(ctx context.Context, input nativeInput
 	if err != nil && len(items) == 0 {
 		return result, err
 	}
-	if len(items) == 0 && page == 1 && source != sourceHuangju && source != sourceYeguo && source != sourceDSD && source != sourceSorani && source != sourceGuipian && source != sourceHanxiaoquan && !isDuanjuProviderSource(source) {
+	_, _, _, hongguoWeb := hongguoWebCategory(category)
+	if len(items) == 0 && page == 1 && !(source == sourceHongguo && hongguoWeb) && !(source == sourceHuangguoAI && validHuangguoAITagCategory(category)) && source != sourceHuangju && source != sourceYeguo && source != sourceDSD && source != sourceSorani && source != sourceGuipian && source != sourceHanxiaoquan && !isDuanjuProviderSource(source) {
 		return result, errors.New("站源暂未返回剧集，请稍后刷新")
 	}
 	if err != nil {
@@ -760,21 +822,31 @@ func (engine *nativeEngine) nativeCatalog(ctx context.Context, input nativeInput
 		seen[drama.ID] = true
 		result.Items = append(result.Items, nativeNormalize(drama))
 	}
+	result.NextPage = cursor.Next
+	result.Pagination = cursor.Pagination
+	refresh, _ := ctx.Value(sourceRuleRefreshKey{}).(bool)
+	result.Authoritative = (source == sourceHuangguoAI || refresh || source == sourceHongguo && hongguoWeb) && err == nil
 	engine.saveCatalogCache(cacheKey, &result)
 	return result, nil
 }
 
+// nativeDetail 取得指定作品的详情及分集信息。
 func (engine *nativeEngine) nativeDetail(ctx context.Context, drama nativeDrama) (any, error) {
 	source, sourceID, valid := splitProviderDramaID(drama.ID)
 	if !valid {
 		return nil, errors.New("剧集信息无效，请刷新剧库")
 	}
+	ctx = withFreshOrdinaryDetail(ctx, source)
 	var title string
 	var raw Drama
 	var chapters []Chapter
 	var err error
 	switch source {
 	case sourceHuangguoAI:
+		if huangguoWorkOrigin(sourceID) == "" {
+			return nil, errors.New("旧目录条目缺少域名身份，请更新目录后重新打开；配置、记录及已下载视频仍保留")
+		}
+		drama.Source, drama.SourceID = source, sourceID
 		raw, chapters, err = engine.downloader.fetchHuangguoAIDetail(ctx, sourceID)
 	case sourceHuangguoVideo:
 		raw, chapters, err = engine.downloader.fetchHuangguoVideoDetail(ctx, sourceID)
@@ -805,6 +877,26 @@ func (engine *nativeEngine) nativeDetail(ctx context.Context, drama nativeDrama)
 	if len(chapters) == 0 {
 		return nil, errors.New("该剧暂时没有可播放的分集")
 	}
+	if ordinarySource(source) {
+		if err := validateOrdinaryDetail(drama, raw, title, chapters); err != nil {
+			return nil, err
+		}
+	} else if source == sourceHuangguoAI {
+		if err := validateHuangguoWorkDetail(drama, raw, chapters); err != nil {
+			return nil, err
+		}
+	}
+	var integrity *nativeOrdinaryIntegrity
+	integrityWarning := ""
+	if ordinarySource(source) || source == sourceHuangguoAI {
+		integrityWarning = ordinaryDetailCountWarning(raw, chapters)
+		var checked nativeOrdinaryIntegrity
+		chapters, checked, err = prepareOrdinaryChapters(raw, chapters)
+		if err != nil {
+			return nil, err
+		}
+		integrity = &checked
+	}
 	if title != "" && title != "短剧" {
 		drama.Title = title
 	}
@@ -824,16 +916,34 @@ func (engine *nativeEngine) nativeDetail(ctx context.Context, drama nativeDrama)
 		}
 	}
 	drama.Source, drama.SourceID, drama.Episodes = source, sourceID, len(chapters)
+	if ordinarySource(source) || source == sourceHuangguoAI {
+		drama.Episodes = ordinaryEpisodeCount(chapters)
+		drama.EpisodeCountVerified = true
+	}
 	if source == sourceHuangju || source == sourceYeguo {
 		drama.Episodes = max(drama.Episodes, nativeNormalize(raw).Episodes)
 	}
 	warning := ""
-	if err := engine.saveDetailMetadata(drama); err != nil {
-		warning = err.Error()
+	if ordinarySource(source) || source == sourceHuangguoAI {
+		warning = integrityWarning
 	}
-	return map[string]any{"drama": drama, "chapters": chapters, "warning": warning}, nil
+	if source == sourceHuangguoAI {
+		engine.mu.Lock()
+		if engine.huangguoFreshMetadata == nil {
+			engine.huangguoFreshMetadata = map[string]nativeDrama{}
+		}
+		engine.huangguoFreshMetadata[drama.ID] = drama
+		engine.mu.Unlock()
+	}
+	if readOnly, _ := ctx.Value(ordinaryDetailReadOnlyKey{}).(bool); !readOnly {
+		if err := engine.saveDetailMetadata(drama); err != nil {
+			warning = joinNativeWarnings(warning, err.Error())
+		}
+	}
+	return map[string]any{"drama": drama, "chapters": chapters, "warning": warning, "integrity": integrity}, nil
 }
 
+// nativeResolve 为指定作品与分集构造播放计划。
 func (engine *nativeEngine) nativeResolve(ctx context.Context, input nativeInput) (nativePlan, error) {
 	if _, _, valid := splitProviderDramaID(input.Drama.ID); !valid {
 		return nativePlan{}, errors.New("剧集信息无效")
@@ -841,18 +951,91 @@ func (engine *nativeEngine) nativeResolve(ctx context.Context, input nativeInput
 	if !input.Force && engine.downloads != nil {
 		if plan, found, err := engine.downloads.localPlan(input.Drama.ID, input.Index); found || err != nil {
 			if input.Action != "prepareHandoff" || !errors.Is(err, errNativeLocalFile) {
+				engine.downloader.recordPlaybackResolution(input, true, err)
 				return plan, err
 			}
 		}
 	}
 	task := Task{DramaID: input.Drama.ID, DramaTitle: input.Drama.Title, Chapter: input.Chapter, Index: input.Index}
-	media, err := engine.downloader.resolveProviderMedia(ctx, task)
+	if input.Force && sourceFromDramaID(input.Drama.ID) == sourceHongguo {
+		ctx = context.WithValue(ctx, hongguoFreshMediaKey{}, true)
+	}
+	media, err := engine.downloader.resolvePlaybackMedia(ctx, task)
 	if err != nil {
+		engine.downloader.recordPlaybackResolution(input, false, err)
 		return nativePlan{}, err
 	}
-	choice := nativePlaybackChoices(media, input.Quality)
+	choice := nativePlaybackChoicesForSource(sourceFromDramaID(input.Drama.ID), media, input.Quality)
+	if len(choice.media) == 0 {
+		return nativePlan{}, errors.New("该集没有可用的播放地址")
+	}
+	choice.dramaID, choice.episodeIndex = input.Drama.ID, input.Index
 	if series, video, valid := hongguoPlaybackIDs(task); valid {
 		choice.danmakuSeries, choice.danmakuVideo = series, video
 	}
-	return engine.nativeOpenPlayback(ctx, choice)
+	choice.checks = &nativeRouteChecks{results: map[int]nativeRouteStatus{}}
+	var plan nativePlan
+	for choice.index < len(choice.media) {
+		plan, err = engine.nativeOpenPlayback(ctx, choice)
+		if err == nil || nativeRouteMustStop(err) || ctx.Err() != nil {
+			break
+		}
+		if choice.media[choice.index].pending == nil {
+			break
+		}
+		choice.index++
+	}
+	engine.downloader.recordPlaybackResolution(input, false, err)
+	return plan, err
+}
+
+// recordPlaybackResolution 记录播放Resolution。
+func (d *Downloader) recordPlaybackResolution(input nativeInput, local bool, err error) {
+	level, message := "info", "本集使用在线线路"
+	if local {
+		message = "本集使用已下载的本地文件，未请求线上取流"
+	}
+	if err != nil {
+		level, message = "warning", fmt.Sprintf("本集播放地址解析失败（local=%t）：%v", local, publicError(err))
+	}
+	d.recordDiagnostic(diagnosticEvent{Event: "playback.resolve", Level: level, Source: input.Drama.Source,
+		DramaID: input.Drama.ID, DramaTitle: input.Drama.Title, Episode: input.Index, Message: message})
+}
+
+// searchCachedCatalog 搜索已缓存目录。
+func (engine *nativeEngine) searchCachedCatalog(source, query string) []nativeDrama {
+	engine.mu.Lock()
+	keys := make([]string, 0)
+	for key := range engine.catalogs {
+		if key == source || strings.HasPrefix(key, source+"|") {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	if len(keys) > 1 && keys[0] == source {
+		keys = append(keys[1:], source)
+	}
+	var items []nativeDrama
+	for _, key := range keys {
+		items = mergeNativeCatalog(items, engine.catalogs[key])
+	}
+	engine.mu.Unlock()
+	result := make([]nativeDrama, 0)
+	for _, item := range items {
+		if item.Source != "" && canonicalProviderSource(item.Source) != source {
+			continue
+		}
+		if item.Source == "" {
+			item.Source = source
+		}
+		text := hongguoSearchText(item.Title + " " + item.Description + " " + strings.Join(item.Tags, " "))
+		matches := true
+		for _, word := range strings.Fields(query) {
+			matches = matches && strings.Contains(text, hongguoSearchText(word))
+		}
+		if matches {
+			result = append(result, item)
+		}
+	}
+	return result
 }

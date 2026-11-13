@@ -65,6 +65,7 @@ var danmakuEmoji = map[string]string{
 
 var danmakuShortcode = regexp.MustCompile(`\[[^\[\]\s]{1,10}\]`)
 
+// expandDanmakuEmoji 展开弹幕表情。
 func expandDanmakuEmoji(text string) string {
 	if !strings.Contains(text, "[") {
 		return text
@@ -77,6 +78,7 @@ func expandDanmakuEmoji(text string) string {
 	})
 }
 
+// trimDanmakuText 去除首尾空白：弹幕文本。
 func trimDanmakuText(text string, limit int) string {
 	runes := []rune(text)
 	if len(runes) <= limit {
@@ -98,10 +100,12 @@ func trimDanmakuText(text string, limit int) string {
 	return string(runes[:cut])
 }
 
+// danmakuEmojiModifier 判断弹幕表情修饰符是否满足当前规则。
 func danmakuEmojiModifier(r rune) bool {
 	return r == '\ufe0f' || r == '\ufe0e'
 }
 
+// danmakuEmojiJoiner 判断弹幕表情连接符是否满足当前规则。
 func danmakuEmojiJoiner(r rune) bool {
 	return r == '\u200d'
 }

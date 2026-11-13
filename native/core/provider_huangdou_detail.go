@@ -18,6 +18,7 @@ type huangdouDetailCall struct {
 	err  error
 }
 
+// huangdouDetail 读取黄豆作品的详情信息。
 func (d *Downloader) huangdouDetail(ctx context.Context, id string) (map[string]any, error) {
 	if !rankingSourceID.MatchString(id) {
 		return nil, errors.New("无效的黄豆剧集 ID")

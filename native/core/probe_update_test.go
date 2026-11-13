@@ -9,6 +9,7 @@ import (
 	"time"
 )
 
+// TestProbeUpdateCheck 验证「Probe Update Check」回归场景。
 func TestProbeUpdateCheck(t *testing.T) {
 	if os.Getenv("HG_PROBE") == "" {
 		t.Skip("probe disabled")
@@ -20,7 +21,7 @@ func TestProbeUpdateCheck(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	for _, version := range []string{"0.2.71+79", "0.2.70+78"} {
-		raw, _ := json.Marshal(updateQuery{Version: version, Edition: "zhenguojian"})
+		raw, _ := json.Marshal(updateQuery{Version: version, Edition: "zhenguoshang"})
 		info, err := engine.updateCheck(ctx, string(raw))
 		if err != nil {
 			fmt.Printf("[v=%s] ERR %v\n", version, err)

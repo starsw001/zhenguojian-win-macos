@@ -2,6 +2,7 @@ package core
 
 import "encoding/json"
 
+// parseHongguoMergeLoader 解析红果Merge加载器。
 func parseHongguoMergeLoader(body, loaderKey string) (hongguoRankingContent, bool) {
 	for _, tag := range rankingScriptTags.FindAllString(body, -1) {
 		if extractAttr(tag, "data-fn-name") != "mergeLoaderData" || extractAttr(tag, "data-script-src") != "modern-run-window-fn" {

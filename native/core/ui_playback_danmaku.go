@@ -41,6 +41,7 @@ type hongguoDanmakuCall struct {
 	entry hongguoDanmakuCacheEntry
 }
 
+// hongguoPlaybackIDs 从当前分集信息中取得红果弹幕查询所需标识。
 func hongguoPlaybackIDs(task Task) (string, string, bool) {
 	source, seriesID, valid := splitProviderDramaID(task.DramaID)
 	if !valid || source != sourceHongguo || task.Chapter.Source != sourceHongguo || !strings.HasPrefix(task.Chapter.VideoURL, "hongguo-cenc://") {
@@ -50,6 +51,7 @@ func hongguoPlaybackIDs(task Task) (string, string, bool) {
 	return seriesID, videoID, hongguoNumericID.MatchString(seriesID) && hongguoNumericID.MatchString(videoID)
 }
 
+// hongguoDanmaku 读取红果分集弹幕并整理分页结果。
 func (d *Downloader) hongguoDanmaku(ctx context.Context, seriesID, videoID string, start, duration int64) (hongguoDanmakuPage, error) {
 	if err := ctx.Err(); err != nil {
 		return hongguoDanmakuPage{}, err
@@ -116,11 +118,13 @@ func (d *Downloader) hongguoDanmaku(ctx context.Context, seriesID, videoID strin
 	return cloneDanmakuPage(page), err
 }
 
+// cloneDanmakuPage 复制弹幕页面。
 func cloneDanmakuPage(page hongguoDanmakuPage) hongguoDanmakuPage {
 	page.Items = append([]hongguoDanmakuItem{}, page.Items...)
 	return page
 }
 
+// parseHongguoDanmaku 解析红果弹幕。
 func parseHongguoDanmaku(result map[string]any, videoID string, start, duration int64) (hongguoDanmakuPage, error) {
 	data := nestedMap(result, "data")
 	rows, valid := data["data_list"].([]any)

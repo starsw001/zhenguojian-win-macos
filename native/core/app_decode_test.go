@@ -11,6 +11,7 @@ import (
 	"time"
 )
 
+// TestNativeHLSDecodesEncryptedSyntheticMedia 验证「Native HLS Decodes Encrypted Synthetic Media」回归场景。
 func TestNativeHLSDecodesEncryptedSyntheticMedia(t *testing.T) {
 	ffmpeg, err := exec.LookPath("ffmpeg")
 	if err != nil {

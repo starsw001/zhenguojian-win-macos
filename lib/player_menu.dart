@@ -1,3 +1,4 @@
+import 'app_build.dart';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -41,6 +42,7 @@ class PlayerMenu extends StatefulWidget {
     this.onSubtitleFile,
     this.onSubtitleDelay,
     this.onSubtitleFontSize,
+    this.onDownload,
   });
 
   final PlayerMenuSection section;
@@ -67,6 +69,7 @@ class PlayerMenu extends StatefulWidget {
   final Future<void> Function(double delta)? onSubtitleDelay;
   final Future<void> Function(int delta)? onSubtitleFontSize;
   final ValueChanged<int> onEpisode;
+  final Future<void> Function(List<Episode>)? onDownload;
   final Future<void> Function(PlaybackPreferences) onPreferences;
   final Future<void> Function() onFavorite;
 
@@ -152,6 +155,7 @@ class _PlayerMenuState extends State<PlayerMenu> {
                       currentIndex: widget.currentIndex,
                       keyPrefix: 'menu-episode',
                       onSelected: widget.onEpisode,
+                      onDownload: widget.onDownload,
                     )
                   : SingleChildScrollView(
                       padding: const EdgeInsets.fromLTRB(18, 4, 18, 20),
@@ -304,7 +308,8 @@ class _PlayerMenuState extends State<PlayerMenu> {
                           ? track.language!
                           : '字幕轨 ${track.id}',
                     ),
-                    subtitle: track.title?.isNotEmpty == true &&
+                    subtitle:
+                        track.title?.isNotEmpty == true &&
                             track.language?.isNotEmpty == true
                         ? Text(track.language!)
                         : null,
@@ -442,12 +447,13 @@ class _PlayerMenuState extends State<PlayerMenu> {
             label: Text(widget.favorite ? '取消追剧' : '加入追剧'),
           ),
           const SizedBox(height: 12),
-          OutlinedButton.icon(
-            key: const ValueKey('player-diary-btn'),
-            onPressed: () => DiaryService.showDiaryDialog(context),
-            icon: const Icon(Icons.receipt_long_rounded),
-            label: const Text('查看播放调试日记'),
-          ),
+          if (appMaintenanceEntriesVisible)
+            OutlinedButton.icon(
+              key: const ValueKey('player-diary-btn'),
+              onPressed: () => DiaryService.showDiaryDialog(context),
+              icon: const Icon(Icons.receipt_long_rounded),
+              label: const Text('查看播放调试日记'),
+            ),
           const SizedBox(height: 20),
           Text(
             widget.mobile
@@ -461,7 +467,7 @@ class _PlayerMenuState extends State<PlayerMenu> {
   }
 }
 
-class PlayerEpisodeGrid extends StatelessWidget {
+class PlayerEpisodeGrid extends StatefulWidget {
   const PlayerEpisodeGrid({
     super.key,
     required this.episodes,
@@ -470,6 +476,7 @@ class PlayerEpisodeGrid extends StatelessWidget {
     this.keyPrefix = 'play-episode',
     this.compact = false,
     this.title = '选集',
+    this.onDownload,
   });
   final List<Episode> episodes;
   final int currentIndex;
@@ -477,15 +484,129 @@ class PlayerEpisodeGrid extends StatelessWidget {
   final String keyPrefix;
   final bool compact;
   final String title;
+  final Future<void> Function(List<Episode>)? onDownload;
   @override
-  Widget build(BuildContext context) => EpisodeBrowser(
-    episodes: episodes,
-    currentNumber: episodes.isEmpty
-        ? null
-        : episodes[currentIndex.clamp(0, episodes.length - 1)].number,
-    onSelected: onSelected,
-    keyPrefix: keyPrefix,
-    compact: compact,
-    title: title,
+  State<PlayerEpisodeGrid> createState() => _PlayerEpisodeGridState();
+}
+
+class _PlayerEpisodeGridState extends State<PlayerEpisodeGrid> {
+  final _selected = <int>{};
+  bool _submitting = false;
+  List<Episode> get _choices => {
+    for (final episode in widget.episodes.where((e) => !e.vip))
+      episode.number: episode,
+  }.values.toList();
+
+  Future<void> _download({bool all = false}) async {
+    if (_submitting || widget.onDownload == null) return;
+    final choices = _choices
+        .where((e) => all || _selected.contains(e.number))
+        .toList();
+    if (choices.isEmpty) return;
+    if (choices.length > 500) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('一次最多下载 500 集，请按分组选集')));
+      return;
+    }
+    setState(() => _submitting = true);
+    try {
+      await widget.onDownload!(choices);
+      if (mounted) setState(_selected.clear);
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('$error')));
+      }
+    } finally {
+      if (mounted) setState(() => _submitting = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => Column(
+    children: [
+      if (widget.onDownload != null)
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 8),
+          child: Wrap(
+            spacing: 4,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              TextButton.icon(
+                key: const ValueKey('player-select-all-downloads'),
+                onPressed: _submitting
+                    ? null
+                    : () => setState(() {
+                        if (_choices.every(
+                          (e) => _selected.contains(e.number),
+                        )) {
+                          _selected.clear();
+                        } else {
+                          _selected.addAll(
+                            _choices.take(500).map((e) => e.number),
+                          );
+                        }
+                      }),
+                icon: Icon(
+                  _choices.isNotEmpty &&
+                          _choices.every((e) => _selected.contains(e.number))
+                      ? Icons.check_box
+                      : Icons.check_box_outline_blank,
+                  size: 18,
+                ),
+                label: const Text('全选'),
+              ),
+              TextButton(
+                key: const ValueKey('player-download-all'),
+                onPressed: _submitting || _choices.isEmpty
+                    ? null
+                    : () => _download(all: true),
+                child: const Text('全选下载'),
+              ),
+              FilledButton.tonalIcon(
+                key: const ValueKey('player-download-selected'),
+                onPressed: _submitting || _selected.isEmpty ? null : _download,
+                icon: const Icon(Icons.download_outlined, size: 18),
+                label: Text(
+                  _submitting ? '正在加入…' : '下载已选 · ${_selected.length} 集',
+                ),
+              ),
+            ],
+          ),
+        ),
+      if (widget.onDownload != null && widget.episodes.any((e) => e.vip))
+        const Padding(
+          padding: EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+          child: Text('付费分集需源站授权，不会自动购买', style: TextStyle(fontSize: 12)),
+        ),
+      Expanded(
+        child: EpisodeBrowser(
+          episodes: widget.episodes,
+          currentNumber: widget.episodes.isEmpty
+              ? null
+              : widget
+                    .episodes[widget.currentIndex.clamp(
+                      0,
+                      widget.episodes.length - 1,
+                    )]
+                    .number,
+          onSelected: widget.onSelected,
+          keyPrefix: widget.keyPrefix,
+          compact: widget.compact,
+          title: widget.title,
+          downloadSelection: _selected,
+          onDownloadToggle: widget.onDownload == null || _submitting
+              ? null
+              : (episode) => setState(() {
+                  if (!_selected.remove(episode.number) &&
+                      _selected.length < 500) {
+                    _selected.add(episode.number);
+                  }
+                }),
+        ),
+      ),
+    ],
   );
 }

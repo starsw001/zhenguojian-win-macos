@@ -8,6 +8,7 @@ import (
 	"time"
 )
 
+// TestProbeUpdateLoop 验证「Probe Update Loop」回归场景。
 func TestProbeUpdateLoop(t *testing.T) {
 	if os.Getenv("HG_PROBE") == "" {
 		t.Skip("probe disabled")

@@ -8,6 +8,7 @@ import (
 	"time"
 )
 
+// TestProbeDiagnosticFlow 验证「Probe Diagnostic Flow」回归场景。
 func TestProbeDiagnosticFlow(t *testing.T) {
 	if os.Getenv("HG_PROBE") == "" {
 		t.Skip("probe disabled")
@@ -73,6 +74,7 @@ func TestProbeDiagnosticFlow(t *testing.T) {
 	}
 }
 
+// minInt 计算最小值：整数。
 func minInt(a, b int) int {
 	if a < b {
 		return a

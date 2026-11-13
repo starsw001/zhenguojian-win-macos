@@ -3,17 +3,29 @@ import os
 import platform
 import shutil
 import subprocess
+import uuid
 from pathlib import Path
 
-from app_build import BuildVariant, add_variant_argument
+from app_build import BuildVariant, add_variant_argument, write_app_version
+from license_build import load_license_build, license_linker_flags, file_sha256
+import json
 
 root = Path(__file__).resolve().parents[1]
 parser = argparse.ArgumentParser()
 parser.add_argument('--platform', choices=['android', 'windows', 'darwin'], required=True)
 parser.add_argument('--abi', action='append', choices=['arm64-v8a', 'armeabi-v7a', 'x86_64'])
+parser.add_argument('--license-build-config', type=Path)
+parser.add_argument('--license-build-receipt', type=Path)
 add_variant_argument(parser)
 options = parser.parse_args()
 variant = BuildVariant(options.all_sources)
+license_config = load_license_build(options.license_build_config) if options.platform == 'windows' else None
+app_version = write_app_version(root)
+if options.platform == 'windows' and options.license_build_receipt is None:
+    raise SystemExit('Windows 授权构建必须指定独立 SDK 空间的 --license-build-receipt。')
+catalog_epoch = os.environ.get('CATALOG_CACHE_EPOCH') or uuid.uuid4().hex
+if not catalog_epoch.isascii() or not catalog_epoch.replace('-', '').replace('_', '').isalnum() or len(catalog_epoch) > 128:
+    raise SystemExit('CATALOG_CACHE_EPOCH 必须为不超过 128 个字符的 ASCII 字母、数字、连字符或下划线。')
 
 environment = os.environ.copy()
 environment.setdefault('GOPROXY', 'https://goproxy.cn,direct')
@@ -37,9 +49,21 @@ def build(goos, architecture, compiler, output, extra=None):
     if extra:
         build_env.update(extra)
     print('Building ' + str(output.relative_to(root)), flush=True)
+    flags = variant.linker_flags + ' -X duanjuapp/native/core.buildCatalogEpoch=' + catalog_epoch
+    if license_config is not None:
+        flags += ' ' + license_linker_flags(license_config, app_version)
     subprocess.run([go, 'build', '-trimpath', '-buildmode=c-shared',
-                    '-ldflags=' + variant.linker_flags, '-o', str(output), './bridge'],
+                    '-ldflags=' + flags,
+                    '-o', str(output), './bridge'],
                    cwd=root / 'native', env=build_env, check=True)
+    if license_config is not None:
+        receipt = options.license_build_receipt.resolve()
+        if receipt.is_relative_to(root):
+            raise SystemExit('授权构建收据必须位于源码目录之外。')
+        receipt.parent.mkdir(parents=True, exist_ok=True)
+        receipt.write_text(json.dumps({'edition': variant.slug, 'version': app_version,
+            'licenseRequired': True, 'licenseConfig': license_config,
+            'nativeSHA256': file_sha256(output)}, ensure_ascii=False, indent=2), 'utf-8')
 
 if options.platform == 'android':
     sdk = os.environ.get('ANDROID_HOME') or os.environ.get('ANDROID_SDK_ROOT')

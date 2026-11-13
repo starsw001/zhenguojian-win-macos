@@ -18,12 +18,14 @@ type hongguoCommentKey struct{}
 
 type hongguoCommentNonce [11]byte
 
+// newHongguoCommentNonce 生成评论签名使用的随机材料。
 func newHongguoCommentNonce() (hongguoCommentNonce, error) {
 	var nonce hongguoCommentNonce
 	_, err := rand.Read(nonce[:])
 	return nonce, err
 }
 
+// signHongguoCommentRequest 为红果评论请求计算签名头。
 func signHongguoCommentRequest(request *http.Request, nonce hongguoCommentNonce, now time.Time) {
 	stamp := uint32(now.Unix())
 	query := request.URL.RawQuery
@@ -61,6 +63,7 @@ func signHongguoCommentRequest(request *http.Request, nonce hongguoCommentNonce,
 	request.Header.Set("X-Ladon", hongguoCommentLadon(request.URL.Query().Get("aid"), stamp, nonce[2:6]))
 }
 
+// hongguoCommentPad 为评论协议数据添加分组填充。
 func hongguoCommentPad(data []byte) []byte {
 	padding := 16 - len(data)%16
 	out := append([]byte(nil), data...)
@@ -70,6 +73,7 @@ func hongguoCommentPad(data []byte) []byte {
 	return out
 }
 
+// hongguoCommentLadon 计算评论请求使用的 Ladon 签名值。
 func hongguoCommentLadon(aid string, timestamp uint32, prefix []byte) string {
 	hash := md5.Sum(append(append([]byte(nil), prefix...), aid...))
 	digest := []byte(hex.EncodeToString(hash[:]))
@@ -96,6 +100,7 @@ func hongguoCommentLadon(aid string, timestamp uint32, prefix []byte) string {
 	return base64.StdEncoding.EncodeToString(append(append([]byte(nil), prefix...), data...))
 }
 
+// hongguoCommentArgus 计算评论请求使用的 Argus 签名值。
 func hongguoCommentArgus(query string, timestamp uint32, nonce hongguoCommentNonce) string {
 	key, _ := hex.DecodeString("ac1adaae95a7af94a5114ab3b3a97dd80050aa0a39314c40528caec95256c28c")
 	var message []byte
@@ -165,6 +170,7 @@ func hongguoCommentArgus(query string, timestamp uint32, nonce hongguoCommentNon
 	return base64.StdEncoding.EncodeToString(append([]byte{0x3c, 0xcc}, container...))
 }
 
+// hongguoSM3 计算红果协议使用的 SM3 摘要。
 func hongguoSM3(input []byte) [32]byte {
 	length := uint64(len(input)) * 8
 	data := append(append([]byte(nil), input...), 0x80)

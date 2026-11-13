@@ -21,6 +21,7 @@ var apiFallbackHosts = []string{
 	"https://d37n0wjehmw08f.cloudfront.net",
 }
 
+// apiEndpoint 返回API 端点。
 func (d *Downloader) apiEndpoint(ctx context.Context) (string, error) {
 	d.apiMu.Lock()
 	defer d.apiMu.Unlock()
@@ -66,6 +67,7 @@ func (d *Downloader) apiEndpoint(ctx context.Context) (string, error) {
 	return "", fmt.Errorf("黄果原 API 的候选域名均不可用: %w", publicError(lastErr))
 }
 
+// resetAPIEndpoint 重置API 端点。
 func (d *Downloader) resetAPIEndpoint(failed string) {
 	d.apiMu.Lock()
 	if d.apiFailures == nil {
@@ -78,6 +80,7 @@ func (d *Downloader) resetAPIEndpoint(failed string) {
 	d.apiMu.Unlock()
 }
 
+// probeAPIHost 探测API 主机。
 func (d *Downloader) probeAPIHost(ctx context.Context, host string) error {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, host+"/api/app/ping/check", nil)
 	if err != nil {
@@ -98,6 +101,7 @@ func (d *Downloader) probeAPIHost(ctx context.Context, host string) error {
 	return nil
 }
 
+// discoverAPIHosts 发现API 主机列表。
 func (d *Downloader) discoverAPIHosts(ctx context.Context) ([]string, error) {
 	body, err := d.fetchLegacyFrontendScript(ctx)
 	if err != nil {
@@ -109,6 +113,7 @@ func (d *Downloader) discoverAPIHosts(ctx context.Context) ([]string, error) {
 	return nil, errors.New("官网前端未提供可识别的 API 地址，请稍后重试或更新应用")
 }
 
+// fetchLegacyFrontendScript 获取旧接口前端脚本。
 func (d *Downloader) fetchLegacyFrontendScript(ctx context.Context) (string, error) {
 	page, err := d.fetchProviderText(ctx, legacyFrontendURL+"/", legacyFrontendURL+"/")
 	if err != nil {
@@ -133,6 +138,7 @@ func (d *Downloader) fetchLegacyFrontendScript(ctx context.Context) (string, err
 	return "", errors.New("黄果官网未提供可识别的接口脚本")
 }
 
+// parseAPIHosts 解析API 主机列表。
 func parseAPIHosts(script string) []string {
 	matches := regexp.MustCompile(`https://[a-z0-9]+\.cloudfront\.net`).FindAllString(script, -1)
 	seen := map[string]bool{}

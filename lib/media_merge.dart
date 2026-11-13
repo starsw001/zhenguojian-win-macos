@@ -288,7 +288,8 @@ extension MediaMergeOperations on MediaLibrary {
       'ffconcat version 1.0\n${normalized.map(concatFileLine).join('\n')}\n',
       flush: true,
     );
-    final output = path.join(temporary.path, 'full.mkv');
+    final outputName = 'full.${plan.outputExtension}';
+    final output = path.join(temporary.path, outputName);
     final duration = probes.fold<double>(
       0,
       (sum, probe) => sum + probe.duration,
@@ -309,6 +310,7 @@ extension MediaMergeOperations on MediaLibrary {
         'copy',
         '-avoid_negative_ts',
         'make_zero',
+        if (plan.outputExtension == 'mp4') ...['-movflags', '+faststart'],
         output,
       ],
       duration: duration,
@@ -321,7 +323,7 @@ extension MediaMergeOperations on MediaLibrary {
     final checked = await executor.probe(output);
     verifyMediaDuration(checked, duration);
     await _decodeOutput(output, checked.duration);
-    final relative = path.join('library', id, 'full.mkv');
+    final relative = path.join('library', id, outputName);
     final target = File(path.join(root!, relative));
     await target.parent.create(recursive: true);
     _check();

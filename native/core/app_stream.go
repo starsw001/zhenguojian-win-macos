@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -37,6 +38,8 @@ type nativeStreamSession struct {
 	ctx         context.Context
 	cancel      context.CancelFunc
 	lastUsed    time.Time
+	guardAccess bool
+	accessError error
 }
 
 type nativeStreamServer struct {
@@ -47,14 +50,53 @@ type nativeStreamServer struct {
 	server     *http.Server
 }
 
+// nativeRequest 请求原生。
 func (stream *nativeStreamServer) nativeRequest(request *http.Request) (*http.Response, error) {
 	client := *stream.downloader.client
 	client.Timeout = 0
 	return stream.downloader.doMediaRequestWithClient(request, &client)
 }
 
+var errNativeMediaAccessStop = errors.New("站源要求授权、验证或等待限流，已停止自动切换线路")
+
+// nativeMediaAccessStopError 返回原生媒体访问停止错误。
+func nativeMediaAccessStopError(response *http.Response) error {
+	return fmt.Errorf("%w（HTTP %d）", errNativeMediaAccessStop, response.StatusCode)
+}
+
+// nativeMediaAccessStopsSwitch 判断媒体访问错误是否禁止继续切换地址。
+func nativeMediaAccessStopsSwitch(response *http.Response, body []byte) bool {
+	switch response.StatusCode {
+	case http.StatusUnauthorized, http.StatusForbidden, http.StatusTooManyRequests, http.StatusUnavailableForLegalReasons:
+		return true
+	}
+	return response.StatusCode >= 400 && response.Header.Get("Retry-After") != "" ||
+		catalogResponseBlockReason(response, body) != ""
+}
+
+// routeAccessError 返回线路访问错误。
+func (session *nativeStreamSession) routeAccessError() error {
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	return session.accessError
+}
+
+// observeRouteAccess 记录线路访问。
+func (session *nativeStreamSession) observeRouteAccess(response *http.Response, body []byte) error {
+	if !session.guardAccess {
+		return nil
+	}
+	if nativeMediaAccessStopsSwitch(response, body) {
+		session.mu.Lock()
+		session.accessError = nativeMediaAccessStopError(response)
+		session.mu.Unlock()
+	}
+	return session.routeAccessError()
+}
+
 var nativePlaylistURI = regexp.MustCompile(`URI="([^"]+)"`)
 
+// newNativeStreamServer 创建原生Stream服务。
 func newNativeStreamServer(d *Downloader) (*nativeStreamServer, error) {
 	listener, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
@@ -67,14 +109,20 @@ func newNativeStreamServer(d *Downloader) (*nativeStreamServer, error) {
 	return stream, nil
 }
 
+// nativeOpen 打开原生。
 func (stream *nativeStreamServer) nativeOpen(media providerMedia) (string, string) {
+	return stream.nativeOpenWithAccessGuard(media, false)
+}
+
+// nativeOpenWithAccessGuard 打开原生包含访问Guard。
+func (stream *nativeStreamServer) nativeOpenWithAccessGuard(media providerMedia, guardAccess bool) (string, string) {
 	tokenBytes := make([]byte, 24)
 	if _, err := rand.Read(tokenBytes); err != nil {
 		panic(err)
 	}
 	token := hex.EncodeToString(tokenBytes)
 	ctx, cancel := context.WithCancel(providerMediaContext(context.Background(), media.credentials))
-	session := &nativeStreamSession{assets: map[string]nativeStreamAsset{}, referer: media.Referer, key: media.HLSKey, ctx: ctx, cancel: cancel, lastUsed: time.Now(), credentials: media.credentials}
+	session := &nativeStreamSession{assets: map[string]nativeStreamAsset{}, referer: media.Referer, key: media.HLSKey, ctx: ctx, cancel: cancel, lastUsed: time.Now(), credentials: media.credentials, guardAccess: guardAccess}
 	stream.mu.Lock()
 	for id, old := range stream.sessions {
 		if time.Since(old.lastUsed) > 10*time.Minute {
@@ -109,6 +157,7 @@ func (stream *nativeStreamServer) nativeOpen(media providerMedia) (string, strin
 	return stream.nativeAsset(token, session, entry), token
 }
 
+// nativeRelease 处理媒体转发服务的原生发布操作。
 func (stream *nativeStreamServer) nativeRelease(token string) {
 	stream.mu.Lock()
 	if session := stream.sessions[token]; session != nil {
@@ -118,6 +167,7 @@ func (stream *nativeStreamServer) nativeRelease(token string) {
 	stream.mu.Unlock()
 }
 
+// nativeAsset 返回原生资源。
 func (stream *nativeStreamServer) nativeAsset(token string, session *nativeStreamSession, asset nativeStreamAsset) string {
 	digest := sha256.Sum256([]byte(asset.address + "\x00" + asset.contentType))
 	extension := ".ts"
@@ -144,6 +194,7 @@ func (stream *nativeStreamServer) nativeAsset(token string, session *nativeStrea
 	return stream.address + "/" + token + "/" + id
 }
 
+// nativeRewrite 改写原生。
 func (stream *nativeStreamServer) nativeRewrite(token string, session *nativeStreamSession, body, base string) (string, error) {
 	var output []string
 	nextPlaylist := false
@@ -214,7 +265,12 @@ func (stream *nativeStreamServer) nativeRewrite(token string, session *nativeStr
 	return strings.Join(output, "\n"), nil
 }
 
+// nativeServe 处理服务请求：原生。
 func (stream *nativeStreamServer) nativeServe(writer http.ResponseWriter, request *http.Request) {
+	if nativeLicenseEnabled() && !nativeLicenseManager().Allowed() {
+		http.Error(writer, "请先完成许可证验证", http.StatusForbidden)
+		return
+	}
 	if request.Method != http.MethodGet && request.Method != http.MethodHead {
 		writer.WriteHeader(http.StatusMethodNotAllowed)
 		return
@@ -232,6 +288,10 @@ func (stream *nativeStreamServer) nativeServe(writer http.ResponseWriter, reques
 	stream.mu.Unlock()
 	if session == nil {
 		http.Error(writer, "播放已结束", http.StatusGone)
+		return
+	}
+	if err := session.routeAccessError(); err != nil {
+		http.Error(writer, err.Error(), http.StatusForbidden)
 		return
 	}
 	session.mu.Lock()
@@ -290,8 +350,20 @@ func (stream *nativeStreamServer) nativeServe(writer http.ResponseWriter, reques
 		return
 	}
 	defer response.Body.Close()
+	if err := session.observeRouteAccess(response, nil); err != nil {
+		status := response.StatusCode
+		if status < 400 {
+			status = http.StatusForbidden
+		}
+		http.Error(writer, err.Error(), status)
+		return
+	}
 	if response.StatusCode != http.StatusOK && response.StatusCode != http.StatusPartialContent {
 		body, _ := io.ReadAll(io.LimitReader(response.Body, 64<<10))
+		if err := session.observeRouteAccess(response, body); err != nil {
+			http.Error(writer, err.Error(), response.StatusCode)
+			return
+		}
 		err := stream.downloader.catalogResponseError(upstream, response, body)
 		http.Error(writer, err.Error(), response.StatusCode)
 		return
@@ -301,10 +373,14 @@ func (stream *nativeStreamServer) nativeServe(writer http.ResponseWriter, reques
 	if response.Request != nil && response.Request.URL != nil {
 		finalURL = response.Request.URL
 	}
-	playlist := strings.Contains(asset.contentType, "mpegurl") || strings.Contains(contentType, "mpegurl") || strings.HasSuffix(strings.ToLower(finalURL.Path), ".m3u8") || strings.Contains(strings.ToLower(finalURL.String()), "m3u8") || len(session.key) > 0
+	playlist := strings.Contains(asset.contentType, "mpegurl") || strings.Contains(contentType, "mpegurl") || strings.HasSuffix(strings.ToLower(finalURL.Path), ".m3u8") || strings.Contains(strings.ToLower(finalURL.String()), "m3u8")
 	reader := bufio.NewReader(response.Body)
 	if !playlist && request.Method == http.MethodGet {
 		peek, _ := reader.Peek(512)
+		if err := session.observeRouteAccess(response, peek); err != nil {
+			http.Error(writer, err.Error(), http.StatusForbidden)
+			return
+		}
 		if strings.HasPrefix(strings.TrimSpace(strings.TrimPrefix(string(peek), "\ufeff")), "#EXTM3U") {
 			playlist = true
 		}
@@ -318,6 +394,10 @@ func (stream *nativeStreamServer) nativeServe(writer http.ResponseWriter, reques
 		body, err := io.ReadAll(io.LimitReader(reader, 4<<20+1))
 		if err != nil || len(body) > 4<<20 {
 			http.Error(writer, "播放列表过大或读取失败", http.StatusBadGateway)
+			return
+		}
+		if err := session.observeRouteAccess(response, body); err != nil {
+			http.Error(writer, err.Error(), http.StatusForbidden)
 			return
 		}
 		text := strings.TrimSpace(strings.TrimPrefix(string(body), "\ufeff"))

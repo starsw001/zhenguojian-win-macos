@@ -45,6 +45,7 @@ var duanjuBrowserHosts = func() map[string]bool {
 	return hosts
 }()
 
+// newHuangguoBrowserTransport 创建黄果浏览器传输层。
 func newHuangguoBrowserTransport(base http.RoundTripper, downloader *Downloader) *huangguoBrowserTransport {
 	configured, _ := url.Parse(downloader.providerBaseURL(sourceHuangguoVideo))
 	transport := &huangguoBrowserTransport{
@@ -56,6 +57,7 @@ func newHuangguoBrowserTransport(base http.RoundTripper, downloader *Downloader)
 	return transport
 }
 
+// matches 判断请求是否满足黄果浏览器传输层的匹配条件。
 func (transport *huangguoBrowserTransport) matches(request *http.Request) bool {
 	return (request.Method == http.MethodGet || request.Method == http.MethodHead) &&
 		(request.URL.Scheme == "http" || request.URL.Scheme == "https") &&
@@ -64,6 +66,7 @@ func (transport *huangguoBrowserTransport) matches(request *http.Request) bool {
 			duanjuBrowserHosts[strings.ToLower(request.URL.Hostname())])
 }
 
+// createClient 取得create请求使用的客户端。
 func (transport *huangguoBrowserTransport) createClient(proxy string) (browserHTTPClient, error) {
 	idleTimeout := 90 * time.Second
 	options := []tlsclient.HttpClientOption{
@@ -85,6 +88,7 @@ func (transport *huangguoBrowserTransport) createClient(proxy string) (browserHT
 	return tlsclient.NewHttpClient(tlsclient.NewNoopLogger(), options...)
 }
 
+// client 取得黄果浏览器传输层使用的客户端。
 func (transport *huangguoBrowserTransport) client(request *http.Request) (browserHTTPClient, error) {
 	transport.mu.Lock()
 	defer transport.mu.Unlock()
@@ -115,6 +119,7 @@ func (transport *huangguoBrowserTransport) client(request *http.Request) (browse
 	return client, nil
 }
 
+// huangguoBrowserHeaders 返回黄果浏览器请求头。
 func huangguoBrowserHeaders(request *http.Request) fhttp.Header {
 	headers := fhttp.Header{
 		"sec-ch-ua":                 {`"Chromium";v="150", "Google Chrome";v="150", "Not_A Brand";v="24"`},
@@ -152,6 +157,7 @@ func huangguoBrowserHeaders(request *http.Request) fhttp.Header {
 	return headers
 }
 
+// standardBrowserHeaders 为请求补齐通用浏览器头字段。
 func standardBrowserHeaders(headers fhttp.Header) http.Header {
 	result := make(http.Header, len(headers))
 	for key, values := range headers {
@@ -160,6 +166,7 @@ func standardBrowserHeaders(headers fhttp.Header) http.Header {
 	return result
 }
 
+// RoundTrip 按黄果浏览器传输层策略执行单次 HTTP 请求并返回响应或错误。
 func (transport *huangguoBrowserTransport) RoundTrip(request *http.Request) (*http.Response, error) {
 	if !transport.matches(request) {
 		return transport.base.RoundTrip(request)
@@ -209,6 +216,7 @@ func (transport *huangguoBrowserTransport) RoundTrip(request *http.Request) (*ht
 	return result, nil
 }
 
+// CloseIdleConnections 关闭当前传输层持有的空闲连接。
 func (transport *huangguoBrowserTransport) CloseIdleConnections() {
 	transport.mu.Lock()
 	for key, client := range transport.clients {

@@ -6,6 +6,7 @@ import 'catalog_filters.dart';
 import 'core_bridge.dart';
 import 'local_store.dart';
 import 'models.dart';
+import 'ordinary_catalog.dart';
 import 'playback_launch_screen.dart';
 import 'widgets.dart';
 
@@ -39,11 +40,14 @@ class _RecommendationsScreenState extends State<RecommendationsScreen> {
   bool _failedMore = false;
   String? _error;
   int _generation = 0;
+  bool _sourceVisible = false;
 
   @override
   void initState() {
     super.initState();
     widget.repository.catalogUpdates.addListener(_metadataChanged);
+    _sourceVisible = widget.store.isSourceVisible('hongguo');
+    widget.store.addListener(_visibilityChanged);
     _load();
   }
 
@@ -51,6 +55,7 @@ class _RecommendationsScreenState extends State<RecommendationsScreen> {
   void dispose() {
     _generation++;
     widget.repository.catalogUpdates.removeListener(_metadataChanged);
+    widget.store.removeListener(_visibilityChanged);
     unawaited(widget.repository.cancelRecommendations());
     _scroll.dispose();
     super.dispose();
@@ -67,7 +72,21 @@ class _RecommendationsScreenState extends State<RecommendationsScreen> {
     });
   }
 
+  void _visibilityChanged() {
+    final visible = widget.store.isSourceVisible('hongguo');
+    if (!mounted || visible == _sourceVisible) return;
+    _sourceVisible = visible;
+    _generation++;
+    unawaited(widget.repository.cancelRecommendations());
+    setState(() {
+      _items = [];
+      _loading = _more = false;
+    });
+    if (visible) _load();
+  }
+
   Future<void> _load({bool more = false, bool force = false}) async {
+    if (!widget.store.isSourceVisible('hongguo')) return;
     if (more && (_loading || _more || !_hasMore)) return;
     final generation = ++_generation;
     final genre = _genre;
@@ -86,8 +105,9 @@ class _RecommendationsScreenState extends State<RecommendationsScreen> {
         force: force,
       );
       if (!mounted || generation != _generation) return;
+      widget.repository.catalogUpdates.rememberOrdinary(page.items);
       setState(() {
-        _items = page.items;
+        _items = groupOrdinaryTitles(page.items);
         _hasMore = page.hasMore;
         _error = page.warning.isEmpty ? null : page.warning;
         _loading = _more = false;
@@ -163,8 +183,13 @@ class _RecommendationsScreenState extends State<RecommendationsScreen> {
             ),
           ),
         Expanded(
-          child: !widget.store.allowsSource('hongguo')
-              ? const StatusPanel(title: '当前用户未开放红果', message: '可在用户管理中调整站源权限。')
+          child: !widget.store.isSourceVisible('hongguo')
+              ? StatusPanel(
+                  title: widget.store.isSourceHidden('hongguo')
+                      ? '该站源已隐藏'
+                      : '当前用户未开放红果',
+                  message: '可在站源管理取消隐藏；访问权限仍由用户管理控制。',
+                )
               : _loading && _items.isEmpty
               ? const Center(child: CircularProgressIndicator())
               : _items.isEmpty

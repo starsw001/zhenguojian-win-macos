@@ -12,15 +12,22 @@ class PlaybackRecovery {
     _refreshed = false;
   }
 
-  PlaybackRecoveryAction next(PlaybackPlan plan) {
-    if (_attempts >= maxAttempts) {
+  PlaybackRecoveryAction next(
+    PlaybackPlan plan, {
+    bool allowRefresh = true,
+    bool allCandidates = false,
+  }) {
+    final limit = allCandidates && plan.routeCount > maxAttempts
+        ? plan.routeCount
+        : maxAttempts;
+    if (_attempts >= limit) {
       return PlaybackRecoveryAction.stop;
     }
     if (plan.hasAlternative) {
       _attempts++;
       return PlaybackRecoveryAction.alternative;
     }
-    if (!_refreshed) {
+    if (allowRefresh && !_refreshed) {
       _attempts++;
       _refreshed = true;
       return PlaybackRecoveryAction.refresh;

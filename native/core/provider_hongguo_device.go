@@ -18,6 +18,7 @@ const (
 	hongguoDeviceRegisterPause = 10 * time.Minute
 )
 
+// ensureHongguoDevice 取得已有的红果注册身份，缺少时执行正常注册。
 func (downloader *Downloader) ensureHongguoDevice(ctx context.Context, rejected string) error {
 	client := downloader.hongguoClient()
 	client.deviceMu.Lock()
@@ -44,6 +45,7 @@ func (downloader *Downloader) ensureHongguoDevice(ctx context.Context, rejected 
 	return nil
 }
 
+// registerHongguoDevice 向注册接口提交设备信息并保存返回的注册结果。
 func (downloader *Downloader) registerHongguoDevice(ctx context.Context) (string, string, error) {
 	header := map[string]any{
 		"display_name": "红果免费短剧", "aid": 8662, "app_version": "7.3.5.32", "version_code": 73532,

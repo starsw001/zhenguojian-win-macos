@@ -6,6 +6,7 @@ import (
 	"testing"
 )
 
+// dsdTestAaChar 返回DSDTestAaChar。
 func dsdTestAaChar(octal string) string {
 	parts := make([]string, 0, len(octal))
 	for _, digit := range octal {
@@ -25,6 +26,7 @@ func dsdTestAaChar(octal string) string {
 	return "(ﾟДﾟ)[ﾟεﾟ]+" + strings.Join(parts, "+")
 }
 
+// TestDSDAaencodeDecoderExtractsSignedVPath 验证「DSD Aaencode Decoder Extracts Signed V Path」回归场景。
 func TestDSDAaencodeDecoderExtractsSignedVPath(t *testing.T) {
 	payload := `var vPath = "/video/fixture/1000k/index.m3u8?sign=abc%2Fdef";`
 	encoded := "(ﾟДﾟ) ['_'] ( (ﾟДﾟ) ['_']"
@@ -39,6 +41,7 @@ func TestDSDAaencodeDecoderExtractsSignedVPath(t *testing.T) {
 	}
 }
 
+// TestDSDVplayerMediaPathDropsOrigin 验证「DSD Vplayer Media Path Drops Origin」回归场景。
 func TestDSDVplayerMediaPathDropsOrigin(t *testing.T) {
 	got := dsdVplayerMediaPath("https://www.dsd.com.se/video/a/1000k/index.m3u8?token=a%2Fb")
 	if got != "/video/a/1000k/index.m3u8?token=a%2Fb" {

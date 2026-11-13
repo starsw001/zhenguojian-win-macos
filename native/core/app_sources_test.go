@@ -17,20 +17,24 @@ import (
 
 type sourceFixtureTransport func(*http.Request) (*http.Response, error)
 
+// RoundTrip 实现隔离测试使用的单次 HTTP 请求处理。
 func (transport sourceFixtureTransport) RoundTrip(request *http.Request) (*http.Response, error) {
 	return transport(request)
 }
 
+// sourceFixtureResponse 返回站源Fixture响应。
 func sourceFixtureResponse(request *http.Request, status int, body string) *http.Response {
 	return &http.Response{StatusCode: status, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(body)), ContentLength: int64(len(body)), Request: request}
 }
 
+// sourceFixtureDownloader 返回站源FixtureDownloader。
 func sourceFixtureDownloader(t *testing.T, transport sourceFixtureTransport) *Downloader {
 	t.Helper()
 	return &Downloader{cfg: Config{dataDir: t.TempDir(), Retries: 1, PageSize: 30, MaxPagesPerSort: 1},
 		client: &http.Client{Transport: transport}, limiter: newRequestLimiter(3, 0), providerHosts: map[string]string{}}
 }
 
+// sourceFixtureEngine 返回站源Fixture引擎。
 func sourceFixtureEngine(t *testing.T, transport sourceFixtureTransport) *nativeEngine {
 	t.Helper()
 	engine, err := newNativeEngine(t.TempDir())
@@ -44,6 +48,7 @@ func sourceFixtureEngine(t *testing.T, transport sourceFixtureTransport) *native
 	return engine
 }
 
+// awaitSourceTask 返回await站源任务。
 func awaitSourceTask(t *testing.T, engine *nativeEngine, source string) nativeSourceStatus {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
@@ -58,6 +63,59 @@ func awaitSourceTask(t *testing.T, engine *nativeEngine, source string) nativeSo
 	return nativeSourceStatus{}
 }
 
+// TestNativeRealPlaybackHealthPersistsWithoutReplacingExistingRecords 验证「Native Real Playback Health Persists Without Replacing Existing Records」回归场景。
+func TestNativeRealPlaybackHealthPersistsWithoutReplacingExistingRecords(t *testing.T) {
+	engine := sourceFixtureEngine(t, func(request *http.Request) (*http.Response, error) {
+		t.Fatal("saving playback diagnostics must not request the network")
+		return nil, errors.New("unexpected request")
+	})
+	engine.sourceRecords[sourceHongguo] = nativeSourceRecord{MetadataCursor: "keep-history-cursor", Added: 7}
+	health := &nativeSourceHealth{NetworkMode: "auto", State: "decoded", Sample: "定向验证", Steps: []nativeHealthStep{}}
+	for _, name := range []string{"浏览", "搜索", "选集", "实际播放"} {
+		health.Steps = append(health.Steps, nativeHealthStep{Name: name, State: "ok", Message: "observed", ElapsedMS: 1})
+	}
+	health.CheckedAt = time.Now().Add(-time.Hour).Truncate(time.Second)
+	health.DownloadCheck = &nativeHealthStep{Name: "分集 MP4 下载", State: "ok", Message: "verified local playback"}
+	status, err := engine.saveSourceHealth(sourceHongguo, health)
+	if err != nil || status.Health == nil || status.Health.State != "decoded" {
+		t.Fatal("real playback result was not saved", status, err)
+	}
+	engine.loadSourceRecords()
+	record := engine.sourceRecords[sourceHongguo]
+	if record.MetadataCursor != "keep-history-cursor" || record.Added != 7 || record.Health == nil || len(record.Health.Steps) != 4 {
+		t.Fatal("saving diagnostics replaced existing metadata or lost steps", record)
+	}
+	if !record.Health.CheckedAt.Equal(health.CheckedAt) || record.Health.DownloadCheck == nil || record.Health.DownloadCheck.State != "ok" {
+		t.Fatal("saved results lost the observed check time or local MP4 verification")
+	}
+	health.Steps[3].State = "failed"
+	if _, err := engine.saveSourceHealth(sourceHongguo, health); err == nil {
+		t.Fatal("a failed decode was incorrectly accepted as all passed")
+	}
+	if engine.sourceRecords[sourceHongguo].Health.Steps[3].State != "ok" {
+		t.Fatal("invalid diagnostic result changed the saved record")
+	}
+	health.State = "failed"
+	status, err = engine.saveSourceHealth(sourceHongguo, health)
+	if err != nil || len(status.HealthHistory) != 1 || status.HealthHistory[0].State != "decoded" || status.Health.State != "failed" {
+		t.Fatal("successful and failed playback results were not both retained", status, err)
+	}
+}
+
+// TestNativeCatalogOnlyCheckRetainsPreviousPlaybackHealth 验证「Native Catalog Only Check Retains Previous Playback Health」回归场景。
+func TestNativeCatalogOnlyCheckRetainsPreviousPlaybackHealth(t *testing.T) {
+	engine := sourceFixtureEngine(t, func(request *http.Request) (*http.Response, error) {
+		return sourceFixtureResponse(request, http.StatusServiceUnavailable, "temporary unavailable"), nil
+	})
+	engine.sourceRecords[sourceHongguo] = nativeSourceRecord{Health: &nativeSourceHealth{State: "decoded", Sample: "retained-real-playback"}}
+	_ = engine.checkSource(context.Background(), sourceHongguo, nativeDrama{}, false)
+	record := engine.sourceRecords[sourceHongguo]
+	if len(record.HealthHistory) != 1 || record.HealthHistory[0].Sample != "retained-real-playback" || record.Health.NetworkMode != "auto" {
+		t.Fatalf("catalog-only recheck replaced prior playback results: %+v", record)
+	}
+}
+
+// TestSourceUpdatesPreservePagesOtherSourcesAndMetadata 验证「Source Updates Preserve Pages Other Sources And Metadata」回归场景。
 func TestSourceUpdatesPreservePagesOtherSourcesAndMetadata(t *testing.T) {
 	engine := sourceFixtureEngine(t, func(request *http.Request) (*http.Response, error) {
 		if !strings.Contains(request.URL.Path, "/api/videos/category/") {
@@ -89,6 +147,7 @@ func TestSourceUpdatesPreservePagesOtherSourcesAndMetadata(t *testing.T) {
 	}
 }
 
+// TestYeguoSourceUpdateBatchesConfiguredPagesWithPost 验证「Yeguo Source Update Batches Configured Pages With Post」回归场景。
 func TestYeguoSourceUpdateBatchesConfiguredPagesWithPost(t *testing.T) {
 	var pages []string
 	engine := sourceFixtureEngine(t, func(request *http.Request) (*http.Response, error) {
@@ -122,6 +181,7 @@ func TestYeguoSourceUpdateBatchesConfiguredPagesWithPost(t *testing.T) {
 	}
 }
 
+// TestSourceJobsDeduplicateCancelAndRecoverAfterRestart 验证「Source Jobs Deduplicate Cancel And Recover After Restart」回归场景。
 func TestSourceJobsDeduplicateCancelAndRecoverAfterRestart(t *testing.T) {
 	if buildAllSources != "true" {
 		t.Skip("full edition source lifecycle")
@@ -162,6 +222,7 @@ func TestSourceJobsDeduplicateCancelAndRecoverAfterRestart(t *testing.T) {
 	}
 }
 
+// TestSourceHealthRejectsHTML200AndPreservesFailureStage 验证「Source Health Rejects HTML 200 And Preserves Failure Stage」回归场景。
 func TestSourceHealthRejectsHTML200AndPreservesFailureStage(t *testing.T) {
 	engine := sourceFixtureEngine(t, func(request *http.Request) (*http.Response, error) {
 		switch request.URL.Path {
@@ -188,6 +249,7 @@ func TestSourceHealthRejectsHTML200AndPreservesFailureStage(t *testing.T) {
 	}
 }
 
+// TestSourceHealthChecksHLSKeyAndBoundedMedia 验证「Source Health Checks HLS Key And Bounded Media」回归场景。
 func TestSourceHealthChecksHLSKeyAndBoundedMedia(t *testing.T) {
 	var segments atomic.Int32
 	engine := sourceFixtureEngine(t, func(request *http.Request) (*http.Response, error) {
@@ -238,6 +300,7 @@ func TestSourceHealthChecksHLSKeyAndBoundedMedia(t *testing.T) {
 	}
 }
 
+// TestSourceBackoffUsesRelativeTimeAndRetainsTypedError 验证「Source Backoff Uses Relative Time And Retains Typed Error」回归场景。
 func TestSourceBackoffUsesRelativeTimeAndRetainsTypedError(t *testing.T) {
 	backoff := &requestBackoff{host: "huangguo.video", status: 403, until: time.Now().Add(time.Minute)}
 	if !strings.Contains(backoff.Error(), "秒后") || strings.Contains(backoff.Error(), backoff.until.Format("15:04:05")) {

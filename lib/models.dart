@@ -7,15 +7,8 @@ class SourceSite {
   final String id;
   final String name;
   final String description;
-  bool get onlineSearch => id == 'hongguo' || pagedSearch;
-  bool get pagedSearch =>
-      id == 'huangju' ||
-      id == 'yeguo' ||
-      id == 'dsd' ||
-      id == 'sorani' ||
-      id == 'guipian' ||
-      id == 'hanxiaoquan' ||
-      duanjuPaged;
+  bool get onlineSearch => values.any((site) => site.id == id);
+  bool get pagedSearch => onlineSearch;
   bool get duanjuPaged => const {
     'yaguo',
     'guanguo',
@@ -27,11 +20,30 @@ class SourceSite {
     'wuguo',
   }.contains(id);
   bool get searchSuggestions => id == 'hongguo';
-  String get groupId => switch (id) {
-    'huangguo-video' || 'huangguoai' || 'cloudfront' => 'huangguo',
-    _ => id,
+  bool get refreshHeadOnOpen =>
+      ordinary ||
+      const {'huangguo-video', 'huangguoai', 'cloudfront'}.contains(id);
+  bool get ordinary => ordinaryIds.contains(id);
+  static const ordinaryIds = {
+    'hongguo',
+    'hanxiaoquan',
+    'guipian',
+    'sorani',
+    'yaguo',
+    'maoguo',
+    'fanguo',
+    'guanguo',
+    'heguo',
+    'xingguo',
+    'huaguo',
+    'niuguo',
+    'wangguo',
+    'faguo',
+    'piguo',
+    'wuguo',
   };
-  String get groupName => groupId == 'huangguo' ? '黄果' : name;
+  String get groupId => id;
+  String get groupName => name;
   String get entryName => switch (id) {
     'huangguo-video' => '视频',
     'huangguoai' => 'AI',
@@ -39,7 +51,7 @@ class SourceSite {
     _ => name,
   };
 
-  static const hongguo = SourceSite('hongguo', '红果', '短剧 · 漫剧 · AI 剧');
+  static const hongguo = SourceSite('hongguo', '红果', '真人剧 · 漫剧 · AI剧 · 漫画');
   static const dsd = SourceSite('dsd', '帝果', '分类视频 · 在线搜索');
   static const sorani = SourceSite('sorani', '青空', '番剧 · 剧场动画 · 特摄');
   static const guipian = SourceSite('guipian', '鬼片', '鬼片 · 电视剧 · 动漫');
@@ -73,7 +85,7 @@ class SourceSite {
     SourceSite('yeguo', '野果', '分类短剧 · 在线搜索'),
     dsd,
     SourceSite('huangguo-video', '黄果视频', '视频剧集'),
-    SourceSite('huangguoai', '黄果 AI', 'AI 短剧'),
+    SourceSite('huangguoai', '黄果AI', 'AI 短剧'),
     SourceSite('cloudfront', '黄果旧版', '旧 API 剧库'),
     ...duanjuValues,
   ];
@@ -115,15 +127,22 @@ class SourceGroup {
 }
 
 class CatalogCategory {
-  const CatalogCategory(this.id, this.name, {this.local = false});
+  const CatalogCategory(
+    this.id,
+    this.name, {
+    this.local = false,
+    this.tag = false,
+  });
   static const all = CatalogCategory('', '全部');
   final String id;
   final String name;
   final bool local;
+  final bool tag;
   factory CatalogCategory.fromJson(Map<String, dynamic> json) =>
       CatalogCategory(
         json['id'] as String? ?? '',
         json['name'] as String? ?? '全部',
+        tag: json['kind'] == 'tag',
       );
 }
 
@@ -139,6 +158,7 @@ class Drama {
     this.description = '',
     this.cover = '',
     this.episodes = 0,
+    this.episodeCountVerified = false,
     this.category = '',
     bool? vip,
     this.heat = '',
@@ -146,6 +166,7 @@ class Drama {
     this.onlineDate = '',
     this.tags = const [],
     this.releaseStatus = '',
+    this.sites = const [],
   }) : vipStatus = vip;
   final String id;
   final String source;
@@ -154,6 +175,20 @@ class Drama {
   final String description;
   final String cover;
   final int episodes;
+  final bool episodeCountVerified;
+  bool get isolatedDetails =>
+      SourceSite.ordinaryIds.contains(source) || source == 'huangguoai';
+  bool get legacyUnscopedAI =>
+      source == 'huangguoai' &&
+      (Uri.tryParse(sourceId)?.hasAuthority != true ||
+          id != '$source:$sourceId');
+  String get episodeCountLabel => legacyUnscopedAI
+      ? '旧目录条目 · 需刷新'
+      : source == 'huangguoai' && episodes <= 0
+      ? '集数待获取'
+      : isolatedDetails && !episodeCountVerified
+      ? '源站标注 $episodes 集'
+      : '共 $episodes 集';
   final String category;
   final bool? vipStatus;
   bool get vip => vipStatus == true;
@@ -162,13 +197,25 @@ class Drama {
   final String onlineDate;
   final List<String> tags;
   final String releaseStatus;
+  final List<Drama> sites;
+  String get siteIdentity {
+    final uri = Uri.tryParse(sourceId);
+    final address = uri?.hasAuthority == true ? sourceId : '';
+    return '$source\u0000$id\u0000$address';
+  }
+
+  Drama withSites(List<Drama> options) =>
+      Drama.fromJson(toJson(), sites: List.unmodifiable(options));
   String get releaseLabel => switch (releaseStatus) {
     'finished' || 'completed' => '已完结',
     'ongoing' => '连载中',
     _ => '状态未知',
   };
 
-  factory Drama.fromJson(Map<String, dynamic> json) => Drama(
+  factory Drama.fromJson(
+    Map<String, dynamic> json, {
+    List<Drama> sites = const [],
+  }) => Drama(
     id: json['id'] as String? ?? '',
     source: json['source'] as String? ?? 'hongguo',
     sourceId: json['sourceId'] as String? ?? '',
@@ -176,6 +223,7 @@ class Drama {
     description: json['description'] as String? ?? '',
     cover: json['cover'] as String? ?? '',
     episodes: intValue(json['episodes']),
+    episodeCountVerified: json['episodeCountVerified'] == true,
     category: json['category'] as String? ?? '',
     vip: json['vip'] == true
         ? true
@@ -189,6 +237,7 @@ class Drama {
     onlineDate: json['onlineDate'] as String? ?? '',
     tags: (json['tags'] as List? ?? const []).whereType<String>().toList(),
     releaseStatus: json['releaseStatus'] as String? ?? '',
+    sites: sites,
   );
   Map<String, dynamic> toJson() => {
     'metadataSchema': 1,
@@ -199,6 +248,7 @@ class Drama {
     'description': description,
     'cover': cover,
     'episodes': episodes,
+    if (episodeCountVerified) 'episodeCountVerified': true,
     'category': category,
     'vip': vipStatus,
     'heat': heat,
@@ -210,6 +260,10 @@ class Drama {
 
   Drama merge(Drama fresh) {
     if (id != fresh.id) return fresh;
+    if ((isolatedDetails || fresh.isolatedDetails) &&
+        siteIdentity != fresh.siteIdentity) {
+      return fresh;
+    }
     const genericCategories = {
       '短剧',
       '真人剧',
@@ -228,7 +282,12 @@ class Drama {
       title: fresh.title.isEmpty || fresh.title == '短剧' ? title : fresh.title,
       description: fresh.description.isEmpty ? description : fresh.description,
       cover: fresh.cover.isEmpty ? cover : fresh.cover,
-      episodes: fresh.episodes > 0 ? fresh.episodes : episodes,
+      episodes: fresh.episodes > 0 || source == 'huangguoai'
+          ? fresh.episodes
+          : episodes,
+      episodeCountVerified: fresh.episodes > 0 || source == 'huangguoai'
+          ? fresh.episodeCountVerified
+          : episodeCountVerified,
       category:
           fresh.category.isEmpty ||
               genericCategories.contains(fresh.category) &&
@@ -245,6 +304,7 @@ class Drama {
           fresh.releaseStatus.isEmpty || fresh.releaseStatus == 'unknown'
           ? releaseStatus
           : fresh.releaseStatus,
+      sites: fresh.sites.isNotEmpty ? fresh.sites : sites,
     );
   }
 }
@@ -264,10 +324,27 @@ class Episode {
   final bool vip;
 }
 
+List<int> distinctEpisodeIndices(List<Episode> episodes) {
+  final indices = <int, int>{};
+  for (var index = 0; index < episodes.length; index++) {
+    final episode = episodes[index];
+    final previous = indices[episode.number];
+    if (previous == null || episodes[previous].vip && !episode.vip) {
+      indices[episode.number] = index;
+    }
+  }
+  return indices.values.toList(growable: false);
+}
+
 class DramaDetail {
-  DramaDetail(this.drama, this.episodes, {this.warning = ''});
+  DramaDetail(this.drama, List<Episode> episodes, {this.warning = ''})
+    : rawEpisodes = episodes,
+      episodes = distinctEpisodeIndices(
+        episodes,
+      ).map((index) => episodes[index]).toList(growable: false);
   final Drama drama;
   final List<Episode> episodes;
+  final List<Episode> rawEpisodes;
   final String warning;
   factory DramaDetail.fromJson(Map<String, dynamic> json) {
     final rows = json['chapters'] as List? ?? const [];
@@ -289,12 +366,18 @@ class CatalogPage {
     this.warning = '',
     this.page = 1,
     this.fresh = false,
+    this.localSearch = false,
+    this.authoritative = false,
+    this.nextPage = 0,
   });
   final List<Drama> items;
   final bool hasMore;
   final String warning;
   final int page;
   final bool fresh;
+  final bool localSearch;
+  final bool authoritative;
+  final int nextPage;
   factory CatalogPage.fromJson(Map<String, dynamic> json) => CatalogPage(
     [
       for (final row in json['items'] as List? ?? const [])
@@ -304,7 +387,36 @@ class CatalogPage {
     warning: json['warning'] as String? ?? '',
     page: intValue(json['page']) > 0 ? intValue(json['page']) : 1,
     fresh: json['fresh'] == true,
+    localSearch: json['localSearch'] == true,
+    nextPage: intValue(json['nextPage']),
+    authoritative: json['authoritative'] == true,
   );
+}
+
+class PlaybackRouteStatus {
+  const PlaybackRouteStatus({
+    required this.index,
+    this.quality = 0,
+    this.status = 'unknown',
+    this.message = '',
+    this.elapsedMs = 0,
+    this.stop = false,
+  });
+  final int index;
+  final int quality;
+  final String status;
+  final String message;
+  final int elapsedMs;
+  final bool stop;
+  factory PlaybackRouteStatus.fromJson(Map<String, dynamic> json) =>
+      PlaybackRouteStatus(
+        index: intValue(json['index']),
+        quality: intValue(json['quality']),
+        status: json['status'] as String? ?? 'unknown',
+        message: json['message'] as String? ?? '',
+        elapsedMs: intValue(json['elapsedMs']),
+        stop: json['stop'] == true,
+      );
 }
 
 class PlaybackPlan {
@@ -318,6 +430,7 @@ class PlaybackPlan {
     this.danmakuId = '',
     this.prefetchedBytes = 0,
     this.expiresAt = 0,
+    this.routes = const [],
     this.routeIndex = 0,
     this.routeCount = 1,
     this.local = false,
@@ -331,6 +444,7 @@ class PlaybackPlan {
   final String danmakuId;
   final int prefetchedBytes;
   final int expiresAt;
+  final List<PlaybackRouteStatus> routes;
   final int routeIndex;
   final int routeCount;
   final bool local;
@@ -349,6 +463,12 @@ class PlaybackPlan {
     danmakuId: json['danmakuId'] as String? ?? '',
     prefetchedBytes: intValue(json['prefetchedBytes']),
     expiresAt: intValue(json['expiresAt']),
+    routes: (json['routes'] as List? ?? [])
+        .whereType<Map>()
+        .map(
+          (row) => PlaybackRouteStatus.fromJson(Map<String, dynamic>.from(row)),
+        )
+        .toList(),
     routeIndex: intValue(json['routeIndex']),
     routeCount: intValue(json['routeCount']) > 0
         ? intValue(json['routeCount'])
@@ -402,10 +522,12 @@ class DownloadJob {
     this.created = 0,
     this.revision = 0,
     this.archived = false,
+    this.published = false,
   });
   final int created;
   final int revision;
   final bool archived;
+  final bool published;
   final String id;
   final Drama drama;
   final Episode episode;
@@ -445,6 +567,7 @@ class DownloadJob {
     created: intValue(value['created']),
     revision: intValue(value['revision']),
     archived: value['archived'] == true,
+    published: value['published'] == true,
   );
 }
 

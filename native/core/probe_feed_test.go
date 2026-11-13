@@ -9,6 +9,7 @@ import (
 	"time"
 )
 
+// TestProbeFeedNow 验证「Probe Feed Now」回归场景。
 func TestProbeFeedNow(t *testing.T) {
 	if os.Getenv("HG_PROBE") == "" {
 		t.Skip("probe disabled")

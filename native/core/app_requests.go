@@ -13,6 +13,7 @@ type nativeReadRequest struct {
 	updated  time.Time
 }
 
+// validNativeRead 判断是否有效：原生读取。
 func validNativeRead(input nativeInput) bool {
 	return input.Sequence > 0 && len(input.Session) > 0 && len(input.Session) <= 128 &&
 		strings.IndexFunc(input.Session, func(r rune) bool {
@@ -20,6 +21,7 @@ func validNativeRead(input nativeInput) bool {
 		}) < 0
 }
 
+// beginRead 为可取消的原生读取请求注册上下文与释放函数。
 func (engine *nativeEngine) beginRead(ctx context.Context, input nativeInput) (context.Context, func(), error) {
 	if !validNativeRead(input) {
 		return nil, nil, errors.New("请求标记无效")
@@ -53,6 +55,7 @@ func (engine *nativeEngine) beginRead(ctx context.Context, input nativeInput) (c
 	return work, finish, nil
 }
 
+// prepareReadsLocked 准备Reads，供内部持锁路径调用。
 func (engine *nativeEngine) prepareReadsLocked() {
 	if engine.reads == nil {
 		engine.reads = map[string]nativeReadRequest{}
@@ -64,6 +67,7 @@ func (engine *nativeEngine) prepareReadsLocked() {
 	}
 }
 
+// cancelRead 取消读取。
 func (engine *nativeEngine) cancelRead(input nativeInput) {
 	if !validNativeRead(input) {
 		return

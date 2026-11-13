@@ -8,6 +8,7 @@ import (
 	"testing"
 )
 
+// rankingMergedFixture 返回排行榜MergedFixture。
 func rankingMergedFixture(board rankingBoard, page int, rows []map[string]any) string {
 	key := "rank_" + board.path + "/page"
 	base := rankingFixture(board, page, rows)
@@ -17,6 +18,7 @@ func rankingMergedFixture(board rankingBoard, page int, rows []map[string]any) s
 	return base + `<script data-script-src="modern-run-window-fn" data-fn-name="mergeLoaderData" data-fn-args="` + html.EscapeString(string(args)) + `"></script>`
 }
 
+// TestHongguoRankingMergeLoaderFormatsPreserveMetadata 验证「Hongguo Ranking Merge Loader Formats Preserve Metadata」回归场景。
 func TestHongguoRankingMergeLoaderFormatsPreserveMetadata(t *testing.T) {
 	for _, board := range rankingBoards {
 		if board.Source != sourceHongguo {
@@ -28,6 +30,7 @@ func TestHongguoRankingMergeLoaderFormatsPreserveMetadata(t *testing.T) {
 			rows[0]["scoreText"] = "评分9.0"
 			rows[0]["tags"] = []string{"剧情", "成长"}
 			rows[0]["description"] = "文字简介 & 内容"
+			rows[0]["episodeCount"] = 80
 			legacy, err := parseHongguoRanking(rankingFixture(board, page, rows), board, page)
 			if err != nil {
 				t.Fatal(err)
@@ -36,13 +39,30 @@ func TestHongguoRankingMergeLoaderFormatsPreserveMetadata(t *testing.T) {
 			if err != nil || !reflect.DeepEqual(merged, legacy) {
 				t.Fatal("merged and streamed formats differ", board.ID, page, err)
 			}
-			if merged.Items[0].Drama.TotalEpisode != 2 || merged.Items[0].Drama.Score != "9.0" || merged.Items[0].Drama.Title != rows[0]["title"] {
+			if merged.Items[0].Drama.TotalEpisode != 80 || merged.Items[0].Drama.Score != "9.0" || merged.Items[0].Drama.Title != rows[0]["title"] {
 				t.Fatal("lost episode, score or escaped text metadata")
 			}
 		}
 	}
 }
 
+// TestHongguoRankingTotalCountIsNotPreviewCount 验证「Hongguo Ranking Total Count Is Not Preview Count」回归场景。
+func TestHongguoRankingTotalCountIsNotPreviewCount(t *testing.T) {
+	board, _ := findRankingBoard("hongguo-ai")
+	rows := rankingRows(1)
+	rows[0]["episodeCount"] = 100
+	result, err := parseHongguoRanking(rankingMergedFixture(board, 1, rows), board, 1)
+	if err != nil || result.Items[0].Drama.TotalEpisode != 100 {
+		t.Fatal("preview episodes replaced the actual total", err)
+	}
+	delete(rows[0], "episodeCount")
+	result, err = parseHongguoRanking(rankingMergedFixture(board, 1, rows), board, 1)
+	if err != nil || result.Items[0].Drama.TotalEpisode != nil {
+		t.Fatal("missing total was guessed from preview links", err)
+	}
+}
+
+// TestHongguoRankingMergeLoaderRejectsWrongRouteAndInvalidContent 验证「Hongguo Ranking Merge Loader Rejects Wrong Route And Invalid Content」回归场景。
 func TestHongguoRankingMergeLoaderRejectsWrongRouteAndInvalidContent(t *testing.T) {
 	board, _ := findRankingBoard("hongguo-hot")
 	body := rankingMergedFixture(board, 1, rankingRows(1))

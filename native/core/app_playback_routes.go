@@ -1,6 +1,7 @@
 package core
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -10,21 +11,28 @@ import (
 )
 
 type nativePlaybackChoice struct {
+	dramaID       string
+	episodeIndex  int
+	checks        *nativeRouteChecks
+	probeContext  context.Context
+	probeCancel   context.CancelFunc
 	danmakuSeries string
 	danmakuVideo  string
 	media         []providerMedia
 	index         int
 	qualities     []int
 	streamSession string
+	guardAccess   bool
 	created       time.Time
 }
 
+// nativePlaybackChoices 为媒体计划提取可供播放切换的同集候选。
 func nativePlaybackChoices(media providerMedia, quality int) nativePlaybackChoice {
 	choice := nativePlaybackChoice{qualities: []int{}}
 	seen := map[string]bool{}
 	qualities := map[int]bool{}
 	for _, option := range append([]providerMedia{media}, media.Variants...) {
-		if !isProviderHTTPMediaURL(option.URL) {
+		if option.pending == nil && !isProviderHTTPMediaURL(option.URL) {
 			continue
 		}
 		identity := option.URL + "\x00" + option.Referer + "\x00" + hex.EncodeToString(option.CENCKey) + "\x00" + hex.EncodeToString(option.HLSKey)
@@ -32,6 +40,9 @@ func nativePlaybackChoices(media providerMedia, quality int) nativePlaybackChoic
 			continue
 		}
 		seen[identity] = true
+		if len(choice.media) >= nativePlaybackRouteLimit {
+			break
+		}
 		option.Variants = nil
 		choice.media = append(choice.media, option)
 		if option.Quality > 0 {
@@ -55,6 +66,29 @@ func nativePlaybackChoices(media providerMedia, quality int) nativePlaybackChoic
 	return choice
 }
 
+// nativePlaybackChoicesForSource 按站源规则提取当前集的播放候选。
+func nativePlaybackChoicesForSource(source string, media providerMedia, quality int) nativePlaybackChoice {
+
+	choice := nativePlaybackChoices(media, 0)
+	choice.guardAccess = true
+	if quality > 0 {
+		sort.SliceStable(choice.media, func(i, j int) bool {
+			return choice.media[i].Quality == quality && choice.media[j].Quality != quality
+		})
+	} else if source == sourceHongguo && media.Direct {
+		for index, option := range choice.media {
+			if option.URL == media.URL && option.Referer == media.Referer &&
+				bytes.Equal(option.CENCKey, media.CENCKey) && bytes.Equal(option.HLSKey, media.HLSKey) {
+				copy(choice.media[1:index+1], choice.media[:index])
+				choice.media[0] = option
+				break
+			}
+		}
+	}
+	return choice
+}
+
+// nativeOpenPlayback 创建当前集的播放计划，并保存后续地址切换所需的会话状态。
 func (engine *nativeEngine) nativeOpenPlayback(ctx context.Context, choice nativePlaybackChoice) (nativePlan, error) {
 	if err := ctx.Err(); err != nil {
 		return nativePlan{}, err
@@ -62,8 +96,15 @@ func (engine *nativeEngine) nativeOpenPlayback(ctx context.Context, choice nativ
 	if choice.index < 0 || choice.index >= len(choice.media) {
 		return nativePlan{}, errors.New("该集没有其他可用的播放线路")
 	}
-	media := choice.media[choice.index]
-	var err error
+	if choice.checks == nil {
+		choice.checks = &nativeRouteChecks{results: map[int]nativeRouteStatus{}}
+	}
+	choice.checks.mu.Lock()
+	media, err := choice.checks.resolveLocked(ctx, engine.downloader, choice.media[choice.index], choice.index)
+	choice.checks.mu.Unlock()
+	if err != nil {
+		return nativePlan{}, err
+	}
 	if !isProviderHTTPMediaURL(media.URL) {
 		return nativePlan{}, errors.New("站源未返回有效的播放地址")
 	}
@@ -94,7 +135,22 @@ func (engine *nativeEngine) nativeOpenPlayback(ctx context.Context, choice nativ
 		if err != nil {
 			return nativePlan{}, err
 		}
-		plan.URL, choice.streamSession = stream.nativeOpen(media)
+		plan.URL, choice.streamSession = stream.nativeOpenWithAccessGuard(media, choice.guardAccess)
+	}
+	if choice.checks == nil {
+		choice.checks = &nativeRouteChecks{results: map[int]nativeRouteStatus{}}
+	}
+	choice.probeContext, choice.probeCancel = context.WithCancel(context.Background())
+	if choice.guardAccess {
+		for index, option := range choice.media {
+			status := nativeRouteStatus{Index: index, Quality: option.Quality, Status: "unknown"}
+			choice.checks.mu.Lock()
+			if cached, ok := choice.checks.results[index]; ok && time.Since(time.UnixMilli(cached.CheckedAt)) < 90*time.Second {
+				status = cached
+			}
+			choice.checks.mu.Unlock()
+			plan.Routes = append(plan.Routes, status)
+		}
 	}
 	choice.created = time.Now()
 	engine.mu.Lock()
@@ -104,6 +160,9 @@ func (engine *nativeEngine) nativeOpenPlayback(ctx context.Context, choice nativ
 	var expired []string
 	for token, old := range engine.playbacks {
 		if time.Since(old.created) > 12*time.Hour {
+			if old.probeCancel != nil {
+				old.probeCancel()
+			}
 			expired = append(expired, old.streamSession)
 			delete(engine.playbacks, token)
 		}
@@ -114,6 +173,9 @@ func (engine *nativeEngine) nativeOpenPlayback(ctx context.Context, choice nativ
 			if oldest == "" || old.created.Before(engine.playbacks[oldest].created) {
 				oldest = token
 			}
+		}
+		if cancel := engine.playbacks[oldest].probeCancel; cancel != nil {
+			cancel()
 		}
 		expired = append(expired, engine.playbacks[oldest].streamSession)
 		delete(engine.playbacks, oldest)
@@ -133,23 +195,51 @@ func (engine *nativeEngine) nativeOpenPlayback(ctx context.Context, choice nativ
 	return plan, nil
 }
 
+// nativeNextPlayback 为当前播放会话选择后续同集候选地址。
 func (engine *nativeEngine) nativeNextPlayback(ctx context.Context, session string) (nativePlan, error) {
+	return engine.nativeSelectPlaybackRoute(ctx, session, -1)
+}
+
+// nativeSelectPlaybackRoute 切换到指定同集候选地址并返回相应播放计划。
+func (engine *nativeEngine) nativeSelectPlaybackRoute(ctx context.Context, session string, index int) (nativePlan, error) {
 	engine.mu.Lock()
 	choice, exists := engine.playbacks[session]
+	stream := engine.stream
 	engine.mu.Unlock()
 	if !exists {
 		return nativePlan{}, errors.New("播放线路已失效，请重新解析播放")
 	}
-	choice.index++
+	if choice.guardAccess && stream != nil {
+		stream.mu.Lock()
+		active := stream.sessions[choice.streamSession]
+		stream.mu.Unlock()
+		if active == nil {
+			return nativePlan{}, errors.New("播放线路已失效，请重新解析播放")
+		}
+		if err := active.routeAccessError(); err != nil {
+			return nativePlan{}, err
+		}
+	}
+	if index == -1 {
+		index = choice.index + 1
+	}
+	if index < 0 || index >= len(choice.media) {
+		return nativePlan{}, errors.New("该集没有这个候选地址")
+	}
+	choice.index = index
 	return engine.nativeOpenPlayback(ctx, choice)
 }
 
+// nativeReleasePlayback 释放播放会话及其关联资源。
 func (engine *nativeEngine) nativeReleasePlayback(session string) {
 	engine.mu.Lock()
 	choice, exists := engine.playbacks[session]
 	delete(engine.playbacks, session)
 	stream := engine.stream
 	engine.mu.Unlock()
+	if exists && choice.probeCancel != nil {
+		choice.probeCancel()
+	}
 	if exists && stream != nil && choice.streamSession != "" {
 		stream.nativeRelease(choice.streamSession)
 	}

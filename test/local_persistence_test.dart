@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:duanju_app/app_build.dart';
 import 'package:duanju_app/local_profiles.dart';
 import 'package:duanju_app/local_snapshot.dart';
 import 'package:duanju_app/local_store.dart';
@@ -210,6 +211,145 @@ void main() {
       expect(restored.playbackPreferences.autoAdvance, isFalse);
     },
   );
+
+  for (final fullMode in [false, true]) {
+    for (final greenMode in [false, true]) {
+      test(
+        'legacy flags $fullMode/$greenMode preserve records across restart',
+        () async {
+          final profiles = jsonEncode([
+            const LocalProfile(
+              id: 'default',
+              name: '管理员',
+              admin: true,
+            ).toJson(),
+          ]);
+          final values = <String, Object>{
+            'fullMode': fullMode,
+            'greenMode': greenMode,
+            'profiles': profiles,
+            'activeProfile': 'default',
+            'favorites': jsonEncode([drama.toJson()]),
+            'history': jsonEncode([
+              WatchEntry(
+                drama: drama,
+                episode: 1,
+                position: 15,
+                duration: 100,
+                updatedAt: DateTime(2026, 10, 22),
+              ).toJson(),
+            ]),
+          };
+          final original = jsonEncode({'version': 1, 'values': values});
+          final (store, platform) = await create({
+            LocalSnapshot.storageKey: original,
+            'plugin_secret': 'preserved',
+          });
+          expect(store.configurationError, isNull);
+          expect(store.locked, isFalse);
+          expect(store.sourceGateOff, isTrue);
+          expect(store.allowsSource('huangdou'), allSourcesEnabled);
+          expect(store.favorites.single.id, drama.id);
+          expect(store.watched(drama.id)?.position, 15);
+          expect(
+            store.preferences.getString(LocalSnapshot.storageKey),
+            original,
+          );
+          expect(platform.snapshots, 0);
+          await store.setThemeMode('dark');
+          final restored = await restart(platform);
+          expect(restored.configurationError, isNull);
+          expect(restored.themeMode, 'dark');
+          expect(restored.favorites.single.id, drama.id);
+          expect(restored.watched(drama.id)?.position, 15);
+          final saved = LocalSnapshot(restored.preferences);
+          expect(saved.getBool('fullMode'), fullMode);
+          expect(saved.getBool('greenMode'), greenMode);
+          expect(saved.getString('profiles'), profiles);
+          expect(restored.preferences.getString('plugin_secret'), 'preserved');
+        },
+      );
+    }
+  }
+
+  test(
+    'legacy flat preferences preserve flags when creating a snapshot',
+    () async {
+      final (store, platform) = await create({
+        'fullMode': true,
+        'greenMode': false,
+        'favorites': jsonEncode([drama.toJson()]),
+      });
+      expect(store.configurationError, isNull);
+      await store.setThemeMode('light');
+      final restored = await restart(platform);
+      expect(restored.favorites.single.id, drama.id);
+      final snapshot = LocalSnapshot(restored.preferences);
+      expect(snapshot.getBool('fullMode'), true);
+      expect(snapshot.getBool('greenMode'), false);
+    },
+  );
+
+  test('legacy mode flags do not unlock a password-protected profile', () async {
+    final (store, platform) = await create({
+      LocalSnapshot.storageKey: jsonEncode({
+        'version': 1,
+        'values': {
+          'fullMode': true,
+          'greenMode': false,
+          'profiles': jsonEncode([
+            const LocalProfile(
+              id: 'default',
+              name: '管理员',
+              admin: true,
+              salt: '11111111111111111111111111111111',
+              pinHash:
+                  'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+            ).toJson(),
+          ]),
+        },
+      }),
+    });
+    expect(store.configurationError, isNull);
+    expect(store.locked, isTrue);
+    expect(store.forceLogin, isTrue);
+    expect(store.canDownload, isFalse);
+    expect(store.sources, isEmpty);
+    expect(platform.snapshots, 0);
+  });
+
+  for (final invalid in <Map<String, Object>>[
+    {'fullMode': 'true'},
+    {'greenMode': 1},
+    {'unknownMode': true},
+  ]) {
+    test(
+      'invalid legacy or unknown fields remain locked: ${invalid.keys.single}',
+      () async {
+        final original = jsonEncode({
+          'version': 1,
+          'values': {
+            'profiles': jsonEncode([
+              const LocalProfile(
+                id: 'default',
+                name: '管理员',
+                admin: true,
+              ).toJson(),
+            ]),
+            ...invalid,
+          },
+        });
+        final (store, platform) = await create({
+          LocalSnapshot.storageKey: original,
+        });
+        expect(store.configurationError, isNotNull);
+        expect(store.locked, isTrue);
+        expect(store.canDownload, isFalse);
+        expect(store.preferences.getString(LocalSnapshot.storageKey), original);
+        expect(platform.snapshots, 0);
+      },
+    );
+  }
 
   for (final records in <Object>[
     'broken-json',

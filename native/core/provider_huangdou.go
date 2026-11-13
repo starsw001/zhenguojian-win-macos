@@ -35,6 +35,7 @@ type huangdouAPIClient struct {
 	deviceID  string
 }
 
+// newHuangdouAPIClient 取得新黄豆API请求使用的客户端。
 func newHuangdouAPIClient(d *Downloader) *huangdouAPIClient {
 	id := randomHex(16)
 	if id == "" {
@@ -49,6 +50,7 @@ func newHuangdouAPIClient(d *Downloader) *huangdouAPIClient {
 	return &huangdouAPIClient{d: d, host: host, sessionID: id, deviceID: id}
 }
 
+// fetchHuangdouChapters 获取黄豆分集列表。
 func (d *Downloader) fetchHuangdouChapters(ctx context.Context, sourceID string) (string, []Chapter, error) {
 	sourceID = strings.TrimPrefix(strings.TrimSpace(sourceID), "rp_")
 	data, err := d.huangdouDetail(ctx, sourceID)
@@ -83,6 +85,7 @@ func (d *Downloader) fetchHuangdouChapters(ctx context.Context, sourceID string)
 	return title, uniqueChapters(chapters), nil
 }
 
+// resolveHuangdouPlayback 解析黄豆播放。
 func (d *Downloader) resolveHuangdouPlayback(ctx context.Context, client *huangdouAPIClient, sourceID string, seq int) (providerMedia, error) {
 	var decoded any
 	if err := client.call(ctx, "/drama/play", map[string]any{"id": sourceID, "seq": strconv.Itoa(seq)}, &decoded); err != nil {
@@ -118,6 +121,7 @@ func (d *Downloader) resolveHuangdouPlayback(ctx context.Context, client *huangd
 	return result, nil
 }
 
+// call 处理黄豆 API 客户端的 API 请求与响应。
 func (c *huangdouAPIClient) call(ctx context.Context, path string, data map[string]any, out *any) error {
 	retries := c.d.cfg.Retries
 	if retries < 1 {
@@ -155,6 +159,7 @@ type huangdouAPIError struct {
 	message string
 }
 
+// Error 返回当前错误的可显示文本。
 func (failure *huangdouAPIError) Error() string {
 	if failure.code != "preview" && isHuangdouAccessError(failure) {
 		return failure.message + "（站点权限限制，已停止自动重试；切换代理不会解锁）"
@@ -162,6 +167,7 @@ func (failure *huangdouAPIError) Error() string {
 	return failure.message
 }
 
+// isHuangdouAccessError 判断是否为黄豆访问错误。
 func isHuangdouAccessError(err error) bool {
 	var failure *huangdouAPIError
 	if !errors.As(err, &failure) {
@@ -175,6 +181,7 @@ func isHuangdouAccessError(err error) bool {
 	}
 }
 
+// huangdouPreviewOnly 判断黄豆响应是否仅允许预览。
 func huangdouPreviewOnly(data map[string]any, media, host string) bool {
 	switch strings.ToLower(mapString(data, "is_preview", "isPreview")) {
 	case "true", "1", "y":
@@ -192,6 +199,7 @@ func huangdouPreviewOnly(data map[string]any, media, host string) bool {
 	return path == "preview.mp4" || path == "preview.m3u8" || strings.HasSuffix(path, "/preview.mp4") || strings.HasSuffix(path, "/preview.m3u8")
 }
 
+// callOnce 执行一次黄豆 API 客户端的 API 请求与响应。
 func (c *huangdouAPIClient) callOnce(ctx context.Context, path string, data map[string]any, out *any) error {
 	path = "/" + strings.TrimLeft(path, "/")
 	rid := uuidLike()
@@ -272,6 +280,7 @@ func (c *huangdouAPIClient) callOnce(ctx context.Context, path string, data map[
 	return nil
 }
 
+// huangdouKey 取得黄豆接口编解码使用的密钥材料。
 func huangdouKey(rid string) ([]byte, error) {
 	clean := strings.ReplaceAll(rid, "-", "")
 	b, err := hex.DecodeString(clean)
@@ -283,6 +292,7 @@ func huangdouKey(rid string) ([]byte, error) {
 	return mac.Sum(nil), nil
 }
 
+// huangdouDecode 解码黄豆。
 func huangdouDecode(blob, key []byte) (any, error) {
 	if len(blob) > providerMaxBodyBytes {
 		return nil, errors.New("黄豆响应过大")
@@ -329,6 +339,7 @@ func huangdouDecode(blob, key []byte) (any, error) {
 	return decoded, nil
 }
 
+// aesCBCEncrypt 使用给定密钥和初始向量执行 AES-CBC 加密。
 func aesCBCEncrypt(plain, key, iv []byte) ([]byte, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
@@ -340,6 +351,7 @@ func aesCBCEncrypt(plain, key, iv []byte) ([]byte, error) {
 	return out, nil
 }
 
+// aesCBCDecrypt 使用给定密钥和初始向量执行 AES-CBC 解密。
 func aesCBCDecrypt(cipherText, key, iv []byte) ([]byte, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
@@ -353,6 +365,7 @@ func aesCBCDecrypt(cipherText, key, iv []byte) ([]byte, error) {
 	return pkcs7Unpad(out, block.BlockSize())
 }
 
+// huangdouDramaFromMap 将黄豆响应节点转换为统一作品模型。
 func huangdouDramaFromMap(item map[string]any) Drama {
 	sourceID := strings.TrimPrefix(firstNonEmpty(mapString(item, "id"), mapString(item, "drama_id")), "rp_")
 	if sourceID == "" {
@@ -371,6 +384,7 @@ func huangdouDramaFromMap(item map[string]any) Drama {
 	return Drama{VIP: huangdouVIPFlag(item), ID: providerDramaID(sourceHuangdou, sourceID), Source: sourceHuangdou, SourceID: sourceID, Title: title, Name: title, Desc: firstNonEmpty(mapString(item, "description"), mapString(item, "summary")), Intro: firstNonEmpty(mapString(item, "description"), mapString(item, "summary")), Cover: cover, CoverURL: cover, CategoryName: category, ChannelName: "tideember.cc", Remark: remark, TotalEpisode: mapString(item, "episode_count"), EpisodeCount: mapString(item, "episode_count"), Tags: mapStringSlice(item, "tags"), ReleaseStatus: releaseStatus, Heat: mapString(item, "hot_rate"), Views: normalizeViews(mapString(item, "click")), OnlineDate: providerReleaseDate(mapString(item, "issue_date"))}
 }
 
+// huangdouDataMap 从黄豆接口响应中提取数据映射。
 func huangdouDataMap(v any) map[string]any {
 	m, _ := v.(map[string]any)
 	if data, ok := m["data"].(map[string]any); ok {
@@ -379,6 +393,7 @@ func huangdouDataMap(v any) map[string]any {
 	return m
 }
 
+// huangdouList 从黄豆接口响应中提取列表数据。
 func huangdouList(v any) []map[string]any {
 	switch x := v.(type) {
 	case []any:
@@ -401,6 +416,7 @@ func huangdouList(v any) []map[string]any {
 	return nil
 }
 
+// atoiDefault 将文本转换为整数，转换失败时返回默认值。
 func atoiDefault(s string, fallback int) int {
 	if n, err := strconv.Atoi(strings.TrimSpace(s)); err == nil {
 		return n
@@ -408,6 +424,7 @@ func atoiDefault(s string, fallback int) int {
 	return fallback
 }
 
+// randomHex 生成随机字节并返回十六进制文本。
 func randomHex(n int) string {
 	b := make([]byte, n)
 	if _, err := rand.Read(b); err != nil {
@@ -416,6 +433,7 @@ func randomHex(n int) string {
 	return hex.EncodeToString(b)
 }
 
+// uuidLike 生成协议使用的 UUID 风格标识。
 func uuidLike() string {
 	raw := randomHex(16)
 	if len(raw) != 32 {

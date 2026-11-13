@@ -12,6 +12,7 @@ import (
 	"testing"
 )
 
+// TestNativeCategoryAliasesAndDetailPersistence 验证「Native Category Aliases And Detail Persistence」回归场景。
 func TestNativeCategoryAliasesAndDetailPersistence(t *testing.T) {
 	for _, drama := range []Drama{
 		{CategoryName: "都市"}, {CategoryNameSnake: "都市"}, {TypeName: "都市"}, {TypeNameSnake: "都市"},
@@ -43,6 +44,7 @@ func TestNativeCategoryAliasesAndDetailPersistence(t *testing.T) {
 	}
 }
 
+// TestNativeRankingPermissionsAndPersistentCache 验证「Native Ranking Permissions And Persistent Cache」回归场景。
 func TestNativeRankingPermissionsAndPersistentCache(t *testing.T) {
 	for _, board := range rankingBoards {
 		err := nativeAuthorizeInput(nativeInput{Action: "rankings", Board: board.ID, Source: sourceHongguo})
@@ -69,6 +71,7 @@ func TestNativeRankingPermissionsAndPersistentCache(t *testing.T) {
 	}
 }
 
+// syntheticHEIC 返回syntheticHEIC。
 func syntheticHEIC(width uint32, external bool) []byte {
 	box := func(kind string, data ...[]byte) []byte {
 		body := bytes.Join(data, nil)
@@ -94,6 +97,7 @@ func syntheticHEIC(width uint32, external bool) []byte {
 	return append(box("ftyp", []byte{'m', 'i', 'f', '1', 0, 0, 0, 0, 'm', 'i', 'f', '1', 'h', 'e', 'i', 'c'}), meta...)
 }
 
+// TestNativeHEICPreparationUsesBoundedSyntheticData 验证「Native HEIC Preparation Uses Bounded Synthetic Data」回归场景。
 func TestNativeHEICPreparationUsesBoundedSyntheticData(t *testing.T) {
 	data := syntheticHEIC(16, false)
 	parsed, err := extractHEICImage(data)
@@ -124,6 +128,7 @@ func TestNativeHEICPreparationUsesBoundedSyntheticData(t *testing.T) {
 	}
 }
 
+// TestNativeCoverMetadataRejectsOtherDramaAndKeepsCurrentHost 验证「Native Cover Metadata Rejects Other Drama And Keeps Current Host」回归场景。
 func TestNativeCoverMetadataRejectsOtherDramaAndKeepsCurrentHost(t *testing.T) {
 	patch := Drama{ID: "huangguoai:100", Source: sourceHuangguoAI, SourceID: "100"}
 	body := `<script type="application/ld+json">{"@type":"VideoObject","url":"/detail/100/","name":"合成剧目","thumbnailUrl":"https://new-cover.example.test/synthetic.jpg"}</script>`

@@ -62,6 +62,135 @@ class SourceFixtureRepository extends FixtureRepository {
 }
 
 void main() {
+  testWidgets(
+    'a fresh source manager permits every compiled source without a pin',
+    (tester) async {
+      SharedPreferences.setMockInitialValues({});
+      final store = testStore(await SharedPreferences.getInstance());
+      final repository = SourceFixtureRepository();
+      for (final source in SourceSite.values) {
+        await tester.pumpWidget(
+          MaterialApp(
+            home: SourcesScreen(
+              key: ValueKey(source.id),
+              repository: repository,
+              store: store,
+              initialSource: source.id,
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+        final button = find.byKey(ValueKey('update-${source.id}'));
+        expect(button, findsOneWidget, reason: source.id);
+        expect(
+          tester.widget<FilledButton>(button).onPressed,
+          isNotNull,
+          reason: source.id,
+        );
+        expect(store.allowsSource(source.id), isTrue);
+        expect(find.textContaining('未解锁 ·'), findsNothing);
+      }
+      expect(repository.statusRequests.toSet(), {
+        for (final source in SourceSite.values) source.id,
+      });
+      expect(repository.operations, isEmpty);
+      expect(store.preferences.getKeys(), isEmpty);
+      await tester.pumpWidget(const SizedBox.shrink());
+      store.dispose();
+    },
+  );
+
+  testWidgets(
+    'source manager keeps failed download history beside the latest MP4 result',
+    (tester) async {
+      SharedPreferences.setMockInitialValues({});
+      final store = testStore(await SharedPreferences.getInstance());
+      final repository = SourceFixtureRepository();
+      repository.statuses['hongguo'] = SourceStatus.fromJson({
+        'source': 'hongguo',
+        'health': {
+          'state': 'decoded',
+          'networkMode': 'direct',
+          'steps': [],
+          'downloadCheck': {
+            'name': '独立 MP4',
+            'state': 'ok',
+            'message': '完整 MP4 与本地实播通过',
+          },
+        },
+        'healthHistory': [
+          {
+            'state': 'decoded',
+            'networkMode': 'auto',
+            'steps': [],
+            'downloadCheck': {
+              'name': '前次下载',
+              'state': 'failed',
+              'message': '前次 502，续传分片保留',
+            },
+          },
+        ],
+      });
+      await tester.pumpWidget(
+        MaterialApp(
+          home: SourcesScreen(repository: repository, store: store),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.textContaining('完整 MP4 与本地实播通过'), findsOneWidget);
+      final history = find.byKey(const ValueKey('source-history-hongguo'));
+      await tester.ensureVisible(history);
+      await tester.tap(
+        find.descendant(of: history, matching: find.text('历史检测（1）')),
+      );
+      await tester.pumpAndSettle();
+      expect(find.textContaining('前次 502，续传分片保留'), findsOneWidget);
+      expect(repository.operations, isEmpty);
+      await tester.pumpWidget(const SizedBox.shrink());
+      store.dispose();
+    },
+  );
+
+  test(
+    'all registered API sources expose online search without requiring pagination',
+    () {
+      for (final source in SourceSite.duanjuValues) {
+        expect(source.onlineSearch, isTrue, reason: source.id);
+      }
+    },
+  );
+
+  testWidgets(
+    'admin management retains locked and failed sources without unlocking them',
+    (tester) async {
+      SharedPreferences.setMockInitialValues({});
+      final store = testStore(await SharedPreferences.getInstance());
+      await store.enableSourceGate('666666');
+      store.lockSources();
+      final repository = SourceFixtureRepository();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: SourcesScreen(repository: repository, store: store),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(
+        repository.statusRequests.toSet(),
+        SourceSite.values.map((source) => source.id).toSet(),
+      );
+      if (SourceSite.values.length > SourceSite.primaryValues.length) {
+        final source = SourceSite.values.last;
+        final button = find.byKey(ValueKey('update-${source.id}'));
+        await tester.scrollUntilVisible(button, 500, maxScrolls: 100);
+        expect(tester.widget<FilledButton>(button).onPressed, isNull);
+        expect(store.allowsSource(source.id), isFalse);
+        expect(find.byKey(ValueKey('source-${source.id}')), findsOneWidget);
+      }
+      await tester.pumpWidget(const SizedBox.shrink());
+      store.dispose();
+    },
+  );
+
   testWidgets('source list keeps bottom content above system navigation', (
     tester,
   ) async {
@@ -119,7 +248,7 @@ void main() {
       await tester.tap(find.text('停止').first);
       await tester.pumpAndSettle();
       expect(repository.operations, ['hongguo:update', 'hongguo:cancel']);
-      expect(find.text('已停止'), findsOneWidget);
+      expect(find.text('上次目录任务：已停止'), findsOneWidget);
       expect(find.text('3 部'), findsWidgets);
       await tester.pumpWidget(const SizedBox.shrink());
       store.dispose();
@@ -131,7 +260,13 @@ void main() {
     (tester) async {
       SharedPreferences.setMockInitialValues({
         'profiles': jsonEncode([
-          const LocalProfile(id: 'default', name: '管理员', admin: true).toJson(),
+          LocalProfile(
+            id: 'default',
+            name: '管理员',
+            admin: true,
+            salt: gateSalt,
+            pinHash: await testPinHasher(gatePin, gateSalt),
+          ).toJson(),
           const LocalProfile(
             id: 'viewer',
             name: '只看红果',
@@ -236,7 +371,7 @@ void main() {
         await tester.pump(const Duration(seconds: 2));
         await tester.pumpAndSettle();
         expect(
-          find.text(operation == 'check' ? '连接检测通过' : '目录正常 · 播放未检测'),
+          find.text(operation == 'check' ? '连接检测通过 · 未做播放器实播' : '目录正常 · 播放未检测'),
           findsOneWidget,
         );
         expect(sample, findsNothing);
@@ -312,10 +447,13 @@ void main() {
       expect(find.textContaining('HTTP 403'), findsNothing);
       final toggle = find.byKey(const ValueKey('health-toggle-hongguo'));
       await tester.ensureVisible(toggle);
+      await tester.pumpAndSettle();
       await tester.tap(toggle);
       await tester.pumpAndSettle();
       expect(find.textContaining('HTTP 403'), findsOneWidget);
       expect(find.textContaining('连接检测通过'), findsNothing);
+      await tester.ensureVisible(toggle);
+      await tester.pumpAndSettle();
       await tester.tap(toggle);
       await tester.pumpAndSettle();
       expect(find.textContaining('HTTP 403'), findsNothing);

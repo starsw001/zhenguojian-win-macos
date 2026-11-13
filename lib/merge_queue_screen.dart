@@ -1,11 +1,13 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 
 import 'core_bridge.dart';
 import 'local_store.dart';
+import 'local_merge_candidates.dart';
+import 'merge_candidates_dialog.dart';
 import 'media_library.dart';
-import 'models.dart';
 import 'widgets.dart';
 
 class MergeQueueScreen extends StatefulWidget {
@@ -15,17 +17,21 @@ class MergeQueueScreen extends StatefulWidget {
     required this.repository,
     required this.store,
     this.addOnOpen = false,
+    this.initialDramaId,
   });
   final MediaLibrary library;
   final AppRepository repository;
   final LocalStore store;
   final bool addOnOpen;
+  final String? initialDramaId;
   @override
   State<MergeQueueScreen> createState() => _MergeQueueScreenState();
 }
 
 class _MergeQueueScreenState extends State<MergeQueueScreen> {
-  bool _loading = true, _adding = false;
+  bool _loading = true, _adding = false, _refreshing = false;
+  LocalMergeSnapshot _snapshot = const LocalMergeSnapshot();
+  Future<LocalMergeSnapshot>? _candidateRead;
   String? _error;
   late final int _epoch = widget.store.profileEpoch;
   bool get _allowed =>
@@ -39,7 +45,13 @@ class _MergeQueueScreenState extends State<MergeQueueScreen> {
   Future<void> _load() async {
     try {
       await widget.library.merges.load();
-      if (mounted && _allowed && widget.addOnOpen) await _add();
+      if (mounted && _allowed) {
+        if (widget.addOnOpen) {
+          await _add();
+        } else {
+          await _readCandidates();
+        }
+      }
     } catch (error) {
       if (mounted) setState(() => _error = error.toString());
     } finally {
@@ -47,102 +59,89 @@ class _MergeQueueScreenState extends State<MergeQueueScreen> {
     }
   }
 
+  String _sourceStamp() =>
+      widget.store.sources.map((source) => source.id).join(',');
+
+  Future<LocalMergeSnapshot> _readCandidates() {
+    final pending = _candidateRead;
+    if (pending != null) return pending;
+    if (!mounted || !_allowed) throw AppFailure('用户已切换，请重新打开合并队列');
+    final stamp = _sourceStamp();
+    setState(() => _refreshing = true);
+    late final Future<LocalMergeSnapshot> result;
+    result =
+        (() async {
+          try {
+            final snapshot = await readLocalMergeSnapshot(
+              widget.library,
+              widget.repository,
+              widget.store.sources.map((source) => source.id).toSet(),
+            );
+            if (!mounted || !_allowed || stamp != _sourceStamp()) {
+              throw AppFailure('用户权限已变化，请重新打开合并队列');
+            }
+            setState(() {
+              _snapshot = snapshot;
+              _error = null;
+            });
+            return snapshot;
+          } finally {
+            if (mounted) setState(() => _refreshing = false);
+          }
+        })().whenComplete(() {
+          if (identical(_candidateRead, result)) _candidateRead = null;
+        });
+    _candidateRead = result;
+    return result;
+  }
+
+  Future<void> _refresh() async {
+    try {
+      await _readCandidates();
+    } catch (error) {
+      if (mounted) setState(() => _error = error.toString());
+    }
+  }
+
   Future<void> _add() async {
     if (_adding || !_allowed) return;
     setState(() => _adding = true);
     try {
-      final jobs = await widget.repository.downloads();
+      final snapshot = await _readCandidates();
       if (!mounted || !_allowed) return;
-      final groups = <String, List<DownloadJob>>{};
-      for (final job in jobs.where((job) => job.completed)) {
-        (groups[job.drama.id] ??= []).add(job);
-      }
-      final rows = groups.entries.toList();
-      final errors = <String, String>{};
-      for (final row in rows) {
-        try {
-          continuousMergeJobs(row.value);
-        } catch (error) {
-          errors[row.key] = error.toString();
-        }
-      }
-      final selected = <String>{};
-      var cleanup = false;
-      final accepted = await showDialog<bool>(
+      final selected = await showDialog<MergeCandidateSelection>(
         context: context,
-        builder: (context) => StatefulBuilder(
-          builder: (context, change) => AlertDialog(
-            title: const Text('选择要合并的剧'),
-            content: SizedBox(
-              width: 520,
-              height: MediaQuery.sizeOf(context).height * .6,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  const Text('按已有的连续集数合并，每次最多加入 50 部。中断后可从保存的步骤继续。'),
-                  const SizedBox(height: 8),
-                  Expanded(
-                    child: rows.isEmpty
-                        ? const Center(child: Text('请先下载至少两集连续视频'))
-                        : ListView.builder(
-                            itemCount: rows.length,
-                            itemBuilder: (_, index) {
-                              final row = rows[index];
-                              return CheckboxListTile(
-                                contentPadding: EdgeInsets.zero,
-                                value: selected.contains(row.key),
-                                title: Text(row.value.first.drama.title),
-                                subtitle: Text(
-                                  errors[row.key] ??
-                                      '已下载 ${row.value.length} 集 · 第 ${row.value.map((job) => job.episode.number).reduce((a, b) => a < b ? a : b)}–${row.value.map((job) => job.episode.number).reduce((a, b) => a > b ? a : b)} 集',
-                                ),
-                                onChanged: errors.containsKey(row.key)
-                                    ? null
-                                    : (value) => change(() {
-                                        if (value == true &&
-                                            selected.length < 50) {
-                                          selected.add(row.key);
-                                        } else {
-                                          selected.remove(row.key);
-                                        }
-                                      }),
-                              );
-                            },
-                          ),
-                  ),
-                  CheckboxListTile(
-                    contentPadding: EdgeInsets.zero,
-                    value: cleanup,
-                    title: const Text('完成后删除原分集'),
-                    subtitle: const Text('仅在成品通过完整解码并保存后删除；默认保留原视频。'),
-                    onChanged: (value) => change(() => cleanup = value == true),
-                  ),
-                ],
-              ),
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context, false),
-                child: const Text('取消'),
-              ),
-              FilledButton(
-                onPressed: selected.isEmpty
-                    ? null
-                    : () => Navigator.pop(context, true),
-                child: Text('加入 ${selected.length} 部'),
-              ),
-            ],
-          ),
+        builder: (_) => MergeCandidatesDialog(
+          snapshot: snapshot,
+          refresh: _readCandidates,
+          initialDramaId: widget.initialDramaId,
         ),
       );
-      if (accepted != true || !mounted || !_allowed) return;
+      if (selected == null || !mounted || !_allowed) return;
+      final current = await _readCandidates();
+      if (!mounted || !_allowed) return;
+      final available = {
+        for (final row in current.candidates)
+          if (row.available) row.id: row,
+      };
+      for (final row in selected.candidates) {
+        if (available[row.id]?.fingerprint != row.fingerprint) {
+          throw AppFailure('本地分集已移动、删除或改变，请刷新后重新选择；原有记录和文件保留。');
+        }
+      }
       final count = await widget.library.merges.enqueue([
-        for (final id in selected) groups[id]!,
-      ], cleanup: cleanup);
+        for (final row in selected.candidates) available[row.id]!.jobs,
+      ], cleanup: selected.cleanup);
       if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('已加入 $count 部，已有合并任务自动跳过')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              count == 0
+                  ? '已有相同任务或合并成品，不会重复合并。完成的任务可点击「查看合并成品」。'
+                  : '已加入 $count 部；完成后点击「查看合并成品」，默认保留原分集。',
+            ),
+          ),
+        );
       }
     } catch (error) {
       if (mounted) setState(() => _error = error.toString());
@@ -160,6 +159,25 @@ class _MergeQueueScreenState extends State<MergeQueueScreen> {
     }
   }
 
+  Future<void> _openOutput(MergeQueueJob job) async {
+    if (!_allowed) return;
+    try {
+      await widget.library.reload();
+      if (!mounted || !_allowed) return;
+      final item = widget.library.items
+          .where((item) => item.id == job.outputId && item.merged)
+          .firstOrNull;
+      if (item == null) throw AppFailure('合并成品记录缺失，请刷新后重试');
+      final file = File(widget.library.fileFor(item));
+      if (!await file.exists() || await file.length() != item.bytes) {
+        throw AppFailure('合并成品已移动、删除或改变，原分集和记录保留');
+      }
+      if (mounted && _allowed) Navigator.pop(context, job.outputId);
+    } catch (error) {
+      if (mounted) setState(() => _error = error.toString());
+    }
+  }
+
   @override
   Widget build(BuildContext context) => AnimatedBuilder(
     animation: widget.library,
@@ -169,6 +187,17 @@ class _MergeQueueScreenState extends State<MergeQueueScreen> {
         appBar: AppBar(
           title: const Text('合并队列'),
           actions: [
+            IconButton(
+              key: const ValueKey('merge-queue-refresh'),
+              tooltip: '刷新下载目录',
+              onPressed: _adding || _refreshing || !_allowed ? null : _refresh,
+              icon: _refreshing
+                  ? const SizedBox.square(
+                      dimension: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.refresh),
+            ),
             IconButton(
               tooltip: '添加多部剧',
               onPressed: _adding || !_allowed ? null : _add,
@@ -183,7 +212,14 @@ class _MergeQueueScreenState extends State<MergeQueueScreen> {
             : Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  if (_adding) const LinearProgressIndicator(),
+                  if (_adding || _refreshing) const LinearProgressIndicator(),
+                  if (_snapshot.missing > 0)
+                    Padding(
+                      padding: const EdgeInsets.all(12),
+                      child: Text(
+                        '当前下载目录中 ${_snapshot.missing} 条旧记录对应的文件缺失或不匹配，添加剧集时已过滤；原任务记录保留。',
+                      ),
+                    ),
                   if (_error != null || widget.library.merges.error.isNotEmpty)
                     Padding(
                       padding: const EdgeInsets.all(16),
@@ -245,6 +281,17 @@ class _MergeQueueScreenState extends State<MergeQueueScreen> {
                                       Wrap(
                                         spacing: 8,
                                         children: [
+                                          if (job.state == 'completed')
+                                            FilledButton.icon(
+                                              key: ValueKey(
+                                                'merge-output:${job.id}',
+                                              ),
+                                              onPressed: () => _openOutput(job),
+                                              icon: const Icon(
+                                                Icons.video_library_outlined,
+                                              ),
+                                              label: const Text('查看合并成品'),
+                                            ),
                                           if (job.active)
                                             TextButton.icon(
                                               onPressed: () =>

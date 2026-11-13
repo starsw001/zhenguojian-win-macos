@@ -18,17 +18,50 @@ import (
 
 const huangjuNewestCategory = "@new"
 
+// splitHuangjuCategoryName 拆分黄剧分类名称。
+func splitHuangjuCategoryName(name string) []string {
+	return strings.FieldsFunc(name, func(r rune) bool {
+		return strings.ContainsRune(",，、;；|", r)
+	})
+}
+
+// validHuangjuCategoryName 判断是否有效：黄剧分类名称。
+func validHuangjuCategoryName(name string) bool {
+	return name != "" && len([]rune(name)) <= 24 && !strings.ContainsAny(name, ",，、;；|") && strings.IndexFunc(name, unicode.IsControl) < 0
+}
+
+// cleanHuangjuCategories 清理黄剧分类列表。
+func cleanHuangjuCategories(entries []nativeCategory) []nativeCategory {
+	var categories []nativeCategory
+	seenIDs, seenNames := map[string]bool{}, map[string]bool{}
+	for _, entry := range entries {
+		entry.Name = strings.TrimSpace(entry.Name)
+		if entry.ID == "hot" || !validNativeCategory(sourceHuangju, entry.ID) || !validHuangjuCategoryName(entry.Name) || seenIDs[entry.ID] || seenNames[entry.Name] {
+			continue
+		}
+		if entry.ID == "" && entry.Name != "全部" || entry.ID == huangjuNewestCategory && entry.Name != "最新" {
+			continue
+		}
+		seenIDs[entry.ID], seenNames[entry.Name] = true, true
+		categories = append(categories, entry)
+	}
+	return categories
+}
+
+// validHuangjuID 判断是否有效：黄剧标识。
 func validHuangjuID(value string) bool {
 	return value != "" && len(value) <= 450 && strings.TrimSpace(value) == value && value != "." && value != ".." &&
 		!strings.ContainsAny(value, "/\\:?#%|\"<>") && strings.IndexFunc(value, unicode.IsControl) < 0
 }
 
+// huangjuInteger 从黄剧响应值中读取整数。
 func huangjuInteger(value any, maximum int) (int, bool) {
 	text := nativeText(value)
 	number, err := strconv.Atoi(text)
 	return number, err == nil && number >= 0 && number <= maximum
 }
 
+// huangjuCategoryNames 提取黄剧响应中的分类名称。
 func huangjuCategoryNames(row map[string]any) []string {
 	var names []string
 	seen := map[string]bool{}
@@ -40,10 +73,12 @@ func huangjuCategoryNames(row map[string]any) []string {
 		case string:
 			name = value
 		}
-		name = strings.TrimSpace(name)
-		if name != "" && len([]rune(name)) <= 48 && !seen[name] && len(names) < 24 {
-			seen[name] = true
-			names = append(names, name)
+		for _, part := range splitHuangjuCategoryName(name) {
+			part = strings.TrimSpace(part)
+			if validHuangjuCategoryName(part) && !seen[part] && len(names) < 24 {
+				seen[part] = true
+				names = append(names, part)
+			}
 		}
 	}
 	add(row["category"])
@@ -55,6 +90,7 @@ func huangjuCategoryNames(row map[string]any) []string {
 	return names
 }
 
+// huangjuDramaFromMap 将黄剧响应节点转换为统一作品模型。
 func huangjuDramaFromMap(row map[string]any, site, sourceID string) (Drama, error) {
 	id := mapString(row, "id")
 	slug := mapString(row, "slug")
@@ -114,32 +150,32 @@ func huangjuDramaFromMap(row map[string]any, site, sourceID string) (Drama, erro
 	}, nil
 }
 
+// fetchHuangjuCategories 获取黄剧分类列表。
 func (d *Downloader) fetchHuangjuCategories(ctx context.Context) ([]nativeCategory, error) {
-	response, err := d.huangjuClient().get(ctx, "/categories", nil, 256<<10)
+	response, err := d.huangjuClient().get(ctx, "/categories", nil, 2<<20)
 	if err != nil {
 		return nil, err
 	}
 	rows, valid := huangjuPayload(response.value).([]any)
-	if !valid || len(rows) > 300 {
+	if !valid || len(rows) > nativeCategoryMaxEntries {
 		return nil, errors.New("剧果分类数据格式无效")
 	}
 	categories := []nativeCategory{{ID: huangjuNewestCategory, Name: "最新"}}
-	seen := map[string]bool{huangjuNewestCategory: true}
 	for _, entry := range rows {
 		row, _ := entry.(map[string]any)
 		id, name := mapString(row, "slug"), mapString(row, "name")
-		if id == "hot" {
-			continue
+		if id != "" {
+			categories = append(categories, nativeCategory{ID: id, Name: name})
 		}
-		if !validNativeCategory(sourceHuangju, id) || id == "" || name == "" || len([]rune(name)) > 48 || seen[id] {
-			return nil, errors.New("剧果分类数据包含无效或重复条目")
-		}
-		seen[id] = true
-		categories = append(categories, nativeCategory{ID: id, Name: name})
+	}
+	categories = cleanHuangjuCategories(categories)
+	if len(rows) > 0 && len(categories) == 1 {
+		return nil, errors.New("剧果暂未返回有效的独立分类，请稍后重试")
 	}
 	return categories, nil
 }
 
+// fetchHuangjuCatalogPage 获取黄剧目录页。
 func (d *Downloader) fetchHuangjuCatalogPage(ctx context.Context, page int, category, query string) ([]Drama, bool, error) {
 	if page < 1 || page > 1000000 || len(query) > 1024 || !validNativeCategory(sourceHuangju, category) {
 		return nil, false, errors.New("剧果目录查询参数无效")
@@ -208,6 +244,7 @@ func (d *Downloader) fetchHuangjuCatalogPage(ctx context.Context, page int, cate
 	return items, hasMore, nil
 }
 
+// fetchHuangjuDetail 获取黄剧详情。
 func (d *Downloader) fetchHuangjuDetail(ctx context.Context, sourceID string) (Drama, []Chapter, error) {
 	if !validHuangjuID(sourceID) {
 		return Drama{}, nil, errors.New("剧果剧集地址无效")
@@ -267,6 +304,7 @@ func (d *Downloader) fetchHuangjuDetail(ctx context.Context, sourceID string) (D
 
 var huangjuSignedCookie = regexp.MustCompile(`(?:^|[,;\s])CloudFront-(Policy|Signature|Key-Pair-Id)\s*=\s*([^;,\s"']+)`)
 
+// huangjuExpiration 解析黄剧媒体凭据的到期时间。
 func huangjuExpiration(value any) time.Time {
 	text := nativeText(value)
 	if stamp, err := strconv.ParseInt(text, 10, 64); err == nil && stamp > 0 && stamp <= 253402300799000 {
@@ -279,6 +317,7 @@ func huangjuExpiration(value any) time.Time {
 	return parsed
 }
 
+// huangjuMediaCredentials 整理黄剧媒体访问所需的凭据。
 func huangjuMediaCredentials(headers http.Header, address, site string, expiration any) (*providerMediaCredentials, error) {
 	cookies := map[string]string{}
 	expires := huangjuExpiration(expiration)
@@ -324,6 +363,7 @@ func huangjuMediaCredentials(headers http.Header, address, site string, expirati
 	}, nil
 }
 
+// resolveHuangjuMedia 解析黄剧媒体。
 func (d *Downloader) resolveHuangjuMedia(ctx context.Context, task Task) (providerMedia, error) {
 	source, sourceID, valid := splitProviderDramaID(task.DramaID)
 	prefix := providerChapterID(sourceHuangju, sourceID, "")

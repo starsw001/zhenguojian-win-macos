@@ -8,11 +8,13 @@ import (
 	"time"
 )
 
+// nativeNeedsExtraMetadata 判断是否需要原生补充元数据。
 func nativeNeedsExtraMetadata(drama nativeDrama) bool {
 	return drama.Source == sourceHongguo && drama.OnlineDate == "" ||
 		drama.Source == sourceHuangdou && (drama.Heat == "" || drama.VIP == nil)
 }
 
+// nativeExtraMetadata 返回原生补充元数据。
 func (engine *nativeEngine) nativeExtraMetadata(ctx context.Context, drama nativeDrama) (nativeDrama, error) {
 	source, id, valid := splitProviderDramaID(drama.ID)
 	if !valid {
@@ -60,11 +62,23 @@ func (engine *nativeEngine) nativeExtraMetadata(ctx context.Context, drama nativ
 		}
 	}
 	if raw.ID == drama.ID {
+		count := drama.Episodes
+		verified := drama.EpisodeCountVerified
+		if ordinarySource(source) {
+			if err := validateOrdinaryDetail(drama, raw, "", nil); err != nil {
+				return drama, err
+			}
+		}
 		drama = mergeNativeDrama(drama, nativeNormalize(raw))
+		if ordinarySource(source) {
+			drama.Episodes = count
+			drama.EpisodeCountVerified = verified
+		}
 	}
 	return drama, ctx.Err()
 }
 
+// nativeMetadata 读取作品补充元数据并合并到当前记录。
 func (engine *nativeEngine) nativeMetadata(ctx context.Context, drama nativeDrama) (any, error) {
 	fresh, err := engine.nativeExtraMetadata(ctx, drama)
 	if err != nil {

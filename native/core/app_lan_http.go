@@ -16,6 +16,7 @@ import (
 	"time"
 )
 
+// request 处理局域网服务的 API 请求与响应。
 func (link *nativeLANServer) request(parent context.Context, input nativeLANInput, probe bool) (any, error) {
 	address, err := nativeLANAddress(input.Address)
 	if err != nil {
@@ -149,6 +150,7 @@ func (link *nativeLANServer) request(parent context.Context, input nativeLANInpu
 	return envelope.Data, nil
 }
 
+// nativeLANPath 检查局域网请求路径是否符合允许范围。
 func nativeLANPath(path string) bool {
 	switch path {
 	case "hello", "pair", "status", "sync/summary", "sync/records", "sync/begin",
@@ -159,6 +161,7 @@ func nativeLANPath(path string) bool {
 	return false
 }
 
+// nativeLANWrite 向局域网客户端写入接口响应。
 func nativeLANWrite(w http.ResponseWriter, status int, data any, err error) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
@@ -172,7 +175,12 @@ func nativeLANWrite(w http.ResponseWriter, status int, data any, err error) {
 	_ = json.NewEncoder(w).Encode(body)
 }
 
+// serve 处理服务请求：局域网服务。
 func (link *nativeLANServer) serve(w http.ResponseWriter, request *http.Request) {
+	if nativeLicenseEnabled() && !nativeLicenseManager().Allowed() {
+		nativeLANWrite(w, http.StatusForbidden, nil, errNativeLicense)
+		return
+	}
 	host, _, err := net.SplitHostPort(request.RemoteAddr)
 	if err != nil || !nativeLANPrivate(host) || request.Method != http.MethodPost ||
 		request.URL.RawQuery != "" || request.Header.Get("Origin") != "" ||

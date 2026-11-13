@@ -2,6 +2,7 @@ package core
 
 import "fmt"
 
+// uniqueChapters 去重分集列表。
 func uniqueChapters(chapters []Chapter) []Chapter {
 	seen := map[string]bool{}
 	var out []Chapter

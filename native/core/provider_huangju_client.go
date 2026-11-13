@@ -44,6 +44,7 @@ type huangjuAPIResponse struct {
 	headers http.Header
 }
 
+// huangjuClient 取得黄剧请求使用的客户端。
 func (d *Downloader) huangjuClient() *huangjuAPIClient {
 	d.huangjuOnce.Do(func() {
 		d.huangju = &huangjuAPIClient{
@@ -55,6 +56,7 @@ func (d *Downloader) huangjuClient() *huangjuAPIClient {
 	return d.huangju
 }
 
+// guestToken 取得当前 API 客户端使用的访客令牌。
 func (client *huangjuAPIClient) guestToken(ctx context.Context) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
@@ -118,6 +120,7 @@ func (client *huangjuAPIClient) guestToken(ctx context.Context) (string, error) 
 	return token, err
 }
 
+// get 从黄剧 API 客户端中取得指定条目。
 func (client *huangjuAPIClient) get(ctx context.Context, route string, query url.Values, limit int64) (huangjuAPIResponse, error) {
 	for attempt := 0; attempt < 2; attempt++ {
 		token, err := client.guestToken(ctx)
@@ -138,6 +141,7 @@ func (client *huangjuAPIClient) get(ctx context.Context, route string, query url
 	return huangjuAPIResponse{}, errHuangjuGuestExpired
 }
 
+// request 处理黄剧 API 客户端的 API 请求与响应。
 func (client *huangjuAPIClient) request(ctx context.Context, method, route string, query url.Values, body []byte, token string, retryAuth bool, limit int64) (huangjuAPIResponse, error) {
 	base, err := url.Parse(client.base)
 	if err != nil || !isProviderHTTPMediaURL(client.base) || base.User != nil || base.RawQuery != "" || base.Fragment != "" {
@@ -221,6 +225,7 @@ func (client *huangjuAPIClient) request(ctx context.Context, method, route strin
 	return huangjuAPIResponse{value: decoded, headers: response.Header.Clone()}, nil
 }
 
+// huangjuPayload 从黄剧接口响应中提取业务载荷。
 func huangjuPayload(value any) any {
 	if row, ok := value.(map[string]any); ok && row["data"] != nil && row["id"] == nil && row["items"] == nil && row["url"] == nil {
 		return row["data"]

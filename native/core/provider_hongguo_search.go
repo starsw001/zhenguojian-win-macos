@@ -40,6 +40,7 @@ type hongguoSearchCall struct {
 
 type hongguoSearchProgressKey struct{}
 
+// reportHongguoSearchProgress 报告红果搜索进度。
 func reportHongguoSearchProgress(ctx context.Context, entry hongguoSearchEntry) {
 	if progress, ok := ctx.Value(hongguoSearchProgressKey{}).(func(hongguoSearchEntry)); ok && len(entry.Dramas) > 0 {
 		entry.Total = max(entry.Total, len(entry.Dramas))
@@ -47,6 +48,7 @@ func reportHongguoSearchProgress(ctx context.Context, entry hongguoSearchEntry) 
 	}
 }
 
+// hongguoSearchKeyword 搜索红果关键词。
 func hongguoSearchKeyword(keyword string) (string, error) {
 	keyword = norm.NFKC.String(strings.TrimSpace(keyword))
 	if keyword == "" || !utf8.ValidString(keyword) || utf8.RuneCountInString(keyword) > 80 || strings.IndexFunc(keyword, unicode.IsControl) >= 0 {
@@ -55,10 +57,12 @@ func hongguoSearchKeyword(keyword string) (string, error) {
 	return keyword, nil
 }
 
+// searchHongguoDramas 搜索红果作品列表。
 func (downloader *Downloader) searchHongguoDramas(ctx context.Context, keyword string) (hongguoSearchEntry, error) {
 	return downloader.searchHongguoDramasProgress(ctx, keyword, nil)
 }
 
+// searchHongguoDramasProgress 搜索红果作品列表进度。
 func (downloader *Downloader) searchHongguoDramasProgress(ctx context.Context, keyword string, progress func(hongguoSearchEntry)) (hongguoSearchEntry, error) {
 	keyword, err := hongguoSearchKeyword(keyword)
 	if err != nil {
@@ -72,7 +76,8 @@ func (downloader *Downloader) searchHongguoDramasProgress(ctx context.Context, k
 			return hongguoSearchEntry{}, err
 		}
 		client.mu.Lock()
-		if cached, found := client.searches[keyword]; found && time.Now().Before(cached.ExpiresAt) {
+		fresh, _ := ctx.Value(providerTextNoCacheKey{}).(bool)
+		if cached, found := client.searches[keyword]; !fresh && found && time.Now().Before(cached.ExpiresAt) {
 			client.mu.Unlock()
 			return cloneHongguoSearchEntry(cached), nil
 		}
@@ -120,6 +125,7 @@ func (downloader *Downloader) searchHongguoDramasProgress(ctx context.Context, k
 	}
 }
 
+// waitHongguoSearch 等待红果搜索。
 func (downloader *Downloader) waitHongguoSearch(ctx context.Context, pending *hongguoSearchCall, progress func(hongguoSearchEntry)) (hongguoSearchEntry, error) {
 	client := downloader.hongguoClient()
 	var revision uint64
@@ -146,6 +152,7 @@ func (downloader *Downloader) waitHongguoSearch(ctx context.Context, pending *ho
 	}
 }
 
+// fetchHongguoSearch 获取红果搜索。
 func (downloader *Downloader) fetchHongguoSearch(ctx context.Context, keyword string) (hongguoSearchEntry, error) {
 
 	names, namesErr := downloader.fetchHongguoSearchNames(ctx, keyword)
@@ -207,6 +214,7 @@ func (downloader *Downloader) fetchHongguoSearch(ctx context.Context, keyword st
 	return entry, nil
 }
 
+// mergeHongguoSearchDramas 合并红果搜索作品列表。
 func mergeHongguoSearchDramas(dramas, batch []Drama) []Drama {
 	positions := make(map[string]int, len(dramas)+len(batch))
 	for index, drama := range dramas {
@@ -226,6 +234,7 @@ func mergeHongguoSearchDramas(dramas, batch []Drama) []Drama {
 	return dramas
 }
 
+// fetchHongguoSearchNames 获取红果搜索名称列表。
 func (downloader *Downloader) fetchHongguoSearchNames(ctx context.Context, keyword string) ([]Drama, error) {
 	records, err := downloader.fetchHongguoSuggestionRecords(ctx, keyword, hongguoSearchNameCount)
 	if err != nil {
@@ -245,6 +254,7 @@ func (downloader *Downloader) fetchHongguoSearchNames(ctx context.Context, keywo
 	return dramas, nil
 }
 
+// cloneHongguoSearchEntry 复制红果搜索条目。
 func cloneHongguoSearchEntry(entry hongguoSearchEntry) hongguoSearchEntry {
 	entry.Dramas = append([]Drama{}, entry.Dramas...)
 	for index := range entry.Dramas {
@@ -253,6 +263,7 @@ func cloneHongguoSearchEntry(entry hongguoSearchEntry) hongguoSearchEntry {
 	return entry
 }
 
+// hongguoSearchText 搜索红果文本。
 func hongguoSearchText(text string) string {
 	normalized := strings.Map(func(r rune) rune {
 		if unicode.IsSpace(r) || unicode.IsPunct(r) {
@@ -266,6 +277,7 @@ func hongguoSearchText(text string) string {
 	return normalized
 }
 
+// hongguoTitleSearchRank 计算红果标题与搜索关键词的匹配排序权重。
 func hongguoTitleSearchRank(title, query string) int {
 	words := strings.FieldsFunc(norm.NFKC.String(query), func(r rune) bool { return unicode.IsSpace(r) || unicode.IsPunct(r) })
 	query = hongguoSearchText(query)
@@ -291,6 +303,7 @@ func hongguoTitleSearchRank(title, query string) int {
 	}
 }
 
+// fetchHongguoSearchPage 获取红果搜索页面。
 func (downloader *Downloader) fetchHongguoSearchPage(ctx context.Context, keyword string) (hongguoSearchEntry, error) {
 	pageURL := hongguoBaseURL + "/search/" + url.PathEscape(keyword)
 	body, err := downloader.fetchProviderText(ctx, pageURL, hongguoBaseURL+"/")

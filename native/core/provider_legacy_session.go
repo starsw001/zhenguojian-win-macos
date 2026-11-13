@@ -48,11 +48,13 @@ type legacyAPIClient struct {
 	retryAt time.Time
 }
 
+// legacyClient 取得旧接口请求使用的客户端。
 func (d *Downloader) legacyClient() *legacyAPIClient {
 	d.legacyOnce.Do(func() { d.legacy = &legacyAPIClient{} })
 	return d.legacy
 }
 
+// legacyCredentials 取得旧接口请求使用的访问凭据。
 func (d *Downloader) legacyCredentials(ctx context.Context) (legacyAccess, error) {
 	client := d.legacyClient()
 	for {
@@ -105,10 +107,12 @@ func (d *Downloader) legacyCredentials(ctx context.Context) (legacyAccess, error
 	}
 }
 
+// legacySessionScope 生成旧接口会话缓存的作用域标识。
 func (d *Downloader) legacySessionScope() string {
 	return strings.TrimRight(firstNonEmpty(d.cfg.APIBase, defaultAPIBase), "/")
 }
 
+// loadLegacySession 加载旧接口会话。
 func (d *Downloader) loadLegacySession() legacySessionState {
 	empty := legacySessionState{Version: 1, Scope: d.legacySessionScope()}
 	file, err := os.Open(filepath.Join(d.cfg.dataDir, "huangguo-session.json"))
@@ -124,10 +128,12 @@ func (d *Downloader) loadLegacySession() legacySessionState {
 	return state
 }
 
+// validLegacyToken 判断是否有效：旧接口令牌。
 func validLegacyToken(token string) bool {
 	return len(token) <= 4096 && !strings.ContainsAny(token, "\r\n\t ")
 }
 
+// saveLegacySession 保存旧接口会话。
 func (d *Downloader) saveLegacySession(state legacySessionState) error {
 	directory := d.cfg.dataDir
 	if err := os.MkdirAll(directory, 0o700); err != nil {
@@ -148,6 +154,7 @@ func (d *Downloader) saveLegacySession(state legacySessionState) error {
 	return os.Rename(file.Name(), filepath.Join(directory, "huangguo-session.json"))
 }
 
+// bootstrapLegacySession 按既有协议初始化旧接口会话。
 func (d *Downloader) bootstrapLegacySession(ctx context.Context, state legacySessionState) (legacyAccess, legacySessionState, error) {
 	access := legacyAccess{Token: d.cfg.Token, Anonymous: d.cfg.Token == ""}
 	protocol := state.Protocol
@@ -204,10 +211,12 @@ func (d *Downloader) bootstrapLegacySession(ctx context.Context, state legacySes
 	return access, state, nil
 }
 
+// validLegacyProtocol 判断是否有效：旧接口协议。
 func validLegacyProtocol(protocol legacyProtocol) bool {
 	return len(protocol.InterfaceKey) > 0 && len(protocol.InterfaceKey) <= 512 && len(protocol.ParamKey) == 16 && len(protocol.ParamIV) == 16
 }
 
+// parseLegacyProtocol 解析旧接口协议。
 func parseLegacyProtocol(script string) (legacyProtocol, error) {
 	value := func(name string) string {
 		pattern := `["']` + regexp.QuoteMeta(name) + `["']\s*[:,]\s*["']([^"'\\\r\n]+)["']`
@@ -224,6 +233,7 @@ func parseLegacyProtocol(script string) (legacyProtocol, error) {
 	return protocol, nil
 }
 
+// invalidateLegacyToken 使其失效：旧接口令牌。
 func (d *Downloader) invalidateLegacyToken(access legacyAccess) {
 	client := d.legacyClient()
 	client.mu.Lock()
@@ -235,6 +245,7 @@ func (d *Downloader) invalidateLegacyToken(access legacyAccess) {
 	}
 }
 
+// userAgent 取得旧接口访问使用的User-Agent。
 func (access legacyAccess) userAgent() string {
 	if access.DeviceID == "" {
 		return xUserAgent

@@ -1,3 +1,4 @@
+import 'update_activity.dart';
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -8,6 +9,10 @@ import 'local_store.dart';
 import 'models.dart';
 import 'player_screen.dart';
 import 'widgets.dart';
+import 'ordinary_catalog.dart';
+import 'ordinary_site_selector.dart';
+
+final _playbackLaunches = Expando<bool>();
 
 Future<void> openPlaybackDirectly(
   BuildContext context, {
@@ -15,73 +20,21 @@ Future<void> openPlaybackDirectly(
   required AppRepository repository,
   required LocalStore store,
 }) async {
-  final profileEpoch = store.profileEpoch;
+  final navigator = Navigator.of(context);
+  if (_playbackLaunches[navigator] == true) return;
+  _playbackLaunches[navigator] = true;
   try {
-    final detail = await repository.detail(drama);
-    if (!context.mounted || profileEpoch != store.profileEpoch) return;
-    final mergedDrama = repository.catalogUpdates
-        .current(drama)
-        .merge(detail.drama);
-    final merged = DramaDetail(
-      mergedDrama,
-      detail.episodes,
-      warning: detail.warning,
-    );
-    repository.catalogUpdates.publish(mergedDrama, retryCover: true);
-    await saveUserChange(context, () => store.refreshDrama(mergedDrama));
-    if (!context.mounted || profileEpoch != store.profileEpoch) return;
-    if (merged.episodes.isEmpty) {
-      throw AppFailure('暂时没有可播放的集数');
-    }
-    final watched = store.watched(mergedDrama.id);
-    final index = resumeEpisodeIndex(merged.episodes, watched);
-    final episode = merged.episodes[index];
-    if (episode.vip && mergedDrama.source != SourceSite.dsd.id) {
-      final accepted = await showDialog<bool>(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: const Text('这是一集 VIP 内容'),
-          content: const Text('站源可能只提供试看或限制播放。'),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('取消'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.pop(context, true),
-              child: const Text('尝试播放'),
-            ),
-          ],
-        ),
-      );
-      if (accepted != true || !context.mounted) return;
-    }
-    final position =
-        watched?.episode == episode.number && watched?.finished == false
-        ? watched!.position
-        : 0.0;
-    if (!context.mounted || profileEpoch != store.profileEpoch) return;
-    await Navigator.of(context).push(
+    await navigator.push<void>(
       MaterialPageRoute<void>(
-        builder: (_) => PlayerScreen(
-          detail: merged,
-          initialIndex: index,
-          initialPosition: position,
+        builder: (_) => PlaybackLaunchScreen(
+          drama: drama,
           repository: repository,
           store: store,
         ),
       ),
     );
-  } catch (error) {
-    if (!context.mounted || profileEpoch != store.profileEpoch) return;
-    repository.catalogUpdates.publish(
-      repository.catalogUpdates.current(drama),
-      retryCover: true,
-    );
-    final message = error is AppFailure ? error.message : '暂时无法播放，请重试';
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text(message)));
+  } finally {
+    _playbackLaunches[navigator] = null;
   }
 }
 
@@ -91,46 +44,107 @@ class PlaybackLaunchScreen extends StatefulWidget {
     required this.drama,
     required this.repository,
     required this.store,
+    this.initialDetail,
+    this.initialEpisode,
+    this.initialPosition,
+    this.playerBuilder,
   });
-
   final Drama drama;
   final AppRepository repository;
   final LocalStore store;
-
+  final DramaDetail? initialDetail;
+  final int? initialEpisode;
+  final double? initialPosition;
+  @visibleForTesting
+  final Widget Function(DramaDetail, int, double, Widget?)? playerBuilder;
   @override
   State<PlaybackLaunchScreen> createState() => _PlaybackLaunchScreenState();
 }
 
 class _PlaybackLaunchScreenState extends State<PlaybackLaunchScreen> {
   late final int _profileEpoch;
+  late Drama _selected;
   int _generation = 0;
   String? _error;
+  bool _loading = false, _initialUsed = false;
+  DramaDetail? _detail;
+  int _initialIndex = 0;
+  double _initialPosition = 0;
+  List<Drama> get _sites =>
+      visibleOrdinarySites(widget.drama, widget.repository, widget.store);
+  Widget? get _selector {
+    final choices = _sites;
+    return choices.length < 2
+        ? null
+        : OrdinarySiteSelector(
+            sites: choices,
+            selected: _selected,
+            onSelected: (site) {
+              if (site.siteIdentity != _selected.siteIdentity) {
+                unawaited(_load(site: site));
+              }
+            },
+          );
+  }
 
   @override
   void initState() {
     super.initState();
+    UpdateActivity.enterPlayer();
+    _selected = widget.drama;
     _profileEpoch = widget.store.profileEpoch;
+    widget.store.addListener(_profileChanged);
     unawaited(_load());
   }
 
   @override
   void dispose() {
+    UpdateActivity.leavePlayer();
     _generation++;
+    widget.store.removeListener(_profileChanged);
     super.dispose();
   }
 
-  Future<void> _load() async {
+  void _profileChanged() {
+    if (_profileEpoch != widget.store.profileEpoch && _detail == null) {
+      _generation++;
+      setState(() => _error = '用户已切换，请返回重新选择');
+    } else if (mounted) {
+      setState(() {});
+    }
+  }
+
+  Future<void> _load({Drama? site}) async {
+    if (_loading && site == null) return;
+    if (_profileEpoch != widget.store.profileEpoch || widget.store.locked) {
+      setState(() => _error = '用户已切换，请返回重新选择');
+      return;
+    }
+    final selected = site ?? _selected;
+    if (!widget.store.allowsSource(selected.source)) {
+      setState(() => _error = '当前用户无权访问此站点');
+      return;
+    }
+    final initial = !_initialUsed;
+    _initialUsed = true;
+    _loading = true;
     final generation = ++_generation;
-    setState(() => _error = null);
+    setState(() {
+      _selected = selected;
+      _detail = null;
+      _error = null;
+    });
     try {
-      final detail = await widget.repository.detail(widget.drama);
+      final detail = initial && widget.initialDetail != null
+          ? validateIsolatedSiteDetail(selected, widget.initialDetail!)
+          : await loadIsolatedSiteDetail(widget.repository, selected);
       if (!mounted ||
           generation != _generation ||
           _profileEpoch != widget.store.profileEpoch) {
         return;
       }
       final drama = widget.repository.catalogUpdates
-          .current(widget.drama)
+          .current(selected)
           .merge(detail.drama);
       final merged = DramaDetail(
         drama,
@@ -149,10 +163,18 @@ class _PlaybackLaunchScreenState extends State<PlaybackLaunchScreen> {
         return;
       }
       final watched = widget.store.watched(drama.id);
-      final index = resumeEpisodeIndex(merged.episodes, watched);
+      final wanted = initial && widget.initialEpisode != null
+          ? merged.episodes.indexWhere(
+              (episode) => episode.number == widget.initialEpisode,
+            )
+          : -1;
+      final index = wanted >= 0
+          ? wanted
+          : resumeEpisodeIndex(merged.episodes, watched);
       final episode = merged.episodes[index];
-      if (episode.vip && drama.source != SourceSite.dsd.id) {
-        if (!mounted) return;
+      if (episode.vip &&
+          drama.source != SourceSite.dsd.id &&
+          !(initial && widget.initialDetail != null)) {
         final accepted = await showDialog<bool>(
           context: context,
           builder: (context) => AlertDialog(
@@ -170,16 +192,15 @@ class _PlaybackLaunchScreenState extends State<PlaybackLaunchScreen> {
             ],
           ),
         );
+        if (!mounted || generation != _generation) return;
         if (accepted != true) {
-          if (mounted) Navigator.of(context).maybePop();
-          return;
-        }
-        if (!mounted) {
+          Navigator.of(context).maybePop();
           return;
         }
       }
-      final position =
-          watched?.episode == episode.number && watched?.finished == false
+      final position = initial && widget.initialPosition != null
+          ? widget.initialPosition!
+          : watched?.episode == episode.number && watched?.finished == false
           ? watched!.position
           : 0.0;
       if (!mounted ||
@@ -187,50 +208,75 @@ class _PlaybackLaunchScreenState extends State<PlaybackLaunchScreen> {
           _profileEpoch != widget.store.profileEpoch) {
         return;
       }
-      Navigator.of(context).pushReplacement(
-        MaterialPageRoute<void>(
-          builder: (_) => PlayerScreen(
-            detail: merged,
-            initialIndex: index,
-            initialPosition: position,
-            repository: widget.repository,
-            store: widget.store,
-          ),
-        ),
-      );
+      setState(() {
+        _detail = merged;
+        _initialIndex = index;
+        _initialPosition = position;
+      });
     } catch (error) {
       if (!mounted || generation != _generation) return;
       setState(() => _error = error.toString());
-      widget.repository.catalogUpdates.publish(
-        widget.repository.catalogUpdates.current(widget.drama),
-        retryCover: true,
-      );
+      if (!SourceSite.ordinaryIds.contains(selected.source)) {
+        widget.repository.catalogUpdates.publish(
+          widget.repository.catalogUpdates.current(selected),
+          retryCover: true,
+        );
+      }
+    } finally {
+      if (generation == _generation) _loading = false;
     }
   }
 
   @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(title: Text(widget.drama.title)),
-    body: SafeArea(
-      top: false,
-      child: _error == null
-          ? const Center(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  CircularProgressIndicator(),
-                  SizedBox(height: 16),
-                  Text('正在进入播放'),
-                ],
-              ),
-            )
-          : StatusPanel(
-              title: '暂时无法播放',
-              message: _error!,
-              onRetry: _load,
-              action: '重试',
-              icon: Icons.play_disabled_rounded,
+  Widget build(BuildContext context) {
+    final selector = _selector;
+    if (_detail case final detail?) {
+      return widget.playerBuilder?.call(
+            detail,
+            _initialIndex,
+            _initialPosition,
+            selector,
+          ) ??
+          PlayerScreen(
+            key: ValueKey(_selected.siteIdentity),
+            detail: detail,
+            initialIndex: _initialIndex,
+            initialPosition: _initialPosition,
+            repository: widget.repository,
+            store: widget.store,
+            siteSelector: selector,
+          );
+    }
+    return Scaffold(
+      appBar: AppBar(title: Text(_selected.title)),
+      body: SafeArea(
+        top: false,
+        child: Column(
+          children: [
+            ?selector,
+            Expanded(
+              child: _error == null
+                  ? const Center(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          CircularProgressIndicator(),
+                          SizedBox(height: 16),
+                          Text('正在进入播放'),
+                        ],
+                      ),
+                    )
+                  : StatusPanel(
+                      title: '暂时无法播放',
+                      message: _error!,
+                      onRetry: () => _load(),
+                      action: '重试',
+                      icon: Icons.play_disabled_rounded,
+                    ),
             ),
-    ),
-  );
+          ],
+        ),
+      ),
+    );
+  }
 }

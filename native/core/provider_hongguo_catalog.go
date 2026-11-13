@@ -28,10 +28,12 @@ type libraryUpdateKey struct{}
 
 type libraryKnownKey struct{}
 
+// fetchHongguoAppCatalog 获取红果App目录。
 func (downloader *Downloader) fetchHongguoAppCatalog(ctx context.Context) ([]Drama, error) {
 	return downloader.fetchHongguoAppCatalogCategory(ctx, "")
 }
 
+// fetchHongguoAppCatalogCategory 获取红果App目录分类。
 func (downloader *Downloader) fetchHongguoAppCatalogCategory(ctx context.Context, category string) ([]Drama, error) {
 	genres := hongguoAppGenres
 	if category != "" {
@@ -80,6 +82,9 @@ func (downloader *Downloader) fetchHongguoAppCatalogCategory(ctx context.Context
 	scans := make([]feedScan, len(genres))
 	for index, genre := range genres {
 		cursor := state.Feeds[feedKey(genre.key)]
+		if refresh, _ := ctx.Value(sourceRuleRefreshKey{}).(bool); refresh && !more {
+			cursor = hongguoCatalogCursor{}
+		}
 		if !more && cursor.Initialized {
 			scans[index].head = true
 			scans[index].tail = cursor
@@ -214,6 +219,7 @@ func (downloader *Downloader) fetchHongguoAppCatalogCategory(ctx context.Context
 	return dramas, errors.Join(failures...)
 }
 
+// parseHongguoCatalogPage 解析红果目录页。
 func parseHongguoCatalogPage(result map[string]any, cursor hongguoCatalogCursor, category string) ([]Drama, hongguoCatalogCursor, error) {
 	data := nestedMap(result, "data")
 	rows, valid := data["video_data"].([]any)

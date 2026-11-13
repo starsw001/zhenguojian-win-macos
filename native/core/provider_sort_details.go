@@ -6,6 +6,7 @@ import (
 	"time"
 )
 
+// providerReleaseDate 读取站源元数据中的发布日期。
 func providerReleaseDate(value string) string {
 	value = strings.TrimSpace(value)
 	if stamp, err := time.Parse(time.RFC3339Nano, value); err == nil {
@@ -18,6 +19,7 @@ func providerReleaseDate(value string) string {
 	return date
 }
 
+// providerTimestampDate 将来源时间戳转换为显示日期。
 func providerTimestampDate(value string) string {
 	stamp, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
 	if err != nil || stamp <= 0 {

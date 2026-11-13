@@ -16,9 +16,62 @@ String embySpecialNfo(LocalMediaItem item, int number) =>
     '<showtitle>${xmlText(item.drama.title)}</showtitle><season>0</season><episode>$number</episode>'
     '<displayseason>1</displayseason><displayepisode>${item.episodes.last + 1}</displayepisode>'
     '<plot>${xmlText('合并第 ${item.episodes.first}–${item.episodes.last} 集，共 ${item.episodes.length} 集。\n${item.drama.description}')}</plot>'
-    '<uniqueid type="zhenguojian" default="true">${xmlText(item.special ? item.id : 'special-${item.id}')}</uniqueid></episodedetails>\n';
+    '<uniqueid type="zhenguoshang" default="true">${xmlText(item.special ? item.id : 'special-${item.id}')}</uniqueid></episodedetails>\n';
 
 extension MediaExportOperations on MediaLibrary {
+  Future<List<Directory>> _exportParentDirectories(File file) async {
+    if (root == null) return const [];
+    final base = path.normalize(path.absolute(root!));
+    final exports = path.join(base, 'exports');
+    final parent = path.normalize(path.absolute(file.parent.path));
+    if (!path.isWithin(exports, parent)) return const [];
+    final parents = <Directory>[];
+    for (
+      var current = parent;
+      path.isWithin(exports, current);
+      current = path.dirname(current)
+    ) {
+      parents.add(Directory(current));
+    }
+    for (final directory in [
+      Directory(base),
+      Directory(exports),
+      ...parents.reversed,
+    ]) {
+      final type = await FileSystemEntity.type(
+        directory.path,
+        followLinks: false,
+      );
+      if (type == FileSystemEntityType.notFound) return const [];
+      if (type != FileSystemEntityType.directory) {
+        throw AppFailure('导出路径包含链接或不是普通目录，已保留文件和目录');
+      }
+    }
+    if (await FileSystemEntity.type(file.path, followLinks: false) ==
+        FileSystemEntityType.link) {
+      throw AppFailure('媒体文件是符号链接，已保留文件和目录');
+    }
+    return parents;
+  }
+
+  Future<void> _removeEmptyExportParents(File file) async {
+    final parents = await _exportParentDirectories(file);
+    for (final directory in parents) {
+      if (await FileSystemEntity.type(directory.path, followLinks: false) !=
+          FileSystemEntityType.directory) {
+        return;
+      }
+      if (!await directory.list(followLinks: false).isEmpty) return;
+      try {
+        await directory.delete();
+      } on FileSystemException {
+        if (!await directory.exists()) continue;
+        if (!await directory.list(followLinks: false).isEmpty) return;
+        throw AppFailure('视频已删除，空剧集目录尚未清理，请关闭占用后重试');
+      }
+    }
+  }
+
   Future<String> _showDirectory(Drama drama) async {
     final existing = _showFolders[drama.id];
     if (existing != null) return existing;
@@ -42,28 +95,6 @@ extension MediaExportOperations on MediaLibrary {
       rethrow;
     }
     return folder;
-  }
-
-  Future<void> _writeShowMetadata(Drama drama, Directory showDirectory) async {
-    final poster = File(path.join(showDirectory.path, 'poster.jpg'));
-    var hasPoster = await poster.exists();
-    if (store.exportPosters &&
-        !hasPoster &&
-        !const bool.fromEnvironment('DISABLE_REMOTE_IMAGES')) {
-      try {
-        final cover = await repository.cover(drama);
-        _check();
-        await File(cover).copy(poster.path);
-        hasPoster = true;
-      } catch (_) {
-        _check();
-      }
-    }
-    _check();
-    await _writeText(
-      File(path.join(showDirectory.path, 'tvshow.nfo')),
-      embyShowNfo(drama, localPoster: hasPoster),
-    );
   }
 
   Future<void> _copyOutput(File source, File target, int bytes) async {
@@ -120,13 +151,13 @@ extension MediaExportOperations on MediaLibrary {
           rethrow;
         }
       }
+      final extension = path.extension(source.file).toLowerCase();
       final relative = path.join(
         folder,
-        'Season 00',
-        'S00E${number.toString().padLeft(3, '0')}.mkv',
+        'S00E${number.toString().padLeft(3, '0')}$extension',
       );
       final target = File(path.join(root!, relative));
-      final staged = File(path.join(temporary.path, 'special.mkv'));
+      final staged = File(path.join(temporary.path, 'special$extension'));
       await _copyOutput(file, staged, source.bytes);
       final checked = await executor.probe(staged.path);
       verifyMediaDuration(checked, source.duration);
@@ -146,11 +177,6 @@ extension MediaExportOperations on MediaLibrary {
         sourceVersion: '${source.id}-${source.bytes}-${source.sourceVersion}',
         decodeVerified: true,
         specialNumber: number,
-      );
-      await _writeShowMetadata(drama, target.parent.parent);
-      await _writeText(
-        File(path.setExtension(target.path, '.nfo')),
-        embySpecialNfo(item, number),
       );
       final previous = List<LocalMediaItem>.of(_items);
       _items.removeWhere((entry) => entry.id == item.id);

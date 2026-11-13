@@ -6,6 +6,7 @@ import (
 	"time"
 )
 
+// nativeDanmaku 读取当前播放分集对应的弹幕数据。
 func (engine *nativeEngine) nativeDanmaku(ctx context.Context, input nativeInput) (hongguoDanmakuPage, error) {
 	if input.StartMS < 0 || input.DurationMS <= input.StartMS || input.DurationMS > danmakuMaxDurationMS {
 		return hongguoDanmakuPage{}, errors.New("弹幕时间范围无效")

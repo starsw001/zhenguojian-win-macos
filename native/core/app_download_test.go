@@ -19,6 +19,7 @@ import (
 	"time"
 )
 
+// downloadTestManager 下载Test管理器。
 func downloadTestManager(t *testing.T) *nativeDownloads {
 	t.Helper()
 	engine, err := newNativeEngine(t.TempDir())
@@ -26,9 +27,197 @@ func downloadTestManager(t *testing.T) *nativeDownloads {
 		t.Fatal(err)
 	}
 	t.Cleanup(engine.downloads.close)
+	engine.downloads.sourceConcurrency = 2
 	return engine.downloads
 }
 
+// TestNativeDownloadRetriesTemporarySegmentWithoutLosingFiles 验证「Native Download Retries Temporary Segment Without Losing Files」回归场景。
+func TestNativeDownloadRetriesTemporarySegmentWithoutLosingFiles(t *testing.T) {
+	manager := downloadTestManager(t)
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) == 1 {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		_, _ = w.Write([]byte("complete-segment"))
+	}))
+	defer server.Close()
+	file := filepath.Join(t.TempDir(), "segment.ts")
+	keep := filepath.Join(filepath.Dir(file), "earlier-episode.mp4")
+	if err := os.WriteFile(keep, []byte("preserved"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	size, err := manager.downloadFile(context.Background(), server.URL, "", file, false, func(int64, int64) {})
+	if err != nil || size != 16 || calls.Load() != 2 {
+		t.Fatalf("temporary segment error was not retried: size=%d calls=%d error=%v", size, calls.Load(), err)
+	}
+	body, readErr := os.ReadFile(keep)
+	if readErr != nil || string(body) != "preserved" {
+		t.Fatal("retry removed an earlier episode")
+	}
+}
+
+// TestNativeDownloadRetryResumesValidatedPartialBytes 验证「Native Download Retry Resumes Validated Partial Bytes」回归场景。
+func TestNativeDownloadRetryResumesValidatedPartialBytes(t *testing.T) {
+	manager := downloadTestManager(t)
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", `"stable"`)
+		if calls.Add(1) == 1 {
+			w.Header().Set("Content-Length", "10")
+			_, _ = w.Write([]byte("abcde"))
+			return
+		}
+		if r.Header.Get("Range") != "bytes=5-" || r.Header.Get("If-Range") != `"stable"` {
+			t.Error("retry did not preserve the validated partial file")
+		}
+		w.Header().Set("Content-Range", "bytes 5-9/10")
+		w.Header().Set("Content-Length", "5")
+		w.WriteHeader(http.StatusPartialContent)
+		_, _ = w.Write([]byte("fghij"))
+	}))
+	defer server.Close()
+	file := filepath.Join(t.TempDir(), "segment.ts")
+	size, err := manager.downloadFile(context.Background(), server.URL, "", file, false, func(int64, int64) {})
+	body, readErr := os.ReadFile(file)
+	if err != nil || readErr != nil || size != 10 || string(body) != "abcdefghij" || calls.Load() != 2 {
+		t.Fatalf("range retry corrupted bytes: size=%d body=%q calls=%d error=%v read=%v", size, body, calls.Load(), err, readErr)
+	}
+}
+
+// TestNativeDownloadDoesNotRetryAuthorizationOrServerBackoff 验证「Native Download Does Not Retry Authorization Or Server Backoff」回归场景。
+func TestNativeDownloadDoesNotRetryAuthorizationOrServerBackoff(t *testing.T) {
+	for _, status := range []int{http.StatusForbidden, http.StatusTooManyRequests, http.StatusServiceUnavailable} {
+		t.Run(strconv.Itoa(status), func(t *testing.T) {
+			manager := downloadTestManager(t)
+			var calls atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				if status == http.StatusServiceUnavailable {
+					w.Header().Set("Retry-After", "60")
+				}
+				w.WriteHeader(status)
+			}))
+			defer server.Close()
+			_, err := manager.downloadFile(context.Background(), server.URL, "", filepath.Join(t.TempDir(), "segment.ts"), false, func(int64, int64) {})
+			if err == nil || calls.Load() != 1 {
+				t.Fatal("authorization or server-directed backoff was retried", calls.Load(), err)
+			}
+		})
+	}
+}
+
+// TestNativeDownloadRetryIsBoundedAndCancellable 验证「Native Download Retry Is Bounded And Cancellable」回归场景。
+func TestNativeDownloadRetryIsBoundedAndCancellable(t *testing.T) {
+	manager := downloadTestManager(t)
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer server.Close()
+	_, err := manager.downloadFile(context.Background(), server.URL, "", filepath.Join(t.TempDir(), "bounded.ts"), false, func(int64, int64) {})
+	if err == nil || calls.Load() != 3 {
+		t.Fatal("temporary failures exceeded the retry budget", calls.Load(), err)
+	}
+	calls.Store(0)
+	ctx, cancel := context.WithCancel(context.Background())
+	timer := time.AfterFunc(100*time.Millisecond, cancel)
+	defer timer.Stop()
+	defer cancel()
+	_, err = manager.downloadFile(ctx, server.URL, "", filepath.Join(t.TempDir(), "cancelled.ts"), false, func(int64, int64) {})
+	if !errors.Is(err, context.Canceled) || calls.Load() != 1 {
+		t.Fatal("pause did not cancel retry backoff promptly", calls.Load(), err)
+	}
+}
+
+// TestNativeDownloadHLSAssetsUseBoundedConcurrency 验证「Native Download HLS Assets Use Bounded Concurrency」回归场景。
+func TestNativeDownloadHLSAssetsUseBoundedConcurrency(t *testing.T) {
+	manager := downloadTestManager(t)
+	manager.concurrency = 2
+	var active, maximum atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/index.m3u8" {
+			fmt.Fprint(w, "#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXTINF:2,\na.ts\n#EXTINF:2,\nb.ts\n#EXTINF:2,\nc.ts\n#EXTINF:2,\nd.ts\n#EXT-X-ENDLIST\n")
+			return
+		}
+		current := active.Add(1)
+		defer active.Add(-1)
+		for old := maximum.Load(); current > old; old = maximum.Load() {
+			if maximum.CompareAndSwap(old, current) {
+				break
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+		w.Header().Set("Content-Type", "video/mp2t")
+		fmt.Fprint(w, "complete-segment")
+	}))
+	defer server.Close()
+	drama := nativeDrama{ID: "hongguo:70001", Source: sourceHongguo}
+	job := nativeDownloadJob{ID: nativeDownloadID(drama.ID, 1), Drama: drama, Index: 1, State: "downloading"}
+	manager.jobs[job.ID] = &nativeDownloadRecord{nativeDownloadJob: job}
+	result, err := manager.transferMedia(context.Background(), job, providerMedia{URL: server.URL + "/index.m3u8"})
+	if err != nil || result.file != "index.m3u8" || maximum.Load() != 2 || active.Load() != 0 {
+		t.Fatalf("HLS asset concurrency is not bounded: maximum=%d active=%d error=%v", maximum.Load(), active.Load(), err)
+	}
+	if record := manager.jobs[job.ID]; record.Bytes != 64 || record.Progress != 1 {
+		t.Fatalf("concurrent download progress lost or duplicated bytes: %+v", record)
+	}
+}
+
+// TestNativeDownloadWuguoRecoversSameEpisodeOnFreeAlternateLine 验证「Native Download Wuguo Recovers Same Episode On Free Alternate Line」回归场景。
+func TestNativeDownloadWuguoRecoversSameEpisodeOnFreeAlternateLine(t *testing.T) {
+	manager := downloadTestManager(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/index.php/vod/detail/id/100.html":
+			fmt.Fprint(w, `<html><div class="content__playlist"><a href="/play/100-1-1.html">1</a><a href="/play/100-2-1.html">1</a></div></html>`)
+		case "/broken.mp4":
+			w.WriteHeader(http.StatusBadGateway)
+		case "/healthy.mp4":
+			fmt.Fprint(w, "complete-segment")
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	manager.engine.downloader.providerHosts[sourceWuguo] = server.URL
+	manager.resolve = func(ctx context.Context, job nativeDownloadJob) (providerMedia, error) {
+		file := "/broken.mp4"
+		if strings.Contains(job.Chapter.PageURL, "100-2-1") {
+			file = "/healthy.mp4"
+		}
+		return providerMedia{URL: server.URL + file}, nil
+	}
+	drama := nativeDrama{ID: "wuguo:100", Source: sourceWuguo}
+	job := nativeDownloadJob{ID: nativeDownloadID(drama.ID, 1), Drama: drama, Index: 1, State: "downloading",
+		Chapter: duanjuChapter(sourceWuguo, "100", 1, "1", server.URL+"/play/100-1-1.html", server.URL+"/play/100-1-1.html", server.URL)}
+	manager.jobs[job.ID] = &nativeDownloadRecord{nativeDownloadJob: job}
+	directory := manager.jobDirectory(job)
+	if err := os.MkdirAll(directory, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(directory, "keep.part"), []byte("preserved-original-line"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	manager.workers.Add(1)
+	manager.run(context.Background(), job)
+	record := manager.jobs[job.ID]
+	if record.State != "completed" || record.Chapter.PageURL != server.URL+"/play/100-2-1.html" {
+		t.Fatalf("free alternate line did not recover the same episode: %+v", record)
+	}
+	files, _ := filepath.Glob(filepath.Join(manager.root, ".replaced-downloads", "*", "original", "keep.part"))
+	if len(files) != 1 {
+		t.Fatal("switching line discarded the original partial file")
+	}
+	body, err := os.ReadFile(files[0])
+	if err != nil || string(body) != "preserved-original-line" {
+		t.Fatal("original partial file was changed")
+	}
+}
+
+// downloadTestInput 下载Test输入。
 func downloadTestInput(count int) nativeInput {
 	input := nativeInput{Drama: nativeDrama{ID: "hongguo:100", Source: "hongguo", Title: "合成下载测试"}, Quality: 1080}
 	for index := 1; index <= count; index++ {
@@ -38,6 +227,7 @@ func downloadTestInput(count int) nativeInput {
 	return input
 }
 
+// waitDownloads 等待下载任务。
 func waitDownloads(t *testing.T, manager *nativeDownloads, predicate func([]nativeDownloadJob) bool) []nativeDownloadJob {
 	t.Helper()
 	deadline := time.Now().Add(6 * time.Second)
@@ -56,6 +246,7 @@ func waitDownloads(t *testing.T, manager *nativeDownloads, predicate func([]nati
 	return nil
 }
 
+// TestNativeDownloadsOriginalBytesPersistenceAndLocalPriority 验证「Native Downloads Original Bytes Persistence And Local Priority」回归场景。
 func TestNativeDownloadsOriginalBytesPersistenceAndLocalPriority(t *testing.T) {
 	data := bytes.Repeat([]byte("synthetic-original-media"), 8192)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -101,7 +292,7 @@ func TestNativeDownloadsOriginalBytesPersistenceAndLocalPriority(t *testing.T) {
 		}
 	}
 	id := nativeDownloadID(input.Drama.ID, 1)
-	if err := os.Remove(filepath.Join(reopened.root, id, "media.mp4")); err != nil {
+	if err := os.Remove(filepath.Join(reopened.jobDirectory(reopened.jobs[id].nativeDownloadJob), "media.mp4")); err != nil {
 		t.Fatal(err)
 	}
 	for attempt := 0; attempt < 2; attempt++ {
@@ -118,6 +309,7 @@ func TestNativeDownloadsOriginalBytesPersistenceAndLocalPriority(t *testing.T) {
 	}
 }
 
+// TestNativeDownloadRangeResumeAndAddressIsolation 验证「Native Download Range Resume And Address Isolation」回归场景。
 func TestNativeDownloadRangeResumeAndAddressIsolation(t *testing.T) {
 	data := bytes.Repeat([]byte("0123456789abcdef"), 65536)
 	var mu sync.Mutex
@@ -168,6 +360,7 @@ func TestNativeDownloadRangeResumeAndAddressIsolation(t *testing.T) {
 	}
 }
 
+// TestNativeDownloadRangeServersCannotMixFiles 验证「Native Download Range Servers Cannot Mix Files」回归场景。
 func TestNativeDownloadRangeServersCannotMixFiles(t *testing.T) {
 	for _, mode := range []string{"ignored", "changed", "invalid", "no-validator", "range-rejected"} {
 		t.Run(mode, func(t *testing.T) {
@@ -241,6 +434,7 @@ func TestNativeDownloadRangeServersCannotMixFiles(t *testing.T) {
 	}
 }
 
+// TestNativeDownloadIncompleteMediaAndInvalidKeyStayIncomplete 验证「Native Download Incomplete Media And Invalid Key Stay Incomplete」回归场景。
 func TestNativeDownloadIncompleteMediaAndInvalidKeyStayIncomplete(t *testing.T) {
 	for _, mode := range []string{"truncated", "html", "json", "key", "encoded"} {
 		t.Run(mode, func(t *testing.T) {
@@ -271,6 +465,7 @@ func TestNativeDownloadIncompleteMediaAndInvalidKeyStayIncomplete(t *testing.T) 
 	}
 }
 
+// TestNativeDownloadsBoundedQueueCancelAndPlaybackIsolation 验证「Native Downloads Bounded Queue Cancel And Playback Isolation」回归场景。
 func TestNativeDownloadsBoundedQueueCancelAndPlaybackIsolation(t *testing.T) {
 	data := bytes.Repeat([]byte("original"), 256)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -368,6 +563,7 @@ func TestNativeDownloadsBoundedQueueCancelAndPlaybackIsolation(t *testing.T) {
 	}
 }
 
+// TestNativeDownloadsRestartPausesPendingJobs 验证「Native Downloads Restart Pauses Pending Jobs」回归场景。
 func TestNativeDownloadsRestartPausesPendingJobs(t *testing.T) {
 	manager := downloadTestManager(t)
 	manager.resolve = func(ctx context.Context, job nativeDownloadJob) (providerMedia, error) {
@@ -395,6 +591,7 @@ func TestNativeDownloadsRestartPausesPendingJobs(t *testing.T) {
 	}
 }
 
+// TestNativeDownloadHLSBundleIncludesSelectedAudioKeysAndByteRanges 验证「Native Download HLS Bundle Includes Selected Audio Keys And Byte Ranges」回归场景。
 func TestNativeDownloadHLSBundleIncludesSelectedAudioKeysAndByteRanges(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -462,6 +659,7 @@ func TestNativeDownloadHLSBundleIncludesSelectedAudioKeysAndByteRanges(t *testin
 	}
 }
 
+// TestNativeDownloadHLSRejectsLiveAndUnsupportedEncryption 验证「Native Download HLS Rejects Live And Unsupported Encryption」回归场景。
 func TestNativeDownloadHLSRejectsLiveAndUnsupportedEncryption(t *testing.T) {
 	manager := downloadTestManager(t)
 	for _, playlist := range []string{

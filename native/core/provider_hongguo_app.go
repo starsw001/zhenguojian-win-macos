@@ -38,37 +38,40 @@ type hongguoCatalogState struct {
 }
 
 type hongguoAppClient struct {
-	mu                  sync.Mutex
-	catalogMu           sync.Mutex
-	deviceMu            sync.Mutex
-	registerPausedUntil time.Time
-	baseURL             string
-	state               hongguoCatalogState
-	details             map[string]hongguoDetailEntry
-	pending             map[string]*hongguoDetailCall
-	searches            map[string]hongguoSearchEntry
-	searchPending       map[string]*hongguoSearchCall
-	suggestions         map[string]hongguoSuggestionEntry
-	suggestPending      map[string]*hongguoSuggestionCall
-	danmaku             map[string]hongguoDanmakuCacheEntry
-	danmakuPending      map[string]*hongguoDanmakuCall
-	gate                chan struct{}
-	gateMu              sync.Mutex
-	gateLast            time.Time
-	categoryBlockedUntil time.Time
+	mu                    sync.Mutex
+	catalogMu             sync.Mutex
+	deviceMu              sync.Mutex
+	registerPausedUntil   time.Time
+	baseURL               string
+	state                 hongguoCatalogState
+	details               map[string]hongguoDetailEntry
+	pending               map[string]*hongguoDetailCall
+	searches              map[string]hongguoSearchEntry
+	searchPending         map[string]*hongguoSearchCall
+	suggestions           map[string]hongguoSuggestionEntry
+	suggestPending        map[string]*hongguoSuggestionCall
+	danmaku               map[string]hongguoDanmakuCacheEntry
+	danmakuPending        map[string]*hongguoDanmakuCall
+	gate                  chan struct{}
+	gateMu                sync.Mutex
+	gateLast              time.Time
+	categoryBlockedUntil  time.Time
+	playbackDeviceMu      sync.Mutex
+	playbackDevice        *hongguoPlaybackDevice
+	playbackDeviceErr     error
+	playbackDeviceRetryAt time.Time
 }
 
 // hongguoAppGate 限制对红果 App 接口的并发与频率，压平突发请求。
 func (client *hongguoAppClient) hongguoAppGate(ctx context.Context) error {
+	client.gateMu.Lock()
 	if client.gate == nil {
-		client.gateMu.Lock()
-		if client.gate == nil {
-			client.gate = make(chan struct{}, 2)
-		}
-		client.gateMu.Unlock()
+		client.gate = make(chan struct{}, 2)
 	}
+	gate := client.gate
+	client.gateMu.Unlock()
 	select {
-	case client.gate <- struct{}{}:
+	case gate <- struct{}{}:
 	case <-ctx.Done():
 		return ctx.Err()
 	}
@@ -82,10 +85,12 @@ func (client *hongguoAppClient) hongguoAppGate(ctx context.Context) error {
 	return nil
 }
 
+// hongguoAppGateRelease 处理红果App客户端的红果App门控发布操作。
 func (client *hongguoAppClient) hongguoAppGateRelease() {
 	<-client.gate
 }
 
+// hongguoClient 取得红果请求使用的客户端。
 func (downloader *Downloader) hongguoClient() *hongguoAppClient {
 	downloader.hongguoOnce.Do(func() {
 		downloader.hongguo = &hongguoAppClient{
@@ -99,6 +104,7 @@ func (downloader *Downloader) hongguoClient() *hongguoAppClient {
 	return downloader.hongguo
 }
 
+// cloneHongguoCatalogState 复制红果目录状态。
 func cloneHongguoCatalogState(state *hongguoCatalogState) *hongguoCatalogState {
 	if state == nil {
 		return nil
@@ -111,6 +117,7 @@ func cloneHongguoCatalogState(state *hongguoCatalogState) *hongguoCatalogState {
 	return &cloned
 }
 
+// restoreHongguoCatalog 恢复红果目录。
 func (downloader *Downloader) restoreHongguoCatalog(state *hongguoCatalogState) {
 	if state == nil || state.Version != 1 || !hongguoNumericID.MatchString(state.DeviceID) || !hongguoNumericID.MatchString(state.InstallID) {
 		return
@@ -135,6 +142,7 @@ func (downloader *Downloader) restoreHongguoCatalog(state *hongguoCatalogState) 
 	}
 }
 
+// hongguoCatalogSnapshot 取得红果目录分页状态的独立快照。
 func (downloader *Downloader) hongguoCatalogSnapshot() *hongguoCatalogState {
 	client := downloader.hongguoClient()
 	client.mu.Lock()
@@ -142,6 +150,7 @@ func (downloader *Downloader) hongguoCatalogSnapshot() *hongguoCatalogState {
 	return cloneHongguoCatalogState(&client.state)
 }
 
+// hongguoCatalogInitialized 判断红果目录是否已经初始化。
 func hongguoCatalogInitialized(state *hongguoCatalogState) bool {
 	if state != nil && state.Version == 1 {
 		for _, cursor := range state.Feeds {
@@ -153,6 +162,7 @@ func hongguoCatalogInitialized(state *hongguoCatalogState) bool {
 	return false
 }
 
+// hongguoCatalogHasMore 判断红果目录是否还有后续条目。
 func hongguoCatalogHasMore(state *hongguoCatalogState) bool {
 	for _, genre := range hongguoAppGenres {
 		if state == nil || !state.Feeds[genre.key].Exhausted {
@@ -162,6 +172,7 @@ func hongguoCatalogHasMore(state *hongguoCatalogState) bool {
 	return false
 }
 
+// hongguoAppQuery 构造红果App请求使用的查询参数。
 func hongguoAppQuery(deviceID, installID string) url.Values {
 	return url.Values{
 		"aid": {"8662"}, "app_name": {"novelread"}, "version_code": {"73532"}, "version_name": {"7.3.5.32"},
@@ -172,6 +183,7 @@ func hongguoAppQuery(deviceID, installID string) url.Values {
 	}
 }
 
+// hongguoAppRequest 向红果 App 接口发送请求并读取响应。
 func (downloader *Downloader) hongguoAppRequest(ctx context.Context, method, path string, extra url.Values, payload any) (map[string]any, error) {
 	client := downloader.hongguoClient()
 	comment, _ := ctx.Value(hongguoCommentKey{}).(bool)

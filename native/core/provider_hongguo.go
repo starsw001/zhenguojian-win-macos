@@ -16,6 +16,7 @@ import (
 
 const hongguoBaseURL = "https://hongguoduanju.com"
 
+// fetchHongguoDramas 获取红果作品列表。
 func (d *Downloader) fetchHongguoDramas(ctx context.Context) ([]Drama, error) {
 	initialized := hongguoCatalogInitialized(d.hongguoCatalogSnapshot())
 	dramas, appErr := d.fetchHongguoAppCatalog(ctx)
@@ -32,6 +33,7 @@ func (d *Downloader) fetchHongguoDramas(ctx context.Context) ([]Drama, error) {
 	return webDramas, errors.Join(appErr, webErr)
 }
 
+// fetchHongguoWebDramas 获取红果网页作品列表。
 func (d *Downloader) fetchHongguoWebDramas(ctx context.Context) ([]Drama, error) {
 	routes := []struct {
 		path string
@@ -40,7 +42,7 @@ func (d *Downloader) fetchHongguoWebDramas(ctx context.Context) ([]Drama, error)
 		{path: "real-drama", name: "真人剧"},
 		{path: "comic-drama", name: "漫剧"},
 		{path: "ai-drama", name: "AI剧"},
-		{path: "comic", name: "动漫"},
+		{path: "comic", name: "漫画"},
 	}
 	type routeResult struct {
 		dramas []Drama
@@ -73,6 +75,7 @@ func (d *Downloader) fetchHongguoWebDramas(ctx context.Context) ([]Drama, error)
 	return out, errors.Join(failures...)
 }
 
+// fetchHongguoRoute 获取红果线路。
 func (d *Downloader) fetchHongguoRoute(ctx context.Context, route, category string) ([]Drama, error) {
 	pages := d.cfg.MaxPagesPerSort
 	if pages < 1 {
@@ -107,6 +110,7 @@ func (d *Downloader) fetchHongguoRoute(ctx context.Context, route, category stri
 	return dramas, nil
 }
 
+// fetchHongguoCategoryPage 获取红果分类页面。
 func (d *Downloader) fetchHongguoCategoryPage(ctx context.Context, route, category string) ([]Drama, int, error) {
 	body, err := d.fetchProviderText(ctx, hongguoBaseURL+"/category/"+route, hongguoBaseURL+"/")
 	if err != nil {
@@ -128,6 +132,7 @@ func (d *Downloader) fetchHongguoCategoryPage(ctx context.Context, route, catego
 	return out, pages, nil
 }
 
+// fetchHongguoChapters 获取红果分集列表。
 func (d *Downloader) fetchHongguoChapters(ctx context.Context, sourceID string) (string, []Chapter, error) {
 	sourceID = strings.TrimPrefix(strings.TrimSpace(sourceID), "hg-series-v1:")
 	if sourceID == "" {
@@ -147,6 +152,7 @@ func (d *Downloader) fetchHongguoChapters(ctx context.Context, sourceID string) 
 	return "", nil, fmt.Errorf("App 详情失败: %v；网页详情失败: %w", publicError(appErr), webErr)
 }
 
+// fetchHongguoWebChapters 获取红果网页分集列表。
 func (d *Downloader) fetchHongguoWebChapters(ctx context.Context, sourceID string) (string, []Chapter, error) {
 	body, err := d.fetchProviderText(ctx, hongguoBaseURL+"/detail?series_id="+url.QueryEscape(sourceID), hongguoBaseURL+"/")
 	if err != nil {
@@ -175,6 +181,7 @@ func (d *Downloader) fetchHongguoWebChapters(ctx context.Context, sourceID strin
 	return title, chapters, nil
 }
 
+// parseRouterData 解析路由数据。
 func parseRouterData(raw string) map[string]any {
 	idx := regexp.MustCompile(`(?s)(?:window\.)?_ROUTER_DATA\s*=\s*`).FindStringIndex(raw)
 	if idx == nil {
@@ -189,6 +196,7 @@ func parseRouterData(raw string) map[string]any {
 	return data
 }
 
+// resolveHongguoMedia 解析红果媒体。
 func (d *Downloader) resolveHongguoMedia(ctx context.Context, task Task) (providerMedia, error) {
 	source, seriesID, ok := splitProviderDramaID(task.DramaID)
 	if !ok || source != sourceHongguo {
@@ -198,51 +206,85 @@ func (d *Downloader) resolveHongguoMedia(ctx context.Context, task Task) (provid
 	if !hongguoNumericID.MatchString(videoID) || !hongguoNumericID.MatchString(seriesID) {
 		return providerMedia{}, fmt.Errorf("红果章节 ID 无效，请重新获取章节")
 	}
-	media, multiErr := d.resolveHongguoMultiMedia(ctx, videoID)
-	if multiErr == nil {
-		return media, nil
+	if err := ctx.Err(); err != nil {
+		return providerMedia{}, err
+	}
+	fresh, _ := ctx.Value(hongguoFreshMediaKey{}).(bool)
+	key := seriesID + "/" + videoID
+	cached, generation, hit := d.hongguoMediaCache.get(key, fresh, time.Now())
+	if hit {
+		return cached, nil
+	}
+	media, err := d.resolveHongguoMediaRoutes(ctx, task.Index, seriesID, videoID)
+	if err != nil {
+		if hongguoStopPlaybackFallback(err) && !errors.Is(err, errHongguoEmptyPrimaryPlayback) {
+			d.hongguoMediaCache.clear()
+		}
+		return providerMedia{}, err
 	}
 	if err := ctx.Err(); err != nil {
 		return providerMedia{}, err
 	}
-	media, nativeErr := d.resolveHongguoAppMedia(ctx, videoID)
-	if nativeErr == nil {
-		return media, nil
-	}
-	if err := ctx.Err(); err != nil {
-		return providerMedia{}, err
-	}
-	media, pageErr := d.resolveHongguoWebMedia(ctx, seriesID, videoID)
-	if pageErr == nil {
-		return media, nil
-	}
-	if err := ctx.Err(); err != nil {
-		return providerMedia{}, err
-	}
-	media, apiErr := d.resolveHongguoPlaybackAPI(ctx, seriesID, videoID)
-	if apiErr == nil {
-		return media, nil
-	}
-	return providerMedia{}, fmt.Errorf("红果新版取流失败：%v；App 取流失败：%v；网页取流失败：%v；备用取流失败：%w", publicError(multiErr), publicError(nativeErr), publicError(pageErr), apiErr)
+	d.hongguoMediaCache.put(key, generation, media, time.Now())
+	return media, nil
 }
 
+// resolveHongguoMediaRoutes 解析红果媒体候选线路。
+func (d *Downloader) resolveHongguoMediaRoutes(ctx context.Context, episode int, seriesID, videoID string) (providerMedia, error) {
+	media, primaryErr := d.resolveHongguoMultiMedia(ctx, videoID)
+	if primaryErr == nil {
+		return media, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return providerMedia{}, err
+	}
+	if hongguoStopPlaybackFallback(primaryErr) && !errors.Is(primaryErr, errHongguoEmptyPrimaryPlayback) {
+		return providerMedia{}, fmt.Errorf("红果第%d集播放接口暂不可用：%w", episode, primaryErr)
+	}
+	media, webErr := d.resolveHongguoWebMedia(ctx, seriesID, videoID)
+	if webErr == nil {
+		return media, nil
+	}
+	return providerMedia{}, fmt.Errorf("红果第%d集在线播放和下载暂不可用：%w；官网同集公开线路不可用：%w", episode, primaryErr, webErr)
+}
+
+// resolveHongguoWebMedia 解析红果网页媒体。
 func (d *Downloader) resolveHongguoWebMedia(ctx context.Context, seriesID, videoID string) (providerMedia, error) {
 	pageURL := hongguoBaseURL + "/player/" + url.PathEscape(seriesID) + "/" + url.PathEscape(videoID)
-	body, err := d.fetchProviderText(ctx, pageURL, hongguoBaseURL+"/")
+	ctx = context.WithValue(ctx, nativeNoRedirectKey{}, true)
+	body, err := d.fetchHongguoPlaybackText(ctx, pageURL)
 	if err != nil {
 		return providerMedia{}, err
 	}
-	page := routerLoaderMap(parseRouterData(body), "player_", "player_page")
-	if mapString(page, "vid") != videoID || mapString(page, "series_id") != seriesID {
-		return providerMedia{}, fmt.Errorf("红果未返回所请求的剧集，可能仅允许网页试看；请在站点确认该集的访问权限")
+	page, err := hongguoRequestedPlaybackPage(parseRouterData(body), seriesID, videoID)
+	if err != nil {
+		return providerMedia{}, err
+	}
+	if protected, marked := page["protectedPlayback"]; marked && protected != false {
+		preview, _ := page["publicVideoSeo"].(map[string]any)
+		if preview["available"] == true && mapString(preview, "seriesId") == seriesID && mapString(preview, "itemId") == videoID {
+			return providerMedia{}, errors.New("红果官网正片受保护（protectedPlayback），公开预览不是正片，不会用作正片播放或下载；请在官网或官方 App 查看本集")
+		}
+		return providerMedia{}, errors.New("红果网页启用了受保护播放（protectedPlayback）；请在官网或官方 App 确认访问权限，软件不会尝试绕过；已下载文件仍可离线播放")
 	}
 	info, _ := page["video_player_info"].(map[string]any)
-	addresses := hongguoMediaAddresses(info)
+	if id := mapString(info, "vid", "video_id"); id != "" && id != videoID {
+		return providerMedia{}, errors.New("红果官网片源分集与请求不符，未使用其他分集或试看集")
+	}
+	if id := mapString(info, "series_id"); id != "" && id != seriesID {
+		return providerMedia{}, errors.New("红果官网片源作品与请求不符，未使用其他作品")
+	}
+	var addresses []string
+	for _, address := range hongguoMediaAddresses(info) {
+		if checked, err := hongguoMultiCheckedURL(address, []string{"qznovelvod.com", "fqnovelvod.com", "douyinvod.com"}); err == nil {
+			addresses = append(addresses, checked)
+		}
+	}
 	if len(addresses) == 0 {
-		return providerMedia{}, fmt.Errorf("红果该集未提供公开播放地址，可能需要登录或 App 授权；不会将试看集冒充该集下载")
+		return providerMedia{}, errors.New("红果官网未提供所选分集的公开媒体地址，请在官网或官方 App 确认访问权限")
 	}
 	duration, _ := strconv.ParseFloat(mapString(info, "duration"), 64)
-	media := providerMedia{URL: addresses[0], Referer: d.providerBaseURL(sourceHongguo) + "/", Duration: time.Duration(duration * float64(time.Second))}
+	media := providerMedia{URL: addresses[0], Referer: pageURL, Duration: time.Duration(duration * float64(time.Second))}
 	for _, address := range addresses {
 		variant := media
 		variant.URL, variant.Variants = address, nil
@@ -251,6 +293,7 @@ func (d *Downloader) resolveHongguoWebMedia(ctx context.Context, seriesID, video
 	return media, nil
 }
 
+// hongguoDramaFromAny 将红果响应节点转换为统一作品模型。
 func hongguoDramaFromAny(v any, category string) Drama {
 	m, ok := v.(map[string]any)
 	if !ok {
@@ -302,6 +345,7 @@ func hongguoDramaFromAny(v any, category string) Drama {
 	return Drama{ID: providerDramaID(sourceHongguo, sourceID), Source: sourceHongguo, SourceID: sourceID, Title: title, Name: title, Desc: intro, Intro: intro, Cover: cover, CoverURL: cover, CategoryName: firstNonEmpty(genre, category), ChannelName: "红果", Remark: remark, TotalEpisode: count, EpisodeCount: count, Tags: tags, ReleaseStatus: releaseStatus, Score: mapString(vd, "score"), Views: mapString(vd, "series_play_cnt", "play_cnt"), Heat: hongguoHeat(vd), OnlineDate: hongguoOnlineDate(vd, time.Now())}
 }
 
+// nestedMap 沿给定字段路径取得嵌套映射。
 func nestedMap(v any, keys ...string) map[string]any {
 	cur, _ := v.(map[string]any)
 	for _, key := range keys {
@@ -313,6 +357,7 @@ func nestedMap(v any, keys ...string) map[string]any {
 	return cur
 }
 
+// routerLoaderMap 从页面路由数据中取得加载器映射。
 func routerLoaderMap(data map[string]any, names ...string) map[string]any {
 	loader, _ := data["loaderData"].(map[string]any)
 	for _, name := range names {
@@ -332,6 +377,7 @@ func routerLoaderMap(data map[string]any, names ...string) map[string]any {
 	return nil
 }
 
+// anyList 将通用响应值提取为列表。
 func anyList(v any) []any {
 	switch x := v.(type) {
 	case []any:

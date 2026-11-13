@@ -1,3 +1,4 @@
+import 'update_activity.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -14,6 +15,7 @@ import 'app_layout.dart';
 import 'app_orientation.dart';
 import 'app_theme.dart';
 import 'core_bridge.dart';
+import 'cache_settings.dart';
 import 'diary_service.dart';
 import 'luna_exo_player.dart';
 import 'danmaku_controller.dart';
@@ -23,9 +25,13 @@ import 'downloads_screen.dart';
 import 'follow_state.dart';
 import 'local_store.dart';
 import 'models.dart';
+import 'player_runtime_options.dart';
+import 'player_shutdown.dart';
 import 'playback_loader.dart';
 import 'playback_preloader.dart';
 import 'playback_recovery.dart';
+import 'playback_routes_bar.dart';
+import 'playback_routes_header.dart';
 import 'playback_preferences.dart';
 import 'player_controls.dart';
 import 'player_interactions.dart';
@@ -52,6 +58,7 @@ class PlayerScreen extends StatefulWidget {
     this.playerFactory,
     this.videoBuilder,
     this.handoff,
+    this.siteSelector,
   });
   final DramaDetail detail;
   final int initialIndex;
@@ -62,6 +69,7 @@ class PlayerScreen extends StatefulWidget {
   final AppRepository repository;
   final LocalStore store;
   final LanIncomingPlayback? handoff;
+  final Widget? siteSelector;
   @visibleForTesting
   final Player Function()? playerFactory;
   @visibleForTesting
@@ -73,6 +81,7 @@ class PlayerScreen extends StatefulWidget {
 class _PlayerScreenState extends State<PlayerScreen>
     with WidgetsBindingObserver {
   late final Player _player;
+  late final int _playerCacheLimitMiB = CacheRuntime.limits.value('playerMiB');
   late final VideoController? _video;
   late final VideoEnhancementController _enhancement;
   late final PlaybackLoader _loader;
@@ -104,6 +113,8 @@ class _PlayerScreenState extends State<PlayerScreen>
   int _requestedQuality = 0;
   bool _loading = true;
   bool _forceOnline = false;
+  bool _forceLocal = false;
+  bool _hasLocalVideo = false;
   bool _localFailure = false;
   bool _fullscreen = false;
   bool _automaticFullscreenSuppressed = false;
@@ -127,6 +138,8 @@ class _PlayerScreenState extends State<PlayerScreen>
   String? _error;
   String? _saveWarning;
   PlaybackPlan? _plan;
+  final Map<int, PlaybackRouteStatus> _routeChecks = {};
+  int _manualDownloadRoute = 0;
   double _speed = 1;
   double _aspectRatio = 9 / 16;
   double _resumePosition = 0;
@@ -162,6 +175,7 @@ class _PlayerScreenState extends State<PlayerScreen>
       ? '自动'
       : '${_requestedQuality}P';
   String get _session => _plan?.session ?? '';
+  bool get _localOnly => widget.localOnly || _forceLocal;
   double get _currentPosition =>
       _openedIndex == _index && _player.state.position.inMilliseconds > 0
       ? _player.state.position.inMilliseconds / 1000
@@ -170,8 +184,10 @@ class _PlayerScreenState extends State<PlayerScreen>
   @override
   void initState() {
     super.initState();
+    UpdateActivity.enterPlayer();
     WidgetsBinding.instance.addObserver(this);
     _index = widget.initialIndex;
+    if (widget.localOnly) _loadingMessage = '正在读取本地视频';
     _profileEpoch = widget.handoff?.profileEpoch ?? widget.store.profileEpoch;
     final preferences = widget.store.playbackPreferences;
     _speed = preferences.speed;
@@ -189,11 +205,21 @@ class _PlayerScreenState extends State<PlayerScreen>
         (Platform.isAndroid
             ? LunaExoPlayer()
             : Player(
-                configuration: const PlayerConfiguration(
-                  bufferSize: 32 * 1024 * 1024,
+                configuration: PlayerConfiguration(
+                  bufferSize: _playerCacheLimitMiB * 1024 * 1024,
                   logLevel: MPVLogLevel.error,
                 ),
               ));
+    final cachePlayer = _player.platform;
+    if (cachePlayer is NativePlayer) {
+      CacheRuntime.registerPlayer(
+        this,
+        _playerCacheLimitMiB,
+        () => CacheRuntime.readPlayerBytes(
+          (name) => cachePlayer.getProperty(name),
+        ),
+      );
+    }
     _video = widget.videoBuilder == null && !Platform.isAndroid
         ? VideoController(
             _player,
@@ -345,19 +371,25 @@ class _PlayerScreenState extends State<PlayerScreen>
     if (_profileEpoch != widget.store.profileEpoch ||
         handoff?.cancelled == true) {
       handoff?.fail('接收用户已变更，推送已取消');
-      if (handoff != null)
+      if (handoff != null) {
         unawaited(widget.repository.release(handoff.plan.session));
+      }
       _loading = false;
       _error = '播放接收已取消';
     } else {
-      _play(
-        _index,
-        position: widget.initialPosition,
-        handoffPlan: handoff?.plan,
-      );
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || _closed) return;
+        unawaited(
+          _play(
+            _index,
+            position: widget.initialPosition,
+            handoffPlan: handoff?.plan,
+          ),
+        );
+      });
     }
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted && !_closed) {
+      if (mounted && !_closed && !widget.localOnly) {
         widget.repository.catalogUpdates.publish(
           widget.repository.catalogUpdates.current(widget.detail.drama),
           retryCover: true,
@@ -568,10 +600,7 @@ class _PlayerScreenState extends State<PlayerScreen>
       LanPlaybackHost(
         identity: _lanIdentity,
         title:
-            widget.detail.drama.title +
-            ' · 第 ' +
-            widget.detail.episodes[_index].number.toString() +
-            ' 集',
+            '${widget.detail.drama.title} · 第 ${widget.detail.episodes[_index].number} 集',
         stop: _stopForLan,
       ),
     );
@@ -588,8 +617,9 @@ class _PlayerScreenState extends State<PlayerScreen>
         _error != null ||
         _openedIndex != _index ||
         _index != widget.initialIndex ||
-        widget.store.profileEpoch != _profileEpoch)
+        widget.store.profileEpoch != _profileEpoch) {
       return;
+    }
     final state = _player.state;
     final position = state.position.inMilliseconds / 1000;
     final duration = state.duration.inMilliseconds / 1000;
@@ -601,8 +631,9 @@ class _PlayerScreenState extends State<PlayerScreen>
         state.buffering ||
         (state.width ?? 0) <= 0 ||
         position < handoff.position - .5 ||
-        position > handoff.position + 20)
+        position > handoff.position + 20) {
       return;
+    }
     _lanFirstPosition ??= position;
     if (position >= _lanFirstPosition! + .15) handoff.acknowledge(position);
   }
@@ -612,8 +643,9 @@ class _PlayerScreenState extends State<PlayerScreen>
     await _serialize(() async {
       if (_closed ||
           generation != _generation ||
-          widget.store.profileEpoch != _profileEpoch)
+          widget.store.profileEpoch != _profileEpoch) {
         return;
+      }
       _playIntent = false;
       _interactions.cancel();
       _enhancement.suspend();
@@ -630,8 +662,9 @@ class _PlayerScreenState extends State<PlayerScreen>
         _closed ||
         _loading ||
         _error != null ||
-        widget.mediaId != null)
+        widget.mediaId != null) {
       return;
+    }
     final generation = _generation;
     final index = _index;
     bool current() =>
@@ -674,7 +707,7 @@ class _PlayerScreenState extends State<PlayerScreen>
     if (_closed) return;
     if (!_preloadEnabled ||
         !_foreground ||
-        widget.localOnly ||
+        _localOnly ||
         _plan?.local == true ||
         _loading ||
         _error != null ||
@@ -808,7 +841,13 @@ class _PlayerScreenState extends State<PlayerScreen>
     final position = _currentPosition;
     final action = current.local
         ? PlaybackRecoveryAction.stop
-        : _recovery.next(current);
+        : _recovery.next(
+            current,
+            allowRefresh:
+                widget.detail.drama.source != 'hongguo' &&
+                current.routes.isEmpty,
+            allCandidates: current.routes.isNotEmpty,
+          );
     if (action == PlaybackRecoveryAction.stop) {
       _resumePosition = position;
       final ticket = _generation;
@@ -822,7 +861,7 @@ class _PlayerScreenState extends State<PlayerScreen>
             _openedIndex = -1;
             await _player.stop();
           } finally {
-            await widget.repository.release(current.session);
+            if (current.local) await widget.repository.release(current.session);
           }
         });
       } catch (_) {}
@@ -912,6 +951,7 @@ class _PlayerScreenState extends State<PlayerScreen>
     int index, {
     double position = 0,
     PlaybackRecoveryAction? recoveryAction,
+    int? routeIndex,
     bool playWhenReady = true,
     PlaybackPlan? handoffPlan,
     bool showControlsOnReady = true,
@@ -929,10 +969,22 @@ class _PlayerScreenState extends State<PlayerScreen>
       _handoffOwned = false;
       widget.handoff?.fail('接收端已更换播放内容');
     }
-    if (index != _index) _forceOnline = false;
+    if (index != _index) {
+      _forceOnline = false;
+      _forceLocal = false;
+      _hasLocalVideo = false;
+    }
+    if (routeIndex == null &&
+        recoveryAction != PlaybackRecoveryAction.alternative) {
+      _routeChecks.clear();
+      _manualDownloadRoute = 0;
+    }
     final warmed =
         handoffPlan ??
-        (recoveryAction == null && _preloadEnabled && !widget.localOnly
+        (routeIndex == null &&
+                recoveryAction == null &&
+                _preloadEnabled &&
+                !_localOnly
             ? _preloader.take(
                 widget.detail.drama,
                 widget.detail.episodes[index],
@@ -963,7 +1015,7 @@ class _PlayerScreenState extends State<PlayerScreen>
       _loadingMessage = switch (recoveryAction) {
         PlaybackRecoveryAction.alternative => '正在切换备用线路',
         PlaybackRecoveryAction.refresh => '正在重新获取播放地址',
-        _ => '正在准备播放',
+        _ => _localOnly && !_forceOnline ? '正在读取本地视频' : '正在准备播放',
       };
     });
     LanController.current?.detachPlayback(_lanIdentity);
@@ -984,7 +1036,8 @@ class _PlayerScreenState extends State<PlayerScreen>
         await _player.stop();
         final previous = _plan;
         _plan = null;
-        if (recoveryAction == PlaybackRecoveryAction.alternative) {
+        if (routeIndex != null ||
+            recoveryAction == PlaybackRecoveryAction.alternative) {
           retained = previous;
         } else if (previous != null) {
           await widget.repository.release(previous.session);
@@ -993,16 +1046,28 @@ class _PlayerScreenState extends State<PlayerScreen>
       if (_closed || ticket != _generation) {
         return;
       }
+      final requestedEpisode = widget.detail.episodes[index].number;
+      DiaryService.add(
+        '[Play] 请求播放: 剧=${widget.detail.drama.title}, 站源=${widget.detail.drama.source}, '
+        '第$requestedEpisode集, 模式=${_forceOnline
+            ? '手动联网'
+            : _localOnly
+            ? '仅本地'
+            : '本地优先'}',
+      );
       prepared = retained != null
-          ? await _loader.fallback(retained!)
-          : warmed != null
-          ? await _loader.use(warmed)
+          ? routeIndex != null
+                ? await _loader.selectRoute(retained!, routeIndex)
+                : await _loader.fallback(retained!)
+          : handoffPlan != null
+          ? await _loader.use(handoffPlan)
           : await _loader.load(
               widget.detail.drama,
               widget.detail.episodes[index],
               quality: _requestedQuality,
-              localOnly: widget.localOnly,
+              localOnly: _localOnly,
               online: _forceOnline,
+              prepared: warmed,
             );
       if (prepared == null) {
         return;
@@ -1018,33 +1083,90 @@ class _PlayerScreenState extends State<PlayerScreen>
         }
         final platform = _player.platform;
         if (platform is NativePlayer) {
+          await configurePortablePlaybackCache(
+            (name, value) => setPlaybackProperty(platform.command, name, value),
+            totalMiB: _playerCacheLimitMiB,
+          );
           if (Platform.isAndroid) {
             if (_television) {
-              await platform.setProperty('hwdec', 'mediacodec');
-              await platform.setProperty('hwdec-codecs', 'all');
-              await platform.setProperty('opengl-pbo', 'yes');
-              await platform.setProperty('video-latency-hacks', 'yes');
-              await platform.setProperty('scale', 'bilinear');
-              await platform.setProperty('cscale', 'bilinear');
-              await platform.setProperty('dscale', 'bilinear');
-              await platform.setProperty('correct-downscaling', 'no');
-              await platform.setProperty('vd-lavc-skiploopfilter', 'all');
-              await platform.setProperty('vd-lavc-skipidct', 'all');
-              await platform.setProperty('vd-lavc-threads', '2');
-              await platform.setProperty('demuxer-max-bytes', '${4 * 1024 * 1024}');
-              await platform.setProperty('demuxer-max-back-bytes', '${1 * 1024 * 1024}');
-              await platform.setProperty('demuxer-readahead-secs', '5');
+              await setPlaybackProperty(
+                platform.command,
+                'hwdec',
+                'mediacodec',
+              );
+              await setPlaybackProperty(
+                platform.command,
+                'hwdec-codecs',
+                'all',
+              );
+              await setPlaybackProperty(platform.command, 'opengl-pbo', 'yes');
+              await setPlaybackProperty(
+                platform.command,
+                'video-latency-hacks',
+                'yes',
+              );
+              await setPlaybackProperty(platform.command, 'scale', 'bilinear');
+              await setPlaybackProperty(platform.command, 'cscale', 'bilinear');
+              await setPlaybackProperty(platform.command, 'dscale', 'bilinear');
+              await setPlaybackProperty(
+                platform.command,
+                'correct-downscaling',
+                'no',
+              );
+              await setPlaybackProperty(
+                platform.command,
+                'vd-lavc-skiploopfilter',
+                'all',
+              );
+              await setPlaybackProperty(
+                platform.command,
+                'vd-lavc-skipidct',
+                'all',
+              );
+              await setPlaybackProperty(
+                platform.command,
+                'vd-lavc-threads',
+                '2',
+              );
+              await setPlaybackProperty(
+                platform.command,
+                'demuxer-max-bytes',
+                '${4 * 1024 * 1024}',
+              );
+              await setPlaybackProperty(
+                platform.command,
+                'demuxer-max-back-bytes',
+                '${1 * 1024 * 1024}',
+              );
+              await setPlaybackProperty(
+                platform.command,
+                'demuxer-readahead-secs',
+                '5',
+              );
             } else {
-              await platform.setProperty('hwdec', 'auto-safe');
-              await platform.setProperty('hwdec-codecs', 'all');
-              await platform.setProperty('vd-lavc-skiploopfilter', 'nonkey');
-              await platform.setProperty('vd-lavc-threads', '4');
+              await setPlaybackProperty(platform.command, 'hwdec', 'auto-safe');
+              await setPlaybackProperty(
+                platform.command,
+                'hwdec-codecs',
+                'all',
+              );
+              await setPlaybackProperty(
+                platform.command,
+                'vd-lavc-skiploopfilter',
+                'nonkey',
+              );
+              await setPlaybackProperty(
+                platform.command,
+                'vd-lavc-threads',
+                '4',
+              );
             }
-            await platform.setProperty('vd-lavc-fast', 'yes');
-            await platform.setProperty('video-sync', 'audio');
-            await platform.setProperty('framedrop', 'vo');
+            await setPlaybackProperty(platform.command, 'vd-lavc-fast', 'yes');
+            await setPlaybackProperty(platform.command, 'video-sync', 'audio');
+            await setPlaybackProperty(platform.command, 'framedrop', 'vo');
           }
-          await platform.setProperty(
+          await setPlaybackProperty(
+            platform.command,
             'demuxer-lavf-o',
             [
               'seg_max_retry=3',
@@ -1057,12 +1179,18 @@ class _PlayerScreenState extends State<PlayerScreen>
                 'decryption_key=${plan.decryptionKey}',
             ].join(','),
           );
-          await platform.setProperty('network-timeout', '20');
+          await setPlaybackProperty(platform.command, 'network-timeout', '20');
         }
         _plan = plan;
+        if (plan.local) _hasLocalVideo = true;
+        unawaited(_checkRoutes(plan, ticket));
         installed = true;
         _acceptErrors = true;
-        DiaryService.add('[Play] 调用 _player.open: url=${plan.url}, headers=${plan.headers.keys.toList()}');
+        DiaryService.add(
+          '[Play] 调用 _player.open: 剧=${widget.detail.drama.title}, '
+          '第${widget.detail.episodes[index].number}集, 来源=${plan.local ? '本地文件' : '在线线路'}, '
+          'url=${plan.url}, headers=${plan.headers.keys.toList()}',
+        );
         await _player.open(
           Media(
             plan.url,
@@ -1093,7 +1221,15 @@ class _PlayerScreenState extends State<PlayerScreen>
         }
       });
     } catch (error) {
-      DiaryService.add('[Play] 捕获播放流程错误: $error');
+      DiaryService.add(
+        '[Play] 捕获播放流程错误: 剧=${widget.detail.drama.title}, '
+        '站源=${widget.detail.drama.source}, 第${widget.detail.episodes[index].number}集, '
+        '模式=${_forceOnline
+            ? '手动联网'
+            : _localOnly
+            ? '仅本地'
+            : '本地优先'}: $error',
+      );
       if (!_closed && mounted && ticket == _generation) {
         if (prepared != null && identical(_plan, prepared)) {
           _acceptErrors = true;
@@ -1107,7 +1243,7 @@ class _PlayerScreenState extends State<PlayerScreen>
               _loading = false;
               _localFailure =
                   (error is AppFailure && error.code == 'local_media') ||
-                  (widget.localOnly && !_forceOnline);
+                  (_localOnly && !_forceOnline);
               _error = error is AppFailure ? error.message : '无法播放这一集，请重试或换一集。';
               widget.handoff?.fail(_error!);
             });
@@ -1126,9 +1262,110 @@ class _PlayerScreenState extends State<PlayerScreen>
     }
   }
 
+  Future<void> _checkRoutes(PlaybackPlan plan, int ticket) async {
+    final order = [...plan.routes]
+      ..sort(
+        (a, b) => (a.index == plan.routeIndex ? -1 : a.index).compareTo(
+          b.index == plan.routeIndex ? -1 : b.index,
+        ),
+      );
+    for (final route in order) {
+      if (!mounted || _closed || ticket != _generation) return;
+      setState(
+        () => _routeChecks[route.index] = PlaybackRouteStatus(
+          index: route.index,
+          quality: route.quality,
+          status: 'checking',
+        ),
+      );
+      try {
+        final result = await widget.repository.checkPlaybackRoute(
+          plan,
+          route.index,
+        );
+        if (!mounted || _closed || ticket != _generation) return;
+        setState(() => _routeChecks[route.index] = result);
+        if (result.stop) break;
+      } catch (_) {
+        if (!mounted || _closed || ticket != _generation) return;
+        setState(
+          () => _routeChecks[route.index] = PlaybackRouteStatus(
+            index: route.index,
+            quality: route.quality,
+            status: 'failed',
+            message: '检测失败或会话已失效',
+          ),
+        );
+        break;
+      }
+    }
+  }
+
+  Future<void> _selectRoute(int index) async {
+    final plan = _plan;
+    if (_closed ||
+        _loading ||
+        plan == null ||
+        plan.local ||
+        index < 0 ||
+        index >= plan.routeCount) {
+      return;
+    }
+    _manualDownloadRoute = index + 1;
+    if (index == plan.routeIndex && _error == null) {
+      setState(() {});
+      return;
+    }
+    await _play(
+      _index,
+      routeIndex: index,
+      position: _currentPosition,
+      playWhenReady: _error != null || _playIntent,
+    );
+  }
+
+  bool get _canSwitchLocal =>
+      _forceOnline && _hasLocalVideo && widget.mediaId == null;
+
+  bool get _showRouteBar =>
+      _plan?.local == true ||
+      (_plan?.routes.isNotEmpty ?? false) ||
+      _canSwitchLocal;
+
+  PlaybackRoutesBar _routeBar() => PlaybackRoutesBar(
+    local: _plan?.local == true,
+    onSwitchOnline: widget.allowOnlineFallback && widget.mediaId == null
+        ? _switchOnline
+        : null,
+    onSwitchLocal: _canSwitchLocal ? _switchLocal : null,
+    routes: [
+      for (final route in _plan?.routes ?? <PlaybackRouteStatus>[])
+        _routeChecks[route.index] ?? route,
+    ],
+    selected: _plan?.routeIndex ?? 0,
+    busy: _loading,
+    routesBlocked: _routeChecks.values.any((route) => route.stop),
+    onSelected: _selectRoute,
+  );
+
   Future<void> _switchOnline() async {
+    if (!mounted ||
+        _closed ||
+        _loading ||
+        !widget.allowOnlineFallback ||
+        widget.mediaId != null) {
+      return;
+    }
     _forceOnline = true;
-    await _retry();
+    _forceLocal = false;
+    await _play(_index, position: _currentPosition, playWhenReady: _playIntent);
+  }
+
+  Future<void> _switchLocal() async {
+    if (!mounted || _closed || _loading || !_canSwitchLocal) return;
+    _forceOnline = false;
+    _forceLocal = true;
+    await _play(_index, position: _currentPosition, playWhenReady: _playIntent);
   }
 
   Future<void> _retry({int? quality}) async {
@@ -1212,8 +1449,9 @@ class _PlayerScreenState extends State<PlayerScreen>
       preload: true,
     );
     await widget.store.setPlaybackPreferences(nextPreferences);
-    if (!mounted || _closed || widget.store.profileEpoch != _profileEpoch)
+    if (!mounted || _closed || widget.store.profileEpoch != _profileEpoch) {
       return;
+    }
     final qualityChanged = nextPreferences.quality != _requestedQuality;
     _enhancement.setPreferences(nextPreferences.enhancement);
     setState(() {
@@ -1268,10 +1506,15 @@ class _PlayerScreenState extends State<PlayerScreen>
         widget.mediaId != null) {
       return;
     }
-    final added = await widget.repository.enqueueDownloads(
+    final added = await widget.repository.enqueueDownloadsOnRoute(
       widget.detail,
       selection.episodes,
       quality: selection.quality,
+      preferredRoute:
+          selection.quality == 0 || selection.quality == _plan?.quality
+          ? _manualDownloadRoute
+          : 0,
+      playback: _plan,
     );
     if (!mounted || _closed) return;
     ScaffoldMessenger.of(context).showSnackBar(
@@ -1293,6 +1536,16 @@ class _PlayerScreenState extends State<PlayerScreen>
       ),
     );
   }
+
+  Future<void> _downloadEpisodes(List<Episode> episodes) =>
+      _submitDownloadSelection(
+        DownloadSelection(episodes, widget.store.downloadPreferences.quality),
+      );
+
+  bool get _downloadsAvailable =>
+      widget.repository.supportsDownloads &&
+      widget.store.canDownload &&
+      widget.mediaId == null;
 
   Future<void> _openPanel(PlayerMenuSection section) async {
     if (_panelOpen || _closed) return;
@@ -1322,6 +1575,7 @@ class _PlayerScreenState extends State<PlayerScreen>
               favorite: widget.store.isFavorite(widget.detail.drama.id),
               mobile: _mobile,
               onEpisode: (index) => Navigator.pop(menuContext, index),
+              onDownload: _downloadsAvailable ? _downloadEpisodes : null,
               onPreferences: _setPreferences,
               showDanmaku: widget.detail.drama.source == 'hongguo',
               danmakuStatus: _danmaku.status,
@@ -1389,14 +1643,7 @@ class _PlayerScreenState extends State<PlayerScreen>
       final file = await FilePicker.pickFile(
         dialogTitle: '选择字幕文件',
         type: FileType.custom,
-        allowedExtensions: [
-          'srt',
-          'ass',
-          'ssa',
-          'vtt',
-          'sub',
-          'smi',
-        ],
+        allowedExtensions: ['srt', 'ass', 'ssa', 'vtt', 'sub', 'smi'],
       );
       if (file == null || _closed) return;
       final path = file.path;
@@ -1429,7 +1676,11 @@ class _PlayerScreenState extends State<PlayerScreen>
     try {
       final platform = _player.platform;
       if (platform is NativePlayer) {
-        await platform.setProperty('sub-delay', '$_subtitleDelay');
+        await setPlaybackProperty(
+          platform.command,
+          'sub-delay',
+          '$_subtitleDelay',
+        );
       }
       _menuRevision.value++;
     } catch (_) {
@@ -1445,7 +1696,11 @@ class _PlayerScreenState extends State<PlayerScreen>
     try {
       final platform = _player.platform;
       if (platform is NativePlayer) {
-        await platform.setProperty('sub-font-size', '$_subtitleFontSize');
+        await setPlaybackProperty(
+          platform.command,
+          'sub-font-size',
+          '$_subtitleFontSize',
+        );
       }
       _menuRevision.value++;
     } catch (_) {
@@ -1460,10 +1715,18 @@ class _PlayerScreenState extends State<PlayerScreen>
       final platform = _player.platform;
       if (platform is NativePlayer) {
         if (_subtitleDelay != 0) {
-          await platform.setProperty('sub-delay', '$_subtitleDelay');
+          await setPlaybackProperty(
+            platform.command,
+            'sub-delay',
+            '$_subtitleDelay',
+          );
         }
         if (_subtitleFontSize != 55) {
-          await platform.setProperty('sub-font-size', '$_subtitleFontSize');
+          await setPlaybackProperty(
+            platform.command,
+            'sub-font-size',
+            '$_subtitleFontSize',
+          );
         }
       }
     } catch (_) {}
@@ -1587,6 +1850,8 @@ class _PlayerScreenState extends State<PlayerScreen>
 
   @override
   void dispose() {
+    UpdateActivity.leavePlayer();
+    CacheRuntime.unregisterPlayer(this);
     _closed = true;
     final enhancementClosed = _enhancement.close();
     LanController.current?.detachPlayback(_lanIdentity);
@@ -1613,11 +1878,11 @@ class _PlayerScreenState extends State<PlayerScreen>
     unawaited(widget.repository.release(_session));
     unawaited(_loader.close().catchError((Object _) {}));
     unawaited(
-      _operations.catchError((Object _) {}).then((_) async {
-        await _interactions.pendingRates.catchError((Object _) {});
-        await enhancementClosed.catchError((Object _) {});
-        await _player.dispose();
-      }),
+      releasePlaybackResources(
+        stop: _player.stop,
+        dispose: _player.dispose,
+        pending: [_operations, _interactions.pendingRates, enhancementClosed],
+      ),
     );
     if (Platform.isWindows || Platform.isMacOS) {
       unawaited(windowManager.setFullScreen(false));
@@ -1694,19 +1959,16 @@ class _PlayerScreenState extends State<PlayerScreen>
                 : theme.scaffoldBackgroundColor,
             appBar: pictureInPicture || fullscreen || _mobile
                 ? null
-                : AppBar(
-                    title: Text(
-                      title,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    actions: [
-                      IconButton(
-                        tooltip: '旋转与全屏',
-                        onPressed: _rotate,
-                        icon: const Icon(Icons.screen_rotation_alt_rounded),
-                      ),
-                    ],
+                : PlaybackRoutesHeader(
+                    title: title,
+                    routes: _showRouteBar ? _routeBar() : null,
+                    width: MediaQuery.sizeOf(context).width,
+                    textScaler: MediaQuery.textScalerOf(context),
+                    titleStyle:
+                        theme.appBarTheme.titleTextStyle ??
+                        theme.textTheme.titleLarge!,
+                    textDirection: Directionality.of(context),
+                    onRotate: _rotate,
                   ),
             body: pictureInPicture
                 ? _videoPane(context)
@@ -1868,7 +2130,7 @@ class _PlayerScreenState extends State<PlayerScreen>
                 widget.videoBuilder!(layeredControls)
               else if (_player is LunaExoPlayer)
                 LunaExoVideoView(
-                  player: _player as LunaExoPlayer,
+                  player: _player,
                   fit: BoxFit.contain,
                   controls: (_) => layeredControls,
                 )
@@ -1907,7 +2169,8 @@ class _PlayerScreenState extends State<PlayerScreen>
                       crossAxisAlignment: WrapCrossAlignment.center,
                       children: [
                         FilledButton.tonalIcon(
-                          onPressed: () => DiaryService.showDiaryDialog(context),
+                          onPressed: () =>
+                              DiaryService.showDiaryDialog(context),
                           icon: const Icon(Icons.receipt_long_rounded),
                           label: const Text('查看播放日记'),
                         ),
@@ -1918,8 +2181,8 @@ class _PlayerScreenState extends State<PlayerScreen>
                             label: const Text('改为在线播放'),
                           )
                         else if (!_localFailure &&
-                              !widget.localOnly &&
-                              widget.repository.supportsSourceManagement)
+                            !widget.localOnly &&
+                            widget.repository.supportsSourceManagement)
                           SourceDiagnosticsButton(
                             repository: widget.repository,
                             store: widget.store,
@@ -1998,6 +2261,7 @@ class _PlayerScreenState extends State<PlayerScreen>
         top: false,
         child: Column(
           children: [
+            if (_showRouteBar) _routeBar(),
             _mobileTabs(colors),
             Expanded(
               child: Padding(
@@ -2230,12 +2494,21 @@ class _PlayerScreenState extends State<PlayerScreen>
 
   Widget _episodePanel({bool compact = false}) => ColoredBox(
     color: Theme.of(context).colorScheme.surface,
-    child: PlayerEpisodeGrid(
-      episodes: widget.detail.episodes,
-      currentIndex: _index,
-      compact: compact,
-      title: compact ? '剧集' : '选集',
-      onSelected: (index) => _play(index),
+    child: Column(
+      children: [
+        if (_mobile && !compact && _showRouteBar) _routeBar(),
+        if (widget.siteSelector != null) widget.siteSelector!,
+        Expanded(
+          child: PlayerEpisodeGrid(
+            episodes: widget.detail.episodes,
+            currentIndex: _index,
+            compact: compact,
+            title: compact ? '剧集' : '选集',
+            onSelected: (index) => _play(index),
+            onDownload: _downloadsAvailable ? _downloadEpisodes : null,
+          ),
+        ),
+      ],
     ),
   );
 }

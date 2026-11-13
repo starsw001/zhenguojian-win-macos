@@ -11,6 +11,7 @@ import (
 	"time"
 )
 
+// TestNativeDownloadedEncryptedHLSDecodesWithSourceOffline 验证「Native Downloaded Encrypted HLS Decodes With Source Offline」回归场景。
 func TestNativeDownloadedEncryptedHLSDecodesWithSourceOffline(t *testing.T) {
 	ffmpeg, err := exec.LookPath("ffmpeg")
 	if err != nil {

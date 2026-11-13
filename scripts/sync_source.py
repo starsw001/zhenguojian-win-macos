@@ -23,6 +23,7 @@ EXCLUDED_DIRECTORIES = {
     '.git', '.dart_tool', '.pub-cache', '.gradle', '.cxx', '.kotlin',
     '.idea', '.vscode', '__pycache__', '.pytest_cache', '.mypy_cache',
     '.ruff_cache', '.cache', '.venv', 'venv', 'build', 'dist', 'coverage',
+    '.wrangler',
     'node_modules', 'vendor', 'Pods', 'Carthage', 'DerivedData', '.swiftpm', 'xcuserdata',
     '.symlinks', 'ephemeral', 'jniLibs', 'CMakeFiles', 'sdk', 'android-sdk',
     'flutter-sdk', 'ndk', 'toolchains',
@@ -39,6 +40,7 @@ EXCLUDED_PATTERNS = (
     '*.tgz', '*.jks', '*.keystore', '*.p12', '*.pfx', '*.pem', '*.key',
     '*.suo', '*.user', '*.userosscache', '*.sln.docstates', '*.xcframework',
     '*.framework', '*.xcuserstate', '._*',
+    '*.credentials.json', '.dev.vars', '.dev.vars.*',
 )
 EXCLUDED_PATHS = {
     'android/gradlew', 'android/gradlew.bat',
@@ -52,7 +54,7 @@ REQUIRED_FILES = {
     'native/go.mod', 'native/go.sum', 'native/bridge/main.go',
     'android/app/build.gradle.kts', 'android/gradle/wrapper/gradle-wrapper.properties',
     'windows/CMakeLists.txt', 'windows/flutter/CMakeLists.txt',
-    '.github/workflows/build.yml', 'scripts/build_native.py',
+    '.github/workflows/build-desktop.yml', 'scripts/build_native.py',
 }
 
 

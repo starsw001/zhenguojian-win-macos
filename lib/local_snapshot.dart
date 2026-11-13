@@ -9,6 +9,7 @@ class LocalSnapshot {
   LocalSnapshot.empty(this.preferences);
 
   static const storageKey = 'localSnapshot.v1';
+  static const _legacyBooleanKeys = {'fullMode', 'greenMode'};
   static const libraryKeys = {
     'history',
     'favorites',
@@ -16,6 +17,7 @@ class LocalSnapshot {
     'seriesCandidates',
     'mediaHistory',
     'source',
+    'hiddenSources',
     'hideVip',
     'playback',
     'downloadPreferences',
@@ -44,9 +46,10 @@ class LocalSnapshot {
 
   static bool owns(String key) =>
       globalKeys.contains(key) ||
+      _legacyBooleanKeys.contains(key) ||
       libraryKeys.contains(key) ||
       RegExp(
-        r'^profile\.[a-zA-Z0-9_-]{1,64}\.(history|favorites|followStates|seriesCandidates|mediaHistory|source|hideVip|playback|downloadPreferences|catalogView|recentSearches|lanRecords|lanSettings|lanReceipts)$',
+        r'^profile\.[a-zA-Z0-9_-]{1,64}\.(history|favorites|followStates|seriesCandidates|mediaHistory|source|hiddenSources|hideVip|playback|downloadPreferences|catalogView|recentSearches|lanRecords|lanSettings|lanReceipts)$',
       ).hasMatch(key);
 
   Map<String, Object> get values => Map.of(_values);
@@ -77,14 +80,16 @@ class LocalSnapshot {
 
   void _validate(Map<String, Object> values) {
     for (final entry in values.entries) {
-      final boolean = {
-        'hideVip',
-        'autoExport',
-        'exportPosters',
-        'sourceGateEnabled',
-        'sourceGateOff',
-        'forceLogin',
-      }.contains(entry.key.split('.').last);
+      final boolean =
+          _legacyBooleanKeys.contains(entry.key) ||
+          {
+            'hideVip',
+            'autoExport',
+            'exportPosters',
+            'sourceGateEnabled',
+            'sourceGateOff',
+            'forceLogin',
+          }.contains(entry.key.split('.').last);
       if (!owns(entry.key) ||
           (boolean ? entry.value is! bool : entry.value is! String)) {
         throw const FormatException('本地配置字段无效');

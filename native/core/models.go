@@ -54,6 +54,7 @@ type Drama struct {
 	SortMetadata      *sortMetadataState `json:"sortMetadata,omitempty"`
 }
 
+// DisplayTitle 返回作品用于界面显示的标题。
 func (d Drama) DisplayTitle() string {
 	if strings.TrimSpace(d.Title) != "" {
 		return d.Title
@@ -65,6 +66,7 @@ func (d Drama) DisplayTitle() string {
 }
 
 type Chapter struct {
+	Alternatives   []Chapter       `json:"alternatives,omitempty"`
 	VIP            bool            `json:"vip,omitempty"`
 	ID             string          `json:"id"`
 	Source         string          `json:"source,omitempty"`
@@ -76,6 +78,7 @@ type Chapter struct {
 	Referer        string          `json:"referer,omitempty"`
 }
 
+// EpisodeString 返回作品集数的显示文本。
 func (c Chapter) EpisodeString(fallback int) string {
 	if len(c.CurrentEpisode) > 0 && string(c.CurrentEpisode) != "null" {
 		var s string

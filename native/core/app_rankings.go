@@ -11,6 +11,7 @@ import (
 	"time"
 )
 
+// loadRankingCache 加载排行榜缓存。
 func (d *Downloader) loadRankingCache() {
 	cache := &d.rankings
 	cache.pages, cache.pending = map[string]rankingPage{}, map[string]*rankingCall{}
@@ -19,8 +20,13 @@ func (d *Downloader) loadRankingCache() {
 		return
 	}
 	defer file.Close()
-	body, err := io.ReadAll(io.LimitReader(file, (8<<20)+1))
-	if err != nil || len(body) > 8<<20 {
+	limit := d.cacheBytes("rankingMiB")
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.Size() > int64(limit) {
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(file, int64(limit)+1))
+	if err != nil || len(body) > limit {
 		return
 	}
 	var pages map[string]rankingPage
@@ -41,22 +47,43 @@ func (d *Downloader) loadRankingCache() {
 				break
 			}
 		}
-		if valid && len(cache.pages) < 128 {
+		if valid && len(cache.pages) < d.cacheLimit("rankingPages") {
 			cache.pages[key] = page
 		}
 	}
 }
 
+// writeRankingCacheLocked 写入排行榜缓存，供内部持锁路径调用。
 func (d *Downloader) writeRankingCacheLocked() {
 	if d.cfg.dataDir == "" {
 		return
 	}
+	for len(d.rankings.pages) > d.cacheLimit("rankingPages") {
+		d.evictOldestRankingLocked()
+	}
 	body, err := json.Marshal(d.rankings.pages)
-	if err == nil && len(body) <= 8<<20 {
+	for err == nil && len(body) > d.cacheBytes("rankingMiB") && len(d.rankings.pages) > 0 {
+		d.evictOldestRankingLocked()
+		body, err = json.Marshal(d.rankings.pages)
+	}
+	if err == nil {
 		_ = writeNativeCacheFile(filepath.Join(d.cfg.dataDir, "rankings.json"), body)
 	}
 }
 
+// evictOldestRankingLocked 处理站源下载器的evictOldest排行榜操作，供内部持锁路径调用。
+func (d *Downloader) evictOldestRankingLocked() {
+	oldestKey := ""
+	oldest := time.Time{}
+	for key, page := range d.rankings.pages {
+		if oldestKey == "" || page.FetchedAt.Before(oldest) {
+			oldestKey, oldest = key, page.FetchedAt
+		}
+	}
+	delete(d.rankings.pages, oldestKey)
+}
+
+// nativeRanking 处理榜单读取请求并维护相应缓存。
 func (engine *nativeEngine) nativeRanking(ctx context.Context, input nativeInput) (any, error) {
 	board, found := findRankingBoard(input.Board)
 	if !found || !nativeSourceAvailable(board.Source) {

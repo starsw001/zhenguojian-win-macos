@@ -14,6 +14,7 @@ import (
 	"time"
 )
 
+// TestProbeCategoryViaProxy 验证「Probe Category Via Proxy」回归场景。
 func TestProbeCategoryViaProxy(t *testing.T) {
 	if os.Getenv("HG_PROBE") == "" {
 		t.Skip("probe disabled")

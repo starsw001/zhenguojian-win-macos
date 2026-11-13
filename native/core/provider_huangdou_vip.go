@@ -6,6 +6,7 @@ import (
 	"strings"
 )
 
+// huangdouVIPFlag 解析黄豆响应中的付费标志。
 func huangdouVIPFlag(item map[string]any) *bool {
 	var known *bool
 	for _, key := range []string{"is_vip", "isVip"} {
@@ -20,7 +21,7 @@ func huangdouVIPFlag(item map[string]any) *bool {
 		}
 	}
 	switch strings.ToLower(mapString(item, "pay_type")) {
-	case "vip":
+	case "vip", "coin", "money":
 		result := true
 		return &result
 	case "free":
@@ -34,7 +35,8 @@ func huangdouVIPFlag(item map[string]any) *bool {
 		}
 	}
 	for _, episode := range huangdouList(item["episodes"]) {
-		if strings.EqualFold(mapString(episode, "type"), "vip") {
+		switch strings.ToLower(mapString(episode, "type")) {
+		case "vip", "coin", "money":
 			result := true
 			return &result
 		}
@@ -42,6 +44,7 @@ func huangdouVIPFlag(item map[string]any) *bool {
 	return known
 }
 
+// huangdouVIPEpisodes 从黄豆详情中收集付费分集标记。
 func huangdouVIPEpisodes(item map[string]any) []int {
 	var result []int
 	if values, ok := item["vip_episodes"].([]any); ok {
@@ -54,9 +57,10 @@ func huangdouVIPEpisodes(item map[string]any) []int {
 	return result
 }
 
+// huangdouEpisodeVIP 判断指定黄豆分集是否标记为付费内容。
 func huangdouEpisodeVIP(detail, episode map[string]any, seq int) bool {
 	switch strings.ToLower(mapString(episode, "type")) {
-	case "vip":
+	case "vip", "coin", "money":
 		return true
 	case "free":
 		return false
@@ -69,7 +73,8 @@ func huangdouEpisodeVIP(detail, episode map[string]any, seq int) bool {
 	if flag := huangdouVIPFlag(episode); flag != nil {
 		return *flag
 	}
-	if strings.EqualFold(mapString(detail, "pay_type"), "vip") {
+	switch strings.ToLower(mapString(detail, "pay_type")) {
+	case "vip", "coin", "money":
 		free, err := strconv.Atoi(mapString(detail, "free_episodes"))
 		return err == nil && free >= 0 && seq > free
 	}

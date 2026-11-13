@@ -9,6 +9,7 @@ import (
 	"time"
 )
 
+// TestProbeNow 验证「Probe Now」回归场景。
 func TestProbeNow(t *testing.T) {
 	if os.Getenv("HG_PROBE") == "" {
 		t.Skip("probe disabled")

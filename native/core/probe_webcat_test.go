@@ -8,6 +8,7 @@ import (
 	"time"
 )
 
+// TestProbeWebCategory 验证「Probe Web Category」回归场景。
 func TestProbeWebCategory(t *testing.T) {
 	if os.Getenv("HG_PROBE") == "" {
 		t.Skip("probe disabled")
@@ -23,6 +24,7 @@ func TestProbeWebCategory(t *testing.T) {
 	fmt.Printf("WEBCAT err=%v items=%d pages=%d\n", err, len(items), pages)
 }
 
+// TestProbeWebCategoryPages 验证「Probe Web Category Pages」回归场景。
 func TestProbeWebCategoryPages(t *testing.T) {
 	if os.Getenv("HG_PROBE") == "" {
 		t.Skip("probe disabled")

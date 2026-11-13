@@ -7,10 +7,19 @@ import (
 	"strings"
 )
 
+// fetchDuanjuCategories 获取短剧分类列表。
 func (d *Downloader) fetchDuanjuCategories(ctx context.Context, source string) ([]nativeCategory, error) {
 	source = canonicalProviderSource(source)
 	if !isDuanjuProviderSource(source) {
 		return nil, errors.New("该站源不支持分类读取")
+	}
+	switch source {
+	case sourceYaguo:
+		return d.fetchYaguoCategories(ctx)
+	case sourceMaoguo:
+		return d.fetchMaoguoCategories(ctx)
+	case sourceWuguo:
+		return d.fetchWuguoCategories(ctx)
 	}
 	if static, found := duanjuStaticCategories[source]; found {
 		categories := make([]nativeCategory, 0, len(static))
@@ -19,15 +28,10 @@ func (d *Downloader) fetchDuanjuCategories(ctx context.Context, source string) (
 		}
 		return categories, nil
 	}
-	switch source {
-	case sourceYaguo:
-		return d.fetchYaguoCategories(ctx)
-	case sourceMaoguo:
-		return d.fetchMaoguoCategories(ctx)
-	}
 	return nil, errors.New("该站源暂未提供分类")
 }
 
+// fetchDuanjuCatalogPage 获取短剧目录页。
 func (d *Downloader) fetchDuanjuCatalogPage(ctx context.Context, source string, page int, category string) ([]Drama, bool, error) {
 	source = canonicalProviderSource(source)
 	switch source {
@@ -51,6 +55,7 @@ func (d *Downloader) fetchDuanjuCatalogPage(ctx context.Context, source string, 
 	return nil, false, errors.New("该站源暂未接入目录")
 }
 
+// fetchDuanjuDetail 获取短剧详情。
 func (d *Downloader) fetchDuanjuDetail(ctx context.Context, source, sourceID string) (Drama, []Chapter, error) {
 	source = canonicalProviderSource(source)
 	switch source {
@@ -74,6 +79,7 @@ func (d *Downloader) fetchDuanjuDetail(ctx context.Context, source, sourceID str
 	return Drama{}, nil, errors.New("该站源暂未接入详情")
 }
 
+// searchDuanju 搜索短剧。
 func (d *Downloader) searchDuanju(ctx context.Context, source, query string) ([]Drama, error) {
 	source = canonicalProviderSource(source)
 	switch source {
@@ -97,16 +103,19 @@ func (d *Downloader) searchDuanju(ctx context.Context, source, query string) ([]
 	return nil, errors.New("该站源不支持在线搜索")
 }
 
+// duanjuSupportsSearch 判断短剧Supports搜索是否满足当前规则。
 func duanjuSupportsSearch(source string) bool {
 	spec, found := duanjuSourceSpecFor(source)
 	return found && spec.Searcher
 }
 
+// duanjuSupportsPaging 判断短剧SupportsPaging是否满足当前规则。
 func duanjuSupportsPaging(source string) bool {
 	spec, found := duanjuSourceSpecFor(source)
 	return found && spec.Paged
 }
 
+// resolveDuanjuMedia 解析短剧媒体。
 func (d *Downloader) resolveDuanjuMedia(ctx context.Context, task Task) (providerMedia, error) {
 	source := canonicalProviderSource(task.Chapter.Source)
 	name := duanjuSourceName(source)
@@ -152,11 +161,13 @@ func (d *Downloader) resolveDuanjuMedia(ctx context.Context, task Task) (provide
 	return d.prepareWebProviderMedia(ctx, providerMedia{URL: address, Referer: referer}, name)
 }
 
+// duanjuLooksLikeMedia 判断短剧LooksLike媒体是否满足当前规则。
 func duanjuLooksLikeMedia(address string) bool {
 	lower := strings.ToLower(address)
 	return strings.Contains(lower, ".m3u8") || strings.Contains(lower, ".mp4") || strings.Contains(lower, ".flv")
 }
 
+// resolveDuanjuWebPage 解析短剧网页页面。
 func (d *Downloader) resolveDuanjuWebPage(ctx context.Context, source, pageURL, referer string) (providerMedia, error) {
 	body, err := d.fetchProviderText(ctx, pageURL, referer)
 	if err != nil {
@@ -169,6 +180,7 @@ func (d *Downloader) resolveDuanjuWebPage(ctx context.Context, source, pageURL, 
 	return providerMedia{URL: address, Referer: pageURL}, nil
 }
 
+// duanjuSourceProbe 取得短剧站源连通检查使用的样本信息。
 func (d *Downloader) duanjuSourceProbe(ctx context.Context, source string) (string, error) {
 	source = canonicalProviderSource(source)
 	items, _, err := d.fetchDuanjuCatalogPage(ctx, source, 1, "")
@@ -181,6 +193,7 @@ func (d *Downloader) duanjuSourceProbe(ctx context.Context, source string) (stri
 	return fmt.Sprintf("已解析 %d 部剧", len(items)), nil
 }
 
+// duanjuFirstCategory 提取首个短剧分类。
 func duanjuFirstCategory(source string) string {
 	if static, found := duanjuStaticCategories[canonicalProviderSource(source)]; found && len(static) > 0 {
 		return static[0].ID

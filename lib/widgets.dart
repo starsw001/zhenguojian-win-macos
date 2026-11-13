@@ -150,9 +150,12 @@ class DramaCover extends StatelessWidget {
           if (drama.episodes > 0)
             Positioned(
               left: 9,
+              right: 9,
               bottom: 9,
               child: Text(
-                '共 ${drama.episodes} 集',
+                '${drama.episodeCountLabel}${drama.sites.length > 1 ? ' · ${drama.sites.length}站点' : ''}',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
                 style: const TextStyle(color: Colors.white, fontSize: 12),
               ),
             ),
@@ -211,7 +214,7 @@ class _CachedCoverImageState extends State<CachedCoverImage> {
       widget.drama.id,
     );
     widget.repository.catalogUpdates.addListener(_metadataChanged);
-    _file = widget.repository.cover(widget.drama);
+    _file = _requestCover(widget.drama);
   }
 
   @override
@@ -230,7 +233,7 @@ class _CachedCoverImageState extends State<CachedCoverImage> {
       _coverRevision = widget.repository.catalogUpdates.coverRevision(
         widget.drama.id,
       );
-      _file = widget.repository.cover(widget.drama);
+      _file = _requestCover(widget.drama);
     }
   }
 
@@ -242,6 +245,14 @@ class _CachedCoverImageState extends State<CachedCoverImage> {
     _coverRevision = revision;
     _retryOnFailure = true;
     if (_coverFailed) _queueRetry();
+  }
+
+  Future<String> _requestCover(Drama drama, {bool force = false}) {
+    final future = Future<String>.sync(
+      () => widget.repository.cover(drama, force: force),
+    );
+    future.ignore();
+    return future;
   }
 
   void _queueRetry() {
@@ -274,7 +285,7 @@ class _CachedCoverImageState extends State<CachedCoverImage> {
       setState(() {
         _coverFailed = _retryOnFailure = false;
         _failedPath = null;
-        _file = widget.repository.cover(
+        _file = _requestCover(
           widget.repository.catalogUpdates.current(widget.drama),
           force: true,
         );
@@ -471,7 +482,7 @@ class DramaTile extends StatelessWidget {
           onPressed: onTap,
           selected: selected ?? false,
           label:
-              '${drama.title}，${drama.episodes}集${badge == null ? '' : '，$badge'}',
+              '${drama.title}，${drama.episodeCountLabel}${badge == null ? '' : '，$badge'}',
           child: content,
         ),
       );
@@ -479,7 +490,7 @@ class DramaTile extends StatelessWidget {
     return Semantics(
       button: true,
       selected: selected,
-      label: '${drama.title}，${drama.episodes}集',
+      label: '${drama.title}，${drama.episodeCountLabel}',
       child: InkWell(
         onTap: onTap,
         onLongPress: onLongPress ?? onMore,

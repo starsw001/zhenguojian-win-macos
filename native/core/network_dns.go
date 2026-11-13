@@ -28,6 +28,7 @@ type dnsResolver struct {
 	endpoints []string
 }
 
+// newDNSResolver 创建DNSResolver。
 func newDNSResolver(transport *http.Transport) *dnsResolver {
 	lookupTransport := transport.Clone()
 	lookupTransport.TLSClientConfig = nil
@@ -38,11 +39,13 @@ func newDNSResolver(transport *http.Transport) *dnsResolver {
 	}
 }
 
+// lookup 查找DNSResolver。
 func (resolver *dnsResolver) lookup(ctx context.Context, host string) ([]string, error) {
 	entry, err := resolver.lookupEntry(ctx, host, "")
 	return entry.addresses, err
 }
 
+// lookupEntry 查找条目。
 func (resolver *dnsResolver) lookupEntry(ctx context.Context, host, subnet string) (dnsCacheEntry, error) {
 	cacheKey := host + "|" + subnet
 	for {
@@ -75,6 +78,7 @@ func (resolver *dnsResolver) lookupEntry(ctx context.Context, host, subnet strin
 	return entry, err
 }
 
+// query 返回查询参数。
 func (resolver *dnsResolver) query(ctx context.Context, host, subnet string) (dnsCacheEntry, error) {
 	lastErr := errors.New("DoH 未返回公网 IPv4 地址")
 	for _, endpoint := range resolver.endpoints {

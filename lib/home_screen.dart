@@ -1,14 +1,14 @@
+import 'app_about.dart';
 import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:url_launcher/url_launcher.dart';
 
 import 'app_layout.dart';
 import 'app_bottom_navigation.dart';
-import 'app_build.dart';
 import 'core_bridge.dart';
 import 'catalog_filters.dart';
+import 'hongguo_catalog_filters.dart';
 import 'catalog_browser.dart';
 import 'catalog_sort.dart';
 import 'catalog_sort_sheet.dart';
@@ -72,14 +72,18 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _refreshingUpdatedCache = false;
   bool _selectionMode = false;
   bool _showRecommendations = false;
+  bool _showHongguoRankings = false;
+  int _hongguoRankingRefresh = 0;
   final _recentTaps = RepeatTapGate();
   String _sourceSignature = '';
   bool _catalogLoadScheduled = false;
+  String? _homeFallbackNotice;
 
   List<SourceGroup> get _sourceGroups {
-    final groups = SourceGroup.fromSources(widget.store.sources);
+    final groups = SourceGroup.fromSources(widget.store.visibleSources);
     return [
-      if (groups.length > 1) SourceGroup('all', '全部站源', widget.store.sources),
+      if (groups.length > 1)
+        SourceGroup('all', '全部站源', widget.store.visibleSources),
       ...groups,
     ];
   }
@@ -88,11 +92,15 @@ class _HomeScreenState extends State<HomeScreen> {
       _sourceGroups
           .where((group) => group.id == (_allSources ? 'all' : _source.groupId))
           .firstOrNull ??
-      SourceGroup(_source.groupId, _source.groupName, [_source]);
+      _sourceGroups.firstOrNull ??
+      const SourceGroup('empty', '暂无显示站源', []);
   bool get _onlineSearch => _group.sources.any((source) => source.onlineSearch);
   bool get _searchSuggestions =>
       _group.sources.any((source) => source.searchSuggestions);
   String get _searchHint {
+    if (_group.id == 'huangguoai') {
+      return '搜索黄果AI完整目录索引';
+    }
     final online = _group.sources
         .where((source) => source.onlineSearch)
         .toList();
@@ -105,7 +113,9 @@ class _HomeScreenState extends State<HomeScreen> {
         : '搜索$names及本机剧库';
   }
 
-  String get _category => _categorySelections[_group.id] ?? '';
+  String get _category => _group.id == 'hongguo'
+      ? hongguoWebSelection(_categorySelections[_group.id])
+      : _categorySelections[_group.id] ?? '';
   List<CatalogCategory> get _categories => _browser.categories(_group);
   String get _displayCategory =>
       _showRecommendations ? _recommendationCategory : _category;
@@ -142,12 +152,27 @@ class _HomeScreenState extends State<HomeScreen> {
     });
     if (!_showRecommendations &&
         _category.isNotEmpty &&
+        !(_group.id == 'hongguo' &&
+            hongguoWebCategories.any((entry) => entry.id == _category)) &&
         !_categories.any((entry) => entry.id == _category)) {
-      _changeCategory('');
+      _changeCategory(
+        _group.id == 'hongguo' ? _category.split(':').take(2).join(':') : '',
+      );
     }
   }
 
   Future<void> _refreshCatalog() async {
+    if (_group.id == 'hongguo') {
+      if (_showHongguoRankings) {
+        setState(() => _hongguoRankingRefresh++);
+        return;
+      }
+      if (!_showRecommendations) {
+        await _loadCategories(force: true);
+        if (mounted) await _load(force: true);
+        return;
+      }
+    }
     if (widget.repository.supportsSourceManagement) {
       if (_group.sources.any((source) => _updater.busy(source.id))) return;
       _pauseCatalog();
@@ -165,27 +190,32 @@ class _HomeScreenState extends State<HomeScreen> {
   /// 密码锁切换后可见站源会变，这里把当前站源归一化到仍然可见的站源。
   void _sourcesChanged() {
     if (!mounted) return;
-    final visible = widget.store.sources;
+    final visible = widget.store.visibleSources;
     final signature = visible.map((site) => site.id).join(',');
     if (signature == _sourceSignature) return;
-    final wasEmpty = _sourceSignature.isEmpty;
     _sourceSignature = signature;
     if (visible.isEmpty) {
+      _debounce?.cancel();
+      _generation++;
+      _categoryGeneration++;
+      unawaited(_browser.cancel());
+      unawaited(widget.repository.cancelSuggestions());
       setState(() {
         _items = [];
+        _selectedDramas.clear();
+        _selectionMode = false;
         _hasMore = false;
         _loading = false;
         _loadingMore = false;
+        _categoriesLoading = false;
       });
       return;
     }
-    final allowed = visible.map((site) => site.id).toSet();
-    if (!wasEmpty &&
-        allowed.contains(_source.id) &&
-        _source.id == widget.store.source) {
-      return;
-    }
-    _changeSource(SourceSite.byId(widget.store.source));
+    _changeSource(
+      SourceSite.byId(widget.store.visibleSource),
+      allSources: _allSources,
+      force: true,
+    );
   }
 
   void _catalogUpdated(String source) {
@@ -209,11 +239,11 @@ class _HomeScreenState extends State<HomeScreen> {
         _changedSources.clear();
         final updates = <String, Drama>{};
         for (final source in sources) {
-          if (!widget.store.allowsSource(source)) continue;
+          if (!widget.store.isSourceVisible(source)) continue;
           try {
             final cached = await widget.repository.cached(source);
             for (final drama in cached.items) {
-              if (widget.store.allowsSource(drama.source)) {
+              if (widget.store.isSourceVisible(drama.source)) {
                 updates[drama.id] = drama;
               }
             }
@@ -244,6 +274,11 @@ class _HomeScreenState extends State<HomeScreen> {
         if (_group.sources.any((source) => sources.contains(source.id))) {
           await _loadCategories(cacheOnly: true);
           if (mounted &&
+              sources.contains('huangguoai') &&
+              _onlineSearch &&
+              _search.text.trim().isNotEmpty) {
+            await _load();
+          } else if (mounted &&
               !_loading &&
               !_loadingMore &&
               (!_onlineSearch || _search.text.trim().isEmpty)) {
@@ -268,6 +303,7 @@ class _HomeScreenState extends State<HomeScreen> {
       _pauseCatalog();
       setState(() {
         _showRecommendations = true;
+        _showHongguoRankings = false;
         _selectionMode = false;
         _selectedDramas.clear();
         _search.clear();
@@ -276,10 +312,15 @@ class _HomeScreenState extends State<HomeScreen> {
       });
       return;
     }
-    if (_category == category && !_showRecommendations) return;
+    if (_category == category &&
+        !_showRecommendations &&
+        !_showHongguoRankings) {
+      return;
+    }
     _debounce?.cancel();
     setState(() {
       _showRecommendations = false;
+      _showHongguoRankings = false;
       _selectionMode = false;
       _selectedDramas.clear();
       _categorySelections[_group.id] = category;
@@ -298,9 +339,13 @@ class _HomeScreenState extends State<HomeScreen> {
   void _swipeCategory(DragEndDetails details) {
     final velocity = details.primaryVelocity ?? 0;
     if (velocity.abs() < 240) return;
-    final categories = _displayCategories;
+    final categories = _group.id == 'hongguo'
+        ? hongguoWebCategories
+        : _displayCategories;
     final index = categories.indexWhere(
-      (entry) => entry.id == _displayCategory,
+      (entry) =>
+          entry.id == _displayCategory ||
+          _group.id == 'hongguo' && _displayCategory.startsWith('${entry.id}:'),
     );
     final next = index + (velocity < 0 ? 1 : -1);
     if (next >= 0 && next < categories.length) {
@@ -313,7 +358,7 @@ class _HomeScreenState extends State<HomeScreen> {
       _televisionSearch();
       return;
     }
-    if (_showRecommendations) _changeCategory('');
+    if (_showRecommendations || _showHongguoRankings) _changeCategory('');
     final hadQuery = _search.text.isNotEmpty;
     setState(() {
       _searchVisible = !_searchVisible;
@@ -323,6 +368,10 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _openRankings() {
+    if (_group.id == 'hongguo') {
+      _changeHongguoSection('rankings');
+      return;
+    }
     _pauseCatalog();
     Navigator.push<void>(
       context,
@@ -334,6 +383,26 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
       ),
     );
+  }
+
+  void _changeHongguoSection(String section) {
+    if (section == 'recommendations') {
+      _changeCategory(_recommendationCategory);
+      return;
+    }
+    final ranking = section == 'rankings';
+    if (_showHongguoRankings == ranking && !_showRecommendations) return;
+    _pauseCatalog();
+    setState(() {
+      _showHongguoRankings = ranking;
+      _showRecommendations = false;
+      _selectionMode = false;
+      _selectedDramas.clear();
+      _search.clear();
+      _submittedQuery = '';
+      _searchVisible = false;
+    });
+    if (!ranking) unawaited(_load(useCache: true));
   }
 
   Future<void> _manageSources() async {
@@ -426,9 +495,11 @@ class _HomeScreenState extends State<HomeScreen> {
   void initState() {
     super.initState();
     _scroll.addListener(_onCatalogScroll);
-    _source = SourceSite.byId(widget.store.source);
+    _source = SourceSite.byId(widget.store.visibleSource);
     _allSources = widget.store.catalogView.allSources;
-    _sourceSignature = widget.store.sources.map((site) => site.id).join(',');
+    _sourceSignature = widget.store.visibleSources
+        .map((site) => site.id)
+        .join(',');
     _browser = CatalogBrowser(widget.repository);
     _updater = LibraryUpdater(
       widget.repository,
@@ -438,7 +509,7 @@ class _HomeScreenState extends State<HomeScreen> {
     _updater.startWatching();
     widget.store.addListener(_sourcesChanged);
     widget.repository.catalogUpdates.addListener(_metadataChanged);
-    if (widget.store.sources.isNotEmpty) {
+    if (widget.store.visibleSources.isNotEmpty) {
       _load(useCache: true);
       _loadCategories();
     } else {
@@ -470,6 +541,7 @@ class _HomeScreenState extends State<HomeScreen> {
   void _onCatalogScroll() {
     if (!mounted ||
         _showRecommendations ||
+        _showHongguoRankings ||
         !_hasMore ||
         _loading ||
         _loadingMore ||
@@ -484,6 +556,7 @@ class _HomeScreenState extends State<HomeScreen> {
       _catalogLoadScheduled = false;
       if (!mounted ||
           _showRecommendations ||
+          _showHongguoRankings ||
           !_hasMore ||
           _loading ||
           _loadingMore ||
@@ -496,7 +569,9 @@ class _HomeScreenState extends State<HomeScreen> {
 
   void _metadataChanged() {
     final drama = widget.repository.catalogUpdates.latest;
-    if (!mounted || drama == null || !widget.store.allowsSource(drama.source)) {
+    if (!mounted ||
+        drama == null ||
+        !widget.store.isSourceVisible(drama.source)) {
       return;
     }
     _browser.updateDrama(drama);
@@ -515,13 +590,20 @@ class _HomeScreenState extends State<HomeScreen> {
     bool force = false,
     bool cacheOnly = false,
   }) async {
-    if (_showRecommendations) return;
+    if (_showRecommendations || _showHongguoRankings) return;
     if (more && (_loading || _loadingMore || !_hasMore)) return;
     final generation = ++_generation;
     final group = _group;
     final query = _onlineSearch ? _search.text.trim() : '';
+    final canFallback =
+        !more &&
+        _search.text.trim().isEmpty &&
+        (_category.isEmpty ||
+            group.id == 'hongguo' && _category == hongguoWebSelection(null));
     setState(() {
       _error = null;
+      if (_homeFallbackNotice != null) _items = [];
+      _homeFallbackNotice = null;
       if (query.isNotEmpty) _categorySelections[group.id] = '';
       if (more) {
         _loadingMore = true;
@@ -531,7 +613,11 @@ class _HomeScreenState extends State<HomeScreen> {
         if (query != _submittedQuery) _items = [];
       }
     });
-    void accept(CatalogPage result, {bool cached = false}) {
+    void accept(
+      CatalogPage result, {
+      bool cached = false,
+      bool fallback = false,
+    }) {
       if (!mounted || generation != _generation) return;
       setState(() {
         _items = result.items;
@@ -539,11 +625,41 @@ class _HomeScreenState extends State<HomeScreen> {
         _submittedQuery = query;
         _loading = cached && !result.fresh;
         _loadingMore = false;
-        _error = result.warning.isEmpty ? null : result.warning;
+        _error = fallback || result.warning.isEmpty ? null : result.warning;
+        _homeFallbackNotice = fallback ? result.warning : null;
       });
-      unawaited(
-        saveUserChange(context, () => widget.store.refreshDramas(result.items)),
+      if (!fallback) {
+        unawaited(
+          saveUserChange(
+            context,
+            () => widget.store.refreshDramas(result.items),
+          ),
+        );
+      }
+    }
+
+    Future<bool> tryFallback() async {
+      if (!canFallback ||
+          !mounted ||
+          generation != _generation ||
+          _items.isNotEmpty) {
+        return false;
+      }
+      final page = await _browser.homeFallback(
+        group,
+        widget.store.visibleSources,
+        cacheOnly: cacheOnly,
       );
+      if (!mounted ||
+          generation != _generation ||
+          page.items.isEmpty ||
+          page.items.any(
+            (item) => !widget.store.isSourceVisible(item.source),
+          )) {
+        return false;
+      }
+      accept(page, fallback: true);
+      return true;
     }
 
     try {
@@ -557,8 +673,10 @@ class _HomeScreenState extends State<HomeScreen> {
         cacheOnly: cacheOnly,
         onCached: (result) => accept(result, cached: true),
       );
+      if (result.items.isEmpty && await tryFallback()) return;
       accept(result);
     } catch (error) {
+      if (await tryFallback()) return;
       if (!mounted || generation != _generation) return;
       setState(() {
         _loading = false;
@@ -568,14 +686,19 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  void _changeSource(SourceSite source, {bool allSources = false}) {
-    if (_source.id == source.id && _allSources == allSources) {
+  void _changeSource(
+    SourceSite source, {
+    bool allSources = false,
+    bool force = false,
+  }) {
+    if (!force && _source.id == source.id && _allSources == allSources) {
       return;
     }
     _debounce?.cancel();
     _search.clear();
     setState(() {
       _showRecommendations = false;
+      _showHongguoRankings = false;
       _selectionMode = false;
       _selectedDramas.clear();
       _source = source;
@@ -614,8 +737,9 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _submitSearch(String query) {
-    if (_showRecommendations) {
+    if (_showRecommendations || _showHongguoRankings) {
       _showRecommendations = false;
+      _showHongguoRankings = false;
       _categorySelections[_group.id] = '';
     }
     _selectionMode = false;
@@ -632,6 +756,8 @@ class _HomeScreenState extends State<HomeScreen> {
     }
     if (_onlineSearch) {
       _load();
+    } else if (_group.sources.any((source) => source.refreshHeadOnOpen)) {
+      unawaited(_load(useCache: true, force: true));
     } else {
       setState(() {});
     }
@@ -680,7 +806,7 @@ class _HomeScreenState extends State<HomeScreen> {
   });
 
   /// 连点「最近观看」6 次弹出站源密码锁（用于启用 / 关闭密码功能）。
-  /// 仅多源包（真果鉴）生效；红果鉴单源包无密码功能。
+  /// 仅多源包（真果赏）生效；红果赏单源包无密码功能。
   void _onNavSelected(int tab) {
     if (allSourcesEnabled && tab == 2) {
       if (_recentTaps.register(tab)) {
@@ -698,23 +824,6 @@ class _HomeScreenState extends State<HomeScreen> {
     unawaited(showSourceGateDialog(context, widget.store));
   }
 
-  /// 打开外部「更多资源」链接（系统默认浏览器）。
-  static const _resourcesUrl = 'https://link3.cc/haochihc';
-
-  Future<void> _openResources() async {
-    final uri = Uri.parse(_resourcesUrl);
-    try {
-      final opened = await launchUrl(uri, mode: LaunchMode.externalApplication);
-      if (!opened) throw StateError('launch returned false');
-    } catch (_) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('无法打开链接，请手动访问：$_resourcesUrl')),
-        );
-      }
-    }
-  }
-
   void _cancelSelection() => setState(() {
     _selectionMode = false;
     _selectedDramas.clear();
@@ -723,7 +832,7 @@ class _HomeScreenState extends State<HomeScreen> {
   void _selectDrama(Drama drama) {
     if (!widget.store.canDownload ||
         !widget.repository.supportsDownloads ||
-        !widget.store.allowsSource(drama.source)) {
+        !widget.store.isSourceVisible(drama.source)) {
       return;
     }
     if (!_selectedDramas.containsKey(drama.id) &&
@@ -816,9 +925,9 @@ class _HomeScreenState extends State<HomeScreen> {
     final query = _search.text.trim().toLowerCase();
     return sortCatalog(
       _items.where((drama) {
-        if (!widget.store.allowsSource(drama.source)) return false;
+        if (!widget.store.isSourceVisible(drama.source)) return false;
         if (_category.startsWith('local:') &&
-            categoryName(drama.category) != _category.substring(6)) {
+            !dramaCategoryNames(drama).contains(_category.substring(6))) {
           return false;
         }
         if (_hideVip && drama.source == 'huangdou' && drama.vip) {
@@ -912,7 +1021,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     icon: const Icon(Icons.sync_rounded),
                   ),
                 if (_tab == 0) ...[
-                  if (!_showRecommendations)
+                  if (!_showRecommendations && !_showHongguoRankings)
                     IconButton(
                       tooltip: '排序与筛选 · ${widget.store.catalogView.sort.label}',
                       onPressed: _chooseCatalogView,
@@ -926,12 +1035,13 @@ class _HomeScreenState extends State<HomeScreen> {
                   IconButton(
                     key: const ValueKey('open-rankings'),
                     tooltip: '榜单',
-                    onPressed: widget.store.sources.isEmpty
+                    onPressed: widget.store.visibleSources.isEmpty
                         ? null
                         : _openRankings,
                     icon: const Icon(Icons.leaderboard_outlined),
                   ),
                   if (!_showRecommendations &&
+                      !_showHongguoRankings &&
                       widget.store.canDownload &&
                       widget.repository.supportsDownloads)
                     IconButton(
@@ -964,16 +1074,10 @@ class _HomeScreenState extends State<HomeScreen> {
                           (source) => _updater.busy(source.id),
                         ),
                     tooltip: '更新剧库',
-                    onPressed: widget.store.sources.isEmpty
+                    onPressed: widget.store.visibleSources.isEmpty
                         ? null
                         : _refreshCatalog,
                   ),
-                IconButton(
-                  key: const ValueKey('more-resources'),
-                  tooltip: '更多资源',
-                  onPressed: _openResources,
-                  icon: const Icon(Icons.card_giftcard_rounded),
-                ),
                 PopupMenuButton<String>(
                   tooltip: '更多',
                   onSelected: (value) {
@@ -1001,59 +1105,10 @@ class _HomeScreenState extends State<HomeScreen> {
                     } else if (value == 'display') {
                       _chooseDisplayMode();
                     } else if (value == 'about') {
-                      showAboutDialog(
+                      showDialog<void>(
                         context: context,
-                        applicationName: appName,
-                        applicationVersion: AppLayout.versionOf(context),
-                        applicationIcon: const Icon(
-                          Icons.play_circle_filled_rounded,
-                          size: 48,
-                          color: Color(0xFFFF765F),
-                        ),
-                        children: [
-                          const Text('独立运行，打开即可浏览和播放。观看记录与追剧收藏保存在当前设备。'),
-                          const SizedBox(height: 8),
-                          Row(
-                            children: [
-                              TextButton.icon(
-                                onPressed: () async {
-                                  Navigator.pop(context);
-                                  final info = await checkForUpdate(
-                                    widget.repository,
-                                  );
-                                  if (!mounted) return;
-                                  if (info == null) {
-                                    ScaffoldMessenger.of(context)
-                                        .showSnackBar(
-                                          const SnackBar(
-                                            content: Text('检查更新失败，请稍后重试'),
-                                          ),
-                                        );
-                                    return;
-                                  }
-                                  await showUpdateDialog(
-                                    context,
-                                    widget.repository,
-                                    info,
-                                    manual: true,
-                                  );
-                                },
-                                icon: const Icon(
-                                  Icons.system_update_alt_rounded,
-                                  size: 18,
-                                ),
-                                label: const Text('检查更新'),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 12),
-                          const Text(
-                            '免责声明\n'
-                            '本应用为第三方聚合客户端，与任何官方应用无关；仅供个人学习、研究与交流使用，请勿用于商业用途或传播倒卖。\n'
-                            '应用本身不存储、不传播任何视频内容，所有内容均来自第三方站点，版权归各权利人所有；请遵守所在地法律法规，因使用本应用产生的一切后果由使用者自行承担。',
-                            style: TextStyle(fontSize: 12, height: 1.5),
-                          ),
-                        ],
+                        builder: (_) =>
+                            AppAboutDialog(repository: widget.repository),
                       );
                     }
                   },
@@ -1064,7 +1119,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       PopupMenuItem(
                         value: 'update',
                         enabled:
-                            widget.store.sources.isNotEmpty &&
+                            widget.store.visibleSources.isNotEmpty &&
                             !_group.sources.any(
                               (source) => _updater.busy(source.id),
                             ),
@@ -1159,10 +1214,22 @@ class _HomeScreenState extends State<HomeScreen> {
                 ],
                 Expanded(
                   child: _tab == 0
-                      ? widget.store.sources.isEmpty
-                            ? const StatusPanel(
-                                title: '暂无可用站源',
-                                message: '请联系管理员为当前用户开放站源。',
+                      ? widget.store.visibleSources.isEmpty
+                            ? StatusPanel(
+                                title: '暂无显示站源',
+                                message: widget.store.sources.isEmpty
+                                    ? '请联系管理员为当前用户开放站源。'
+                                    : '站源已全部隐藏，请到站源管理取消隐藏。',
+                                action: '站源管理',
+                                onRetry: () => Navigator.push(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (_) => SourcesScreen(
+                                      repository: widget.repository,
+                                      store: widget.store,
+                                    ),
+                                  ),
+                                ),
                               )
                             : _catalog(selectionInBody: desktop || television)
                       : _tab == 3
@@ -1242,11 +1309,65 @@ class _HomeScreenState extends State<HomeScreen> {
     ),
   );
 
+  Widget _hongguoNavigation() => Padding(
+    padding: const EdgeInsets.fromLTRB(12, 0, 12, 4),
+    child: Align(
+      alignment: Alignment.centerLeft,
+      child: Wrap(
+        spacing: 8,
+        runSpacing: 6,
+        children: [
+          for (final section in const {
+            'categories': '分类',
+            'rankings': '榜单',
+            'recommendations': '推荐',
+          }.entries)
+            ChoiceChip(
+              key: ValueKey('hongguo-section-${section.key}'),
+              label: Text(section.value),
+              avatar: Icon(
+                section.key == 'rankings'
+                    ? Icons.leaderboard_outlined
+                    : section.key == 'recommendations'
+                    ? Icons.auto_awesome_outlined
+                    : Icons.category_outlined,
+                size: 18,
+              ),
+              showCheckmark: false,
+              selected: section.key == 'rankings'
+                  ? _showHongguoRankings
+                  : section.key == 'recommendations'
+                  ? _showRecommendations
+                  : !_showHongguoRankings && !_showRecommendations,
+              onSelected: (_) => _changeHongguoSection(section.key),
+            ),
+        ],
+      ),
+    ),
+  );
+
   Widget _catalog({required bool selectionInBody}) {
+    if (_group.id == 'hongguo' && _showHongguoRankings) {
+      return Column(
+        children: [
+          _hongguoNavigation(),
+          Expanded(
+            child: RankingsScreen(
+              repository: widget.repository,
+              store: widget.store,
+              initialGroup: 'hongguo',
+              embedded: true,
+              refreshToken: _hongguoRankingRefresh,
+            ),
+          ),
+        ],
+      );
+    }
     final items = _visible;
     final television = AppLayout.isTelevision(context);
     return Column(
       children: [
+        if (_group.id == 'hongguo') _hongguoNavigation(),
         if (_searchVisible && !television)
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 4, 16, 4),
@@ -1300,28 +1421,61 @@ class _HomeScreenState extends State<HomeScreen> {
               ],
             ),
           ),
-        CatalogFilters(
-          key: ValueKey('filters-${_group.id}'),
-          categories: _displayCategories,
-          category: _displayCategory,
-          error: _categoriesError,
-          onCategory: _changeCategory,
-          onRetry: () => _loadCategories(force: true),
-          trailing: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              if (_supportsVipFilter)
-                IconButton(
-                  tooltip: widget.store.hideVip ? 'VIP：隐藏' : 'VIP：显示',
-                  onPressed: () => saveUserChange(
-                    context,
-                    () => widget.store.setHideVip(!widget.store.hideVip),
+        if (_group.id == 'hongguo' && !_showRecommendations)
+          HongguoCatalogFilters(
+            categories: _categories,
+            category: _category,
+            onCategory: _changeCategory,
+            onRetry: () => _loadCategories(force: true),
+            error: _categoriesError,
+          )
+        else
+          CatalogFilters(
+            key: ValueKey('filters-${_group.id}'),
+            categories: _displayCategories,
+            category: _displayCategory,
+            error: _categoriesError,
+            onCategory: _changeCategory,
+            onRetry: () => _loadCategories(force: true),
+            trailing: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (_supportsVipFilter)
+                  IconButton(
+                    tooltip: widget.store.hideVip ? 'VIP：隐藏' : 'VIP：显示',
+                    onPressed: () => saveUserChange(
+                      context,
+                      () => widget.store.setHideVip(!widget.store.hideVip),
+                    ),
+                    icon: VipIcon(hidden: widget.store.hideVip),
                   ),
-                  icon: VipIcon(hidden: widget.store.hideVip),
-                ),
-            ],
+              ],
+            ),
           ),
-        ),
+        if (_group.sources.any((source) => source.id == 'huangguoai') &&
+            _updater.status('huangguoai')?.operation == 'refreshAll')
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+            child: Row(
+              children: [
+                Icon(
+                  _updater.busy('huangguoai')
+                      ? Icons.sync_rounded
+                      : Icons.library_books_outlined,
+                  size: 18,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    '黄果AI：${_updater.status('huangguoai')!.displayStage} · 已保存 ${_updater.status('huangguoai')!.count} 部'
+                    '${_updater.status('huangguoai')!.displayError.isEmpty ? '' : ' · ${_updater.status('huangguoai')!.displayError}'}',
+                    maxLines: 3,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
+            ),
+          ),
         if (_showRecommendations)
           Expanded(
             child: GestureDetector(
@@ -1336,6 +1490,11 @@ class _HomeScreenState extends State<HomeScreen> {
         else ...[
           if (_loading && _items.isNotEmpty)
             const LinearProgressIndicator(minHeight: 2),
+          if (_homeFallbackNotice case final notice?)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+              child: Text(notice, textAlign: TextAlign.center),
+            ),
           Expanded(
             child: GestureDetector(
               onHorizontalDragEnd: television ? null : _swipeCategory,
@@ -1369,7 +1528,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       title: '没有找到匹配的短剧',
                       message: _hideVip
                           ? '可以换个搜索词，或显示 VIP 内容。'
-                          : widget.store.sources.length > 1
+                          : widget.store.visibleSources.length > 1
                           ? '可以换个搜索词或切换站源。'
                           : '可以换个搜索词，或刷新后重试。',
                       onRetry:

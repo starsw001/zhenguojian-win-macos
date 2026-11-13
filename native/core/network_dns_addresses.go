@@ -17,6 +17,7 @@ var nonPublicCDNNetworks = []netip.Prefix{
 	netip.MustParsePrefix("2001:db8::/32"), netip.MustParsePrefix("2002::/16"),
 }
 
+// protectedCDNHost 判断媒体主机是否需要采用受保护的 CDN 解析规则。
 func protectedCDNHost(host string) bool {
 	host = strings.ToLower(strings.TrimSuffix(host, "."))
 	for _, domain := range []string{"tuafjz.cn", "zdmhyg.cn", "lkkwip.cn", "bnfuiu.cn"} {
@@ -27,6 +28,7 @@ func protectedCDNHost(host string) bool {
 	return false
 }
 
+// validateCDNAddresses 校验解析出的 CDN 地址是否满足网络访问约束。
 func validateCDNAddresses(addresses []string) error {
 	if len(addresses) == 0 {
 		return errors.New("CDN 没有可用的公网地址")

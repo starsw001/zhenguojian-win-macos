@@ -15,6 +15,7 @@ import (
 
 var nativeDownloadAttributes = regexp.MustCompile(`([A-Z0-9-]+)=("[^"]*"|[^,]*)`)
 
+// nativeHLSAttributes 解析 HLS 标签中的属性列表。
 func nativeHLSAttributes(line string) map[string]string {
 	result := map[string]string{}
 	for _, match := range nativeDownloadAttributes.FindAllStringSubmatch(line, -1) {
@@ -23,6 +24,7 @@ func nativeHLSAttributes(line string) map[string]string {
 	return result
 }
 
+// nativeHLSSelect 根据给定条件选择 HLS 播放清单。
 func nativeHLSSelect(lines []string, quality int) ([]string, int, bool) {
 	type variant struct {
 		line, uri, height, bandwidth int
@@ -94,11 +96,13 @@ func nativeHLSSelect(lines []string, quality int) ([]string, int, bool) {
 	return output, best.height, true
 }
 
+// nativeDownloadAssetName 下载原生资源名称。
 func nativeDownloadAssetName(address, extension string) string {
 	digest := sha256.Sum256([]byte(address))
 	return hex.EncodeToString(digest[:16]) + extension
 }
 
+// downloadBundle 下载分发包。
 func (manager *nativeDownloads) downloadBundle(ctx context.Context, media providerMedia, quality int) (nativeDownloadBundle, error) {
 	ctx = providerMediaContext(ctx, media.credentials)
 	bundle := nativeDownloadBundle{quality: media.Quality, playlists: map[string][]byte{}}

@@ -30,6 +30,67 @@ var maccmsEpisodeLink = regexp.MustCompile(`(?i)/(?:vod/)?play/|/vodplay/|/drama
 
 var maccmsDetailLink = regexp.MustCompile(`(?i)/(?:index\.php/vod/)?(?:detail|vod|show|view|movie|drama|zywview|xzyxvd)/`)
 
+var piguoEpisodePath = regexp.MustCompile(`^/[0-9]+/([0-9]+)/[0-9]+/?$`)
+var wuguoCategoryPath = regexp.MustCompile(`^/(?:index\.php/)?vod/type/id/([1-9][0-9]*)\.html$`)
+
+// fetchWuguoCategories 获取伍果分类列表。
+func (d *Downloader) fetchWuguoCategories(ctx context.Context) ([]nativeCategory, error) {
+	base := d.duanjuBaseURL(sourceWuguo)
+	document, address, err := d.fetchProviderPage(ctx, base+"/", base+"/", duanjuUserAgent)
+	if err != nil {
+		return nil, err
+	}
+	root, err := url.Parse(address)
+	if err != nil {
+		return nil, err
+	}
+	seen := map[string]bool{}
+	var categories []nativeCategory
+	for _, anchor := range providerHTMLNodes(document, func(node *html.Node) bool { return node.Data == "a" }) {
+		link, err := url.Parse(strings.TrimSpace(providerHTMLAttr(anchor, "href")))
+		if err != nil {
+			continue
+		}
+		link = root.ResolveReference(link)
+		match := wuguoCategoryPath.FindStringSubmatch(link.Path)
+		name := strings.TrimSpace(providerHTMLText(anchor))
+		if link.Host != root.Host || len(match) != 2 || seen[match[1]] || name == "" || len([]rune(name)) > 40 {
+			continue
+		}
+		seen[match[1]] = true
+		categories = append(categories, nativeCategory{ID: match[1], Name: name})
+	}
+	if len(categories) == 0 {
+		return nil, errors.New("伍果未返回可识别分类，首页推荐不代表全站目录")
+	}
+	return categories, nil
+}
+
+// piguoEpisodesFromDocument 从页面文档中提取皮果分集列表。
+func piguoEpisodesFromDocument(document *html.Node) []providerEpisode {
+	var episodes []providerEpisode
+	seen := map[string]bool{}
+	for _, anchor := range providerHTMLNodes(document, func(node *html.Node) bool { return node.Data == "a" }) {
+		link := strings.TrimSpace(providerHTMLAttr(anchor, "href"))
+		parsed, err := url.Parse(link)
+		if err != nil {
+			continue
+		}
+		matches := piguoEpisodePath.FindStringSubmatch(parsed.Path)
+		if len(matches) != 2 || strings.TrimSpace(providerHTMLText(anchor)) != matches[1] || seen[link] {
+			continue
+		}
+		index, _ := strconv.Atoi(matches[1])
+		if index < 1 || index > 10000 {
+			continue
+		}
+		seen[link] = true
+		episodes = append(episodes, providerEpisode{Key: matches[1], Title: matches[1], URL: link, Index: index})
+	}
+	return episodes
+}
+
+// maccmsEpisodeNodes 返回MACCMS分集节点列表。
 func maccmsEpisodeNodes(document *html.Node) []*html.Node {
 	var nodes []*html.Node
 	collect := func(match func(*html.Node) bool) {
@@ -53,6 +114,7 @@ func maccmsEpisodeNodes(document *html.Node) []*html.Node {
 	return nodes
 }
 
+// maccmsEpisodesFromDocument 从页面文档中提取MACCMS分集列表。
 func maccmsEpisodesFromDocument(document *html.Node) []providerEpisode {
 	var episodes []providerEpisode
 	seen := map[string]bool{}
@@ -80,6 +142,7 @@ func maccmsEpisodesFromDocument(document *html.Node) []providerEpisode {
 	return episodes
 }
 
+// maccmsCardCover 返回MACCMS卡片海报。
 func maccmsCardCover(card *html.Node, pageURL string) string {
 	for _, image := range providerHTMLNodes(card, func(node *html.Node) bool { return node.Data == "img" }) {
 		for _, attribute := range []string{"data-original", "data-src", "src"} {
@@ -98,6 +161,7 @@ func maccmsCardCover(card *html.Node, pageURL string) string {
 	return ""
 }
 
+// maccmsCardTitle 返回MACCMS卡片标题。
 func maccmsCardTitle(card *html.Node) string {
 	for _, attribute := range []string{"title", "alt"} {
 		for _, node := range providerHTMLNodes(card, func(node *html.Node) bool {
@@ -116,21 +180,23 @@ func maccmsCardTitle(card *html.Node) string {
 	return ""
 }
 
+// maccmsCardLink 返回MACCMS卡片链接。
 func maccmsCardLink(card *html.Node, base string) string {
 	for _, anchor := range providerHTMLNodes(card, func(node *html.Node) bool { return node.Data == "a" }) {
 		link := providerHTMLAttr(anchor, "href")
 		if link == "" || strings.Contains(link, "javascript:") {
 			continue
 		}
-		if address := duanjuAbsolute(base, link); address != "" {
+		if address := duanjuAbsolute(base, link); address != "" && maccmsSourceIDFromURL(address) != "" {
 			return address
 		}
 	}
 	return ""
 }
 
+// maccmsCardRemark 返回MACCMS卡片备注。
 func maccmsCardRemark(card *html.Node) string {
-	for _, name := range []string{"meta-post-type2", "imagelabel", "module-item-note", "pic-text", "lastChapter", "SecondList_totalChapterNum", "SecondList_bookType"} {
+	for _, name := range []string{"BrowseList_totalChapterNum", "meta-post-type2", "imagelabel", "module-item-note", "pic-text", "lastChapter", "SecondList_totalChapterNum", "SecondList_bookType"} {
 		if node := providerHTMLFirstClass(card, name); node != nil {
 			if text := providerHTMLText(node); text != "" {
 				return text
@@ -140,6 +206,7 @@ func maccmsCardRemark(card *html.Node) string {
 	return ""
 }
 
+// maccmsCards 返回MACCMS卡片列表。
 func maccmsCards(document *html.Node, source, base string) []Drama {
 	var cards []*html.Node
 	seen := map[*html.Node]bool{}
@@ -175,13 +242,14 @@ func maccmsCards(document *html.Node, source, base string) []Drama {
 			Title:        title,
 			Cover:        maccmsCardCover(card, link),
 			Remark:       remark,
-			EpisodeCount: json.Number(strconv.Itoa(duanjuEpisodeNumber(remark, 0))),
+			EpisodeCount: json.Number(strconv.Itoa(maccmsCatalogEpisodeCount(remark))),
 			ChannelName:  duanjuSourceName(source),
 		})
 	}
 	return items
 }
 
+// maccmsClassMatcher 构造 MACCMS 元素类名的匹配条件。
 func maccmsClassMatcher(name string) func(*html.Node) bool {
 	return func(node *html.Node) bool {
 		for _, value := range strings.Fields(providerHTMLAttr(node, "class")) {
@@ -193,11 +261,12 @@ func maccmsClassMatcher(name string) func(*html.Node) bool {
 	}
 }
 
+// maccmsAnchorCards 从 MACCMS 页面链接中整理作品卡片。
 func maccmsAnchorCards(document *html.Node) []*html.Node {
 	var cards []*html.Node
 	seen := map[*html.Node]bool{}
 	for _, anchor := range providerHTMLNodes(document, func(node *html.Node) bool {
-		return node.Data == "a" && maccmsDetailLink.MatchString(providerHTMLAttr(node, "href"))
+		return node.Data == "a" && maccmsSourceIDFromURL(providerHTMLAttr(node, "href")) != ""
 	}) {
 		for parent := anchor.Parent; parent != nil && parent.Type == html.ElementNode; parent = parent.Parent {
 			if seen[parent] {
@@ -208,6 +277,7 @@ func maccmsAnchorCards(document *html.Node) []*html.Node {
 			}
 			seen[parent] = true
 			cards = append(cards, parent)
+			break
 		}
 	}
 	return cards
@@ -216,18 +286,28 @@ func maccmsAnchorCards(document *html.Node) []*html.Node {
 var maccmsCardClasses = []string{
 	"col-lg-2", "col-xl-2", "module-item", "module-poster-item", "public-list-box",
 	"videoBox", "detail-list-item", "col-md-6", "col-6", "listItem", "FeaturedList_featuredItem",
-	"BrowseList_listItem", "SecondList_secondListItem", "vodlist__item", "v_list",
+	"BrowseList_listItem", "BrowseList_itemBox", "SecondList_secondListItem", "vodlist__item", "v_list",
 	"entry-wrapper", "TagBookList_tagItem",
 }
 
 var maccmsDetailPath = regexp.MustCompile(`(?i)/(?:voddetail|detail|show|vod|drama|movie|tv)/([0-9]+)(?:[-./]|$)`)
 
+// maccmsSourceIDFromURL 从 MACCMS 详情地址中提取作品来源标识。
 func maccmsSourceIDFromURL(link string) string {
 	parsed, err := url.Parse(link)
 	if err != nil {
 		return ""
 	}
 	path := strings.TrimSuffix(parsed.Path, ".html")
+	lower := strings.ToLower(path)
+	for _, marker := range []string{"/type/", "/search/", "/list/", "/category/", "/tag/", "/page/", "/play/", "/vodplay/", "/zywplay/", "/xzyxpy/"} {
+		if strings.Contains(lower, marker) {
+			return ""
+		}
+	}
+	if strings.Contains(lower, "/p/") && strings.Contains(lower, "/c/") {
+		return ""
+	}
 	if matches := maccmsDetailPath.FindStringSubmatch(path + "/"); len(matches) > 1 {
 		return matches[1]
 	}
@@ -248,6 +328,7 @@ func maccmsSourceIDFromURL(link string) string {
 	return ""
 }
 
+// fetchMaccmsCatalogPage 获取MACCMS目录页。
 func (d *Downloader) fetchMaccmsCatalogPage(ctx context.Context, source string, page int, category string) ([]Drama, bool, error) {
 	base := d.duanjuBaseURL(source)
 	address := ""
@@ -274,7 +355,13 @@ func (d *Downloader) fetchMaccmsCatalogPage(ctx context.Context, source string, 
 	case sourceWuguo:
 		class := strings.TrimSpace(category)
 		if class == "" {
-			address = base + "/"
+			class = "1"
+		}
+		if webProviderNumericID.MatchString(class) {
+			address = fmt.Sprintf("%s/index.php/vod/type/id/%s.html", base, class)
+			if page > 1 {
+				address = fmt.Sprintf("%s/index.php/vod/type/id/%s/page/%d.html", base, class, page)
+			}
 		} else {
 			address = fmt.Sprintf("%s%s/page/%d.html", base, strings.TrimSuffix(class, ".html"), page)
 		}
@@ -303,10 +390,15 @@ func (d *Downloader) fetchMaccmsCatalogPage(ctx context.Context, source string, 
 		return nil, false, err
 	}
 	items := maccmsCards(document, source, base)
-	_ = finalURL
-	return items, len(items) > 0, nil
+	if pagination, pageErr := sourceMaccmsPagination(ctx, document, source, finalURL, page); pageErr != nil {
+		return nil, false, pageErr
+	} else if pagination != nil {
+		return items, pagination.Current < pagination.TotalPages, nil
+	}
+	return items, sourceDocumentHasMore(document, finalURL, page), nil
 }
 
+// fetchMaccmsDetail 获取MACCMS详情。
 func (d *Downloader) fetchMaccmsDetail(ctx context.Context, source, sourceID string) (Drama, []Chapter, error) {
 	base := d.duanjuBaseURL(source)
 	candidates := maccmsDetailCandidates(source, base, sourceID)
@@ -318,6 +410,13 @@ func (d *Downloader) fetchMaccmsDetail(ctx context.Context, source, sourceID str
 			continue
 		}
 		episodes := maccmsEpisodesFromDocument(document)
+		if source == sourcePiguo {
+			if current := piguoEpisodesFromDocument(document); len(current) > 0 {
+				episodes = current
+			}
+		}
+		allEpisodes := episodes
+		episodes = maccmsSelectEpisodeLine(episodes, sourceID)
 		if len(episodes) == 0 {
 			lastErr = errors.New("未解析到分集列表")
 			continue
@@ -345,6 +444,19 @@ func (d *Downloader) fetchMaccmsDetail(ctx context.Context, source, sourceID str
 			lastErr = errors.New("未解析到可播放分集")
 			continue
 		}
+		var alternatives []Chapter
+		for _, episode := range allEpisodes {
+			owner, _, identified := maccmsEpisodeRoute(episode.URL)
+			number := explicitRouteEpisode(episode.Title)
+			if !identified || owner != sourceID || number <= 0 {
+				continue
+			}
+			link := duanjuAbsolute(base, episode.URL)
+			if link != "" {
+				alternatives = append(alternatives, duanjuChapter(source, sourceID, number, episode.Title, link, link, base+"/"))
+			}
+		}
+		chapters = attachChapterRoutes(chapters, alternatives)
 		sortDuanjuChapters(chapters)
 		drama.EpisodeCount = json.Number(strconv.Itoa(len(chapters)))
 		return drama, chapters, nil
@@ -355,6 +467,7 @@ func (d *Downloader) fetchMaccmsDetail(ctx context.Context, source, sourceID str
 	return Drama{}, nil, lastErr
 }
 
+// maccmsDetailCandidates 返回MACCMS详情候选列表。
 func maccmsDetailCandidates(source, base, sourceID string) []string {
 	switch source {
 	case sourceFaguo:
@@ -377,6 +490,7 @@ func maccmsDetailCandidates(source, base, sourceID string) []string {
 		}
 	case sourcePiguo:
 		return []string{
+			fmt.Sprintf("%s/%s", base, sourceID),
 			fmt.Sprintf("%s/movie/%s", base, sourceID),
 			fmt.Sprintf("%s/p/66/d/%s", base, sourceID),
 		}
@@ -391,12 +505,28 @@ func maccmsDetailCandidates(source, base, sourceID string) []string {
 	}
 }
 
+// maccmsDetailTitle 返回MACCMS详情标题。
 func maccmsDetailTitle(document *html.Node) string {
 	for _, name := range []string{"module-info-heading", "detail-title", "video-info-title", "page-title"} {
 		if node := providerHTMLFirstClass(document, name); node != nil {
 			if text := providerHTMLText(node); text != "" {
 				return maccmsCleanTitle(text)
 			}
+		}
+	}
+	for _, heading := range providerHTMLNodes(document, func(node *html.Node) bool { return node.Data == "h1" }) {
+		class := strings.ToLower(providerHTMLAttr(heading, "class"))
+		if strings.Contains(class, "logo") || strings.Contains(class, "site-name") {
+			continue
+		}
+		home := false
+		for _, anchor := range providerHTMLNodes(heading, func(node *html.Node) bool { return node.Data == "a" }) {
+			if href := strings.TrimSpace(providerHTMLAttr(anchor, "href")); href == "/" {
+				home = true
+			}
+		}
+		if text := strings.TrimSpace(providerHTMLText(heading)); !home && text != "" {
+			return text
 		}
 	}
 	if node := providerHTMLNodes(document, func(node *html.Node) bool { return node.Data == "title" }); len(node) > 0 {
@@ -407,6 +537,7 @@ func maccmsDetailTitle(document *html.Node) string {
 
 var maccmsTitleSuffixes = []string{"在线观看", "免费观看", "高清完整版", "完整版", "全集", "在线播放", "高清", "免费"}
 
+// maccmsCleanTitle 清理MACCMS标题。
 func maccmsCleanTitle(raw string) string {
 	text := strings.TrimSpace(raw)
 	if text == "" {
@@ -447,6 +578,7 @@ func maccmsCleanTitle(raw string) string {
 	return text
 }
 
+// maccmsTitleTailIsSeo 判断标题末尾是否属于站点附加的 SEO 文案。
 func maccmsTitleTailIsSeo(tail string) bool {
 	tail = strings.TrimSpace(tail)
 	if tail == "" {
@@ -460,6 +592,7 @@ func maccmsTitleTailIsSeo(tail string) bool {
 	return false
 }
 
+// maccmsDetailIntro 返回MACCMS详情简介。
 func maccmsDetailIntro(document *html.Node) string {
 	for _, name := range []string{"module-info-introduction-content", "detail-content", "video-info-content", "introduction_introEllipsis"} {
 		if node := providerHTMLFirstClass(document, name); node != nil {
@@ -478,8 +611,9 @@ func maccmsDetailIntro(document *html.Node) string {
 	return ""
 }
 
+// maccmsDetailCover 返回MACCMS详情海报。
 func maccmsDetailCover(document *html.Node, pageURL string) string {
-	for _, name := range []string{"module-item-pic", "detail-pic", "video-info-pic", "pic"} {
+	for _, name := range []string{"DramaDetail_bookCover", "bookCover", "module-item-pic", "detail-pic", "video-info-pic", "pic"} {
 		for _, node := range providerHTMLNodes(document, func(node *html.Node) bool { return providerHTMLClass(node, name) }) {
 			if address := maccmsCardCover(node, pageURL); address != "" {
 				return address
@@ -487,7 +621,15 @@ func maccmsDetailCover(document *html.Node, pageURL string) string {
 		}
 	}
 	for _, image := range providerHTMLNodes(document, func(node *html.Node) bool { return node.Data == "img" }) {
+		class := strings.ToLower(providerHTMLAttr(image, "class"))
+		if strings.Contains(class, "logo") || strings.Contains(class, "icon") {
+			continue
+		}
 		for _, attribute := range []string{"data-original", "data-src", "src"} {
+			value := strings.ToLower(providerHTMLAttr(image, attribute))
+			if strings.Contains(value, "/upload/site/") || strings.Contains(value, "/assets/") || strings.Contains(value, "favicon") {
+				continue
+			}
 			if address := providerCoverAddress(providerHTMLAttr(image, attribute), pageURL); address != "" {
 				return address
 			}
@@ -496,6 +638,7 @@ func maccmsDetailCover(document *html.Node, pageURL string) string {
 	return ""
 }
 
+// maccmsDetailCategory 返回MACCMS详情分类。
 func maccmsDetailCategory(document *html.Node) string {
 	for _, name := range []string{"module-info-tag-link", "detail-tag", "video-info-actor"} {
 		nodes := providerHTMLNodes(document, func(node *html.Node) bool { return providerHTMLClass(node, name) })
@@ -514,6 +657,7 @@ func maccmsDetailCategory(document *html.Node) string {
 	return ""
 }
 
+// searchMaccms 搜索MACCMS。
 func (d *Downloader) searchMaccms(ctx context.Context, source, query string) ([]Drama, error) {
 	base := d.duanjuBaseURL(source)
 	var address string
@@ -525,7 +669,7 @@ func (d *Downloader) searchMaccms(ctx context.Context, source, query string) ([]
 	case sourceWuguo:
 		address = fmt.Sprintf("%s/index.php/vod/search/page/1/wd/%s.html", base, url.PathEscape(query))
 	case sourceWangguo:
-		address = fmt.Sprintf("%s/search/%s----------1---.html", base, url.PathEscape(query))
+		address = fmt.Sprintf("%s/search/-------------.html?%s", base, url.Values{"wd": {query}}.Encode())
 	case sourcePiguo:
 		address = fmt.Sprintf("%s/q/%s?page=1", base, url.PathEscape(query))
 	default:
@@ -535,9 +679,19 @@ func (d *Downloader) searchMaccms(ctx context.Context, source, query string) ([]
 	if err != nil {
 		return nil, err
 	}
-	return maccmsCards(document, source, base), nil
+	text := providerHTMLText(document)
+	if source == sourceWangguo && strings.Contains(text, "安全验证") &&
+		(strings.Contains(text, "滑动拼图") || strings.Contains(text, "图形验证码")) {
+		return nil, errors.New("网果搜索返回 HTTP 200 安全验证页，需人工完成站点验证；未绕过验证码，未恢复全站搜索")
+	}
+	items := maccmsCards(document, source, base)
+	if len(items) == 0 && !sourceExplicitEmpty(text) {
+		return nil, errors.New("线上搜索返回了无法识别的页面，未确认无结果；可能需要更新线路规则或人工验证")
+	}
+	return items, nil
 }
 
+// maccmsPlayerURL 返回MACCMS播放器URL。
 func maccmsPlayerURL(body string) string {
 	if matches := maccmsPlayerData.FindStringSubmatch(body); len(matches) > 1 {
 		if inner := maccmsPlayerURLField.FindStringSubmatch(matches[1]); len(inner) > 1 {
@@ -556,6 +710,7 @@ func maccmsPlayerURL(body string) string {
 	return ""
 }
 
+// maccmsNormalizePlaybackURL 规整MACCMS播放URL。
 func maccmsNormalizePlaybackURL(raw string) string {
 	raw = strings.TrimSpace(strings.ReplaceAll(raw, `\/`, `/`))
 	raw = strings.Trim(raw, ",\\。，;；")
@@ -578,6 +733,7 @@ func maccmsNormalizePlaybackURL(raw string) string {
 
 var maccmsUnicodeEscape = regexp.MustCompile(`\\?u([0-9a-fA-F]{4})`)
 
+// maccmsDecodeUnicode 解码MACCMSUnicode。
 func maccmsDecodeUnicode(value string) string {
 	return maccmsUnicodeEscape.ReplaceAllStringFunc(value, func(match string) string {
 		hex := match[len(match)-4:]

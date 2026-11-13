@@ -48,10 +48,26 @@ type diagnosticLog struct {
 	warningOnce sync.Once
 }
 
+// newDiagnosticLog 创建诊断日志。
 func newDiagnosticLog(directory string) *diagnosticLog {
 	return &diagnosticLog{path: filepath.Join(directory, "logs", "app.log"), limit: diagnosticLogBytes}
 }
 
+// setDirectory 设置目录。
+func (log *diagnosticLog) setDirectory(directory string) {
+	log.mu.Lock()
+	defer log.mu.Unlock()
+	log.path = filepath.Join(directory, "app.log")
+}
+
+// filePath 取得诊断日志使用的文件路径。
+func (log *diagnosticLog) filePath() string {
+	log.mu.Lock()
+	defer log.mu.Unlock()
+	return log.path
+}
+
+// write 写入诊断日志。
 func (log *diagnosticLog) write(event diagnosticEvent) error {
 	event.Time = time.Now()
 	if event.Level == "" {
@@ -87,6 +103,7 @@ func (log *diagnosticLog) write(event diagnosticEvent) error {
 	return errors.Join(writeErr, file.Close())
 }
 
+// rotate 轮换诊断日志文件并移除超出备份数量的旧日志。
 func (log *diagnosticLog) rotate() error {
 	oldest := log.path + "." + strconv.Itoa(diagnosticLogBackups)
 	if err := os.Remove(oldest); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -104,6 +121,7 @@ func (log *diagnosticLog) rotate() error {
 	return nil
 }
 
+// redactConfiguredString 隐藏诊断文本中已配置的敏感值。
 func redactConfiguredString(cfg *Config, value string) string {
 	for _, secret := range []string{cfg.Token, cfg.AESKeyHex, cfg.InterfaceKey, cfg.ParamKey, cfg.ParamIV} {
 		if secret = strings.TrimSpace(secret); secret != "" {
@@ -113,6 +131,7 @@ func redactConfiguredString(cfg *Config, value string) string {
 	return redactErrorString(value)
 }
 
+// recordDiagnostic 记录诊断。
 func (downloader *Downloader) recordDiagnostic(event diagnosticEvent) {
 	if downloader == nil || downloader.diagnostics == nil {
 		return

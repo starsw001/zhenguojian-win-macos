@@ -95,7 +95,7 @@ void main() {
   );
 
   testWidgets(
-    'recovery exhaustion releases sessions and manual retry keeps the saved position',
+    'recovery exhaustion retains selectable plan and manual retry keeps position',
     (tester) async {
       final repository = RouteRepository()..broken = true;
       final player = ScriptedPlayer();
@@ -104,12 +104,12 @@ void main() {
         await tester.pump(const Duration(seconds: 1));
         await settleOperations(tester);
       }
-      expect(repository.primaryCalls, 2);
-      expect(repository.fallbackCalls, 2);
+      expect(repository.primaryCalls, 1);
+      expect(repository.fallbackCalls, 1);
       expect(find.text('暂时无法播放'), findsOneWidget);
-      expect(repository.active, isEmpty);
+      expect(repository.active.length, 1);
       await tester.pump(const Duration(seconds: 25));
-      expect(repository.primaryCalls + repository.fallbackCalls, 4);
+      expect(repository.primaryCalls + repository.fallbackCalls, 2);
       repository.broken = false;
       await tester.tap(find.text('重试播放'));
       await settleOperations(tester);
@@ -242,8 +242,12 @@ void main() {
       final pip = tester.getRect(
         find.byKey(const ValueKey('player-picture-in-picture')),
       );
+      final subtitles = tester.getRect(
+        find.byKey(const ValueKey('player-subtitles')),
+      );
       expect(quality.left - speed.right, lessThan(8));
-      expect(pip.left - quality.right, lessThan(8));
+      expect(subtitles.left - quality.right, lessThan(8));
+      expect(pip.left - subtitles.right, lessThan(8));
       expect(pip.right, greaterThan(330));
       await unmount(tester, player);
     } finally {

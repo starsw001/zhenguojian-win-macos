@@ -8,6 +8,7 @@ import 'local_profiles.dart';
 import 'local_store.dart';
 import 'models.dart';
 import 'app_build.dart';
+import 'app_license.dart';
 
 class ProfilesScreen extends StatefulWidget {
   const ProfilesScreen({super.key, required this.store, this.locked = false});
@@ -20,6 +21,9 @@ class ProfilesScreen extends StatefulWidget {
 class _ProfilesScreenState extends State<ProfilesScreen> {
   bool _busy = false;
   String? _error;
+
+  bool get _showLocalUserManagement =>
+      AppLicenseScope.of(context)?.enabled != true;
 
   Future<void> _recover({bool export = false, bool reload = false}) async {
     setState(() {
@@ -118,20 +122,6 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
     if (mounted) setState(() {});
   }
 
-  Future<void> _setForceLogin(bool value) async {
-    setState(() {
-      _busy = true;
-      _error = null;
-    });
-    try {
-      await widget.store.setForceLogin(value);
-    } catch (error) {
-      if (mounted) setState(() => _error = error.toString());
-    } finally {
-      if (mounted) setState(() => _busy = false);
-    }
-  }
-
   String _permissionsLabel(LocalProfile profile) {
     if (profile.admin) return '管理员 · 全部权限';
     final sources = profile.sources
@@ -171,28 +161,21 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
                   child: const Text('重新读取配置'),
                 ),
               ] else ...[
-                Text(
-                  widget.locked
-                      ? '选择用户并输入密码'
-                      : '当前用户：${widget.store.profile.name}',
-                  style: Theme.of(context).textTheme.titleLarge,
-                ),
-                const SizedBox(height: 8),
-                const Text('各用户的追剧和观看记录独立保存，下载文件由本机共享。'),
-                if (!widget.store.locked && widget.store.profile.admin) ...[
-                  const SizedBox(height: 12),
-                  SwitchListTile(
-                    contentPadding: EdgeInsets.zero,
-                    title: const Text('启动时需要登录'),
-                    subtitle: Text(
-                      widget.store.forceLogin
-                          ? '每次打开应用先解锁当前受保护用户'
-                          : '保留密码，仅切换用户或手动锁定时验证',
-                    ),
-                    value: widget.store.forceLogin,
-                    onChanged: _busy ? null : _setForceLogin,
+                if (widget.locked || _showLocalUserManagement) ...[
+                  Text(
+                    widget.locked
+                        ? '选择用户并输入密码'
+                        : '当前用户：${widget.store.profile.name}',
+                    style: Theme.of(context).textTheme.titleLarge,
                   ),
+                  const SizedBox(height: 8),
                 ],
+                const Text('用户的追剧和观看记录独立保存，下载文件由本机共享。'),
+                if (!widget.locked)
+                  ProfileLicenseDetails(
+                    canReveal:
+                        !widget.store.locked && widget.store.profile.admin,
+                  ),
               ],
               if (_busy)
                 const Padding(
@@ -211,7 +194,8 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
                 ),
               const SizedBox(height: 16),
               for (final profile
-                  in widget.store.configurationError == null
+                  in widget.store.configurationError == null &&
+                          (widget.locked || _showLocalUserManagement)
                       ? widget.store.profiles
                       : <LocalProfile>[])
                 Card(
@@ -224,7 +208,10 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
                     title: Text(profile.name),
                     subtitle: Text(_permissionsLabel(profile)),
                     onTap: _busy ? null : () => _switch(profile),
-                    trailing: !widget.store.locked && widget.store.profile.admin
+                    trailing:
+                        _showLocalUserManagement &&
+                            !widget.store.locked &&
+                            widget.store.profile.admin
                         ? IconButton(
                             tooltip: '编辑用户',
                             onPressed: _busy ? null : () => _edit(profile),
@@ -237,7 +224,9 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
                           ),
                   ),
                 ),
-              if (!widget.store.locked && widget.store.profile.admin) ...[
+              if (_showLocalUserManagement &&
+                  !widget.store.locked &&
+                  widget.store.profile.admin) ...[
                 const SizedBox(height: 16),
                 FilledButton.icon(
                   onPressed: _busy ? null : () => _edit(),

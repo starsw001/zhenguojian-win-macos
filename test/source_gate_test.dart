@@ -1,5 +1,6 @@
 import 'package:duanju_app/app_build.dart';
 import 'package:duanju_app/local_store.dart';
+import 'package:duanju_app/models.dart';
 import 'package:duanju_app/source_gate_dialog.dart';
 import 'package:duanju_app/source_gate_taps.dart';
 import 'package:flutter/material.dart';
@@ -20,29 +21,62 @@ void main() {
     return store;
   }
 
-  test('default visibility hides restricted sources', () async {
-    final store = await create();
-    expect(store.sourceGateEnabled, isFalse);
-    expect(store.sourcesUnlocked, isFalse);
-    expect(
-      store.sources.map((site) => site.id),
-      allSourcesEnabled
-          ? ['hongguo', 'hanxiaoquan', 'guipian', 'sorani']
-          : ['hongguo'],
-    );
-    expect(store.allowsSource('huangdou'), isFalse);
-    expect(store.allowsSource('hongguo'), isTrue);
-    // 未启用密码锁时无处输入密码，需要先在弹窗里启用。
-    await expectLater(store.unlockSources('666'), throwsStateError);
-    expect(store.sourcesUnlocked, isFalse);
-  });
+  test(
+    'a fresh installation exposes every compiled source without a pin',
+    () async {
+      final store = await create();
+      expect(store.sourceGateEnabled, isFalse);
+      expect(store.sourceGateOff, isTrue);
+      expect(store.sourcesUnlocked, isTrue);
+      expect(
+        store.sources.map((site) => site.id),
+        SourceSite.values.map((site) => site.id),
+      );
+      expect(store.sources.length, allSourcesEnabled ? 23 : 1);
+      expect(store.allowsSource('huangdou'), allSourcesEnabled);
+      expect(store.allowsSource('hongguo'), isTrue);
+      await expectLater(store.unlockSources('666'), throwsStateError);
+      expect(store.sourcesUnlocked, isTrue);
+      expect(store.preferences.getKeys(), isEmpty);
+      final restarted = testStore(store.preferences);
+      addTearDown(restarted.dispose);
+      expect(restarted.sources.length, allSourcesEnabled ? 23 : 1);
+      expect(restarted.sourceGateOff, isTrue);
+      expect(store.preferences.getKeys(), isEmpty);
+    },
+  );
+
+  for (final off in [null, false, true]) {
+    test('an unconfigured legacy gate $off exposes compiled sources', () async {
+      final store = await create({
+        'sourceGateEnabled': false,
+        'sourceGateOff': ?off,
+        'sourceGateSalt': '',
+        'sourceGateHash': '',
+      });
+      final before = {
+        for (final key in store.preferences.getKeys())
+          key: store.preferences.get(key),
+      };
+      expect(store.configurationError, isNull);
+      expect(store.sourcesUnlocked, isTrue);
+      expect(store.sources.length, allSourcesEnabled ? 23 : 1);
+      final restarted = testStore(store.preferences);
+      addTearDown(restarted.dispose);
+      expect(restarted.sources.length, SourceSite.values.length);
+      expect({
+        for (final key in store.preferences.getKeys())
+          key: store.preferences.get(key),
+      }, before);
+    });
+  }
 
   test('enabling the gate hides restricted sources and unlocks once', () async {
     final store = await create();
     await store.enableSourceGate('666');
     expect(store.sourceGateEnabled, isTrue);
     expect(store.sourcesUnlocked, isTrue);
-    expect(store.sources.length, allSourcesEnabled ? 11 : 1);
+    expect(store.sources.length, SourceSite.values.length);
 
     store.lockSources();
     expect(store.sourcesUnlocked, isFalse);
@@ -55,7 +89,7 @@ void main() {
     expect(store.sourcesUnlocked, isFalse);
     await store.unlockSources('666');
     expect(store.sourcesUnlocked, isTrue);
-    expect(store.sources.length, allSourcesEnabled ? 11 : 1);
+    expect(store.sources.length, SourceSite.values.length);
   });
 
   test('a saved gate hides sources again after restart', () async {
@@ -78,7 +112,7 @@ void main() {
     await store.disableSourceGate();
     expect(store.sourceGateEnabled, isFalse);
     expect(store.sourcesUnlocked, isTrue);
-    expect(store.sources.length, allSourcesEnabled ? 11 : 1);
+    expect(store.sources.length, SourceSite.values.length);
   });
 
   test('an invalid pin must be 3 to 12 digits', () async {
@@ -123,6 +157,36 @@ void main() {
     expect(store.sources.length, allSourcesEnabled ? 4 : 1);
   });
 
+  for (final record in [
+    {
+      'sourceGateEnabled': true,
+      'sourceGateOff': true,
+      'sourceGateSalt': 'bad',
+      'sourceGateHash': 'bad',
+    },
+    {
+      'sourceGateEnabled': false,
+      'sourceGateOff': true,
+      'sourceGateSalt': gateSalt,
+    },
+    {
+      'sourceGateEnabled': false,
+      'sourceGateOff': true,
+      'sourceGateHash': '1' * 64,
+    },
+  ]) {
+    test(
+      'partial or contradictory gate records fail closed: $record',
+      () async {
+        final store = await create(record);
+        expect(store.configurationError, isNull);
+        expect(store.sourceGateOff, isFalse);
+        expect(store.sourcesUnlocked, isFalse);
+        expect(store.sources.length, allSourcesEnabled ? 4 : 1);
+      },
+    );
+  }
+
   test('a user-disabled gate keeps every compiled source visible', () async {
     final store = await create({
       'sourceGateEnabled': false,
@@ -130,7 +194,7 @@ void main() {
     });
     expect(store.sourceGateEnabled, isFalse);
     expect(store.sourcesUnlocked, isTrue);
-    expect(store.sources.length, allSourcesEnabled ? 11 : 1);
+    expect(store.sources.length, SourceSite.values.length);
   });
 
   // 密码锁弹窗含动画与异步回调，用固定步进代替 pumpAndSettle，

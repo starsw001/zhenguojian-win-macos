@@ -8,6 +8,7 @@ import (
 	"unicode/utf8"
 )
 
+// suggestions 返回建议词列表。
 func (engine *nativeEngine) suggestions(ctx context.Context, query string) ([]string, error) {
 	if strings.TrimSpace(query) == "" {
 		return []string{}, nil
@@ -20,6 +21,7 @@ func (engine *nativeEngine) suggestions(ctx context.Context, query string) ([]st
 	return names, err
 }
 
+// nativeParseSuggestions 解析原生建议词列表。
 func nativeParseSuggestions(body []byte) ([]string, error) {
 	var result map[string]json.RawMessage
 	if json.Unmarshal(body, &result) != nil {

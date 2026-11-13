@@ -10,6 +10,7 @@ import (
 	"testing"
 )
 
+// TestNativePlaybackCancellationRejectsDelayedCalls 验证「Native Playback Cancellation Rejects Delayed Calls」回归场景。
 func TestNativePlaybackCancellationRejectsDelayedCalls(t *testing.T) {
 	engine := &nativeEngine{}
 	first, finishFirst, err := engine.nativeBeginPlayback(context.Background(), 1)
@@ -46,6 +47,59 @@ func TestNativePlaybackCancellationRejectsDelayedCalls(t *testing.T) {
 	}
 }
 
+// TestNativeHLSExternalKeyDoesNotReclassifyMediaSegments 验证「Native HLS External Key Does Not Reclassify Media Segments」回归场景。
+func TestNativeHLSExternalKeyDoesNotReclassifyMediaSegments(t *testing.T) {
+	payload := strings.Repeat("encrypted-segment-fixture", 32)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/segment.ts" {
+			t.Errorf("unexpected upstream request: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "video/mp2t")
+		io.WriteString(w, payload)
+	}))
+	defer upstream.Close()
+	engine, err := newNativeEngine(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer engine.downloads.close()
+	stream, err := newNativeStreamServer(engine.downloader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.server.Close()
+	address, token := stream.nativeOpen(providerMedia{
+		URL: upstream.URL + "/index.m3u8", HLSKey: []byte("0123456789abcdef"),
+		Playlist: "#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"secret.key\"\n#EXTINF:3,\nsegment.ts\n#EXT-X-ENDLIST\n",
+	})
+	defer stream.nativeRelease(token)
+	response, err := http.Get(address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(response.Body)
+	response.Body.Close()
+	segment := ""
+	for _, line := range strings.Split(string(body), "\n") {
+		if strings.HasPrefix(line, "http://") {
+			segment = line
+		}
+	}
+	if segment == "" {
+		t.Fatal("missing rewritten segment")
+	}
+	response, err = http.Get(segment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	body, _ = io.ReadAll(response.Body)
+	if response.StatusCode != http.StatusOK || string(body) != payload {
+		t.Fatalf("HLS key corrupted segment delivery: HTTP %d, %s", response.StatusCode, body)
+	}
+}
+
+// TestNativeStreamLateResolutionPreservesCurrentSession 验证「Native Stream Late Resolution Preserves Current Session」回归场景。
 func TestNativeStreamLateResolutionPreservesCurrentSession(t *testing.T) {
 	engine, err := newNativeEngine(t.TempDir())
 	if err != nil {
@@ -71,6 +125,7 @@ func TestNativeStreamLateResolutionPreservesCurrentSession(t *testing.T) {
 	}
 }
 
+// TestNativeHLSExtensionlessPlaylistsAndRedirectBase 验证「Native HLS Extensionless Playlists And Redirect Base」回归场景。
 func TestNativeHLSExtensionlessPlaylistsAndRedirectBase(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {

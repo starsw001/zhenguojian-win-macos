@@ -23,6 +23,7 @@ type nativeHongguoRequest struct {
 	Scene   string `json:"req_scene"`
 }
 
+// nativeHongguoRequestForTest 请求原生红果对应Test。
 func nativeHongguoRequestForTest(t *testing.T, request *http.Request) nativeHongguoRequest {
 	t.Helper()
 	var payload nativeHongguoRequest
@@ -32,6 +33,7 @@ func nativeHongguoRequestForTest(t *testing.T, request *http.Request) nativeHong
 	return payload
 }
 
+// nativeHongguoResponse 返回原生红果响应。
 func nativeHongguoResponse(request *http.Request, next int, more bool, session string, ids ...string) *http.Response {
 	rows := make([]map[string]any, 0, len(ids))
 	for _, id := range ids {
@@ -43,6 +45,7 @@ func nativeHongguoResponse(request *http.Request, next int, more bool, session s
 	return sourceFixtureResponse(request, http.StatusOK, string(body))
 }
 
+// reopenCatalogEngine 返回reopen目录引擎。
 func reopenCatalogEngine(t *testing.T, directory string, transport sourceFixtureTransport) *nativeEngine {
 	t.Helper()
 	engine, err := newNativeEngine(directory)
@@ -53,9 +56,11 @@ func reopenCatalogEngine(t *testing.T, directory string, transport sourceFixture
 	engine.downloader.client.Transport = transport
 	engine.downloader.limiter = newRequestLimiter(3, 0)
 	engine.downloader.cfg.Retries = 1
+	engine.downloader.cfg.MaxPagesPerSort = 1
 	return engine
 }
 
+// TestNativeHongguoCursorRestartsPerCatalog 验证「Native Hongguo Cursor Restarts Per Catalog」回归场景。
 func TestNativeHongguoCursorRestartsPerCatalog(t *testing.T) {
 	var calls []nativeHongguoRequest
 	var device, install string
@@ -129,6 +134,7 @@ func TestNativeHongguoCursorRestartsPerCatalog(t *testing.T) {
 	}
 }
 
+// TestNativeHongguoCursorRecoversSessionsAfterRestart 验证「Native Hongguo Cursor Recovers Sessions After Restart」回归场景。
 func TestNativeHongguoCursorRecoversSessionsAfterRestart(t *testing.T) {
 	for _, scenario := range []string{"expired", "rejected", "repeated-page"} {
 		t.Run(scenario, func(t *testing.T) {
@@ -190,6 +196,7 @@ func TestNativeHongguoCursorRecoversSessionsAfterRestart(t *testing.T) {
 	}
 }
 
+// TestNativeHongguoStalledCursorKeepsPartialItems 验证「Native Hongguo Stalled Cursor Keeps Partial Items」回归场景。
 func TestNativeHongguoStalledCursorKeepsPartialItems(t *testing.T) {
 	var calls []int
 	transport := sourceFixtureTransport(func(request *http.Request) (*http.Response, error) {
@@ -218,6 +225,7 @@ func TestNativeHongguoStalledCursorKeepsPartialItems(t *testing.T) {
 	}
 }
 
+// TestNativeCatalogPreservesLargeLibraryAndPage501 验证「Native Catalog Preserves Large Library And Page 501」回归场景。
 func TestNativeCatalogPreservesLargeLibraryAndPage501(t *testing.T) {
 	var requested string
 	engine := sourceFixtureEngine(t, func(request *http.Request) (*http.Response, error) {
@@ -254,6 +262,7 @@ func TestNativeCatalogPreservesLargeLibraryAndPage501(t *testing.T) {
 	}
 }
 
+// TestNativeCatalogSaveFailureRetriesWithoutAdvancing 验证「Native Catalog Save Failure Retries Without Advancing」回归场景。
 func TestNativeCatalogSaveFailureRetriesWithoutAdvancing(t *testing.T) {
 	var offsets []int
 	transport := sourceFixtureTransport(func(request *http.Request) (*http.Response, error) {
@@ -264,6 +273,8 @@ func TestNativeCatalogSaveFailureRetriesWithoutAdvancing(t *testing.T) {
 			strconv.Itoa(1001+position), strconv.Itoa(1002+position)), nil
 	})
 	engine := sourceFixtureEngine(t, transport)
+	engine.downloader.hongguoClient().state.Registered = true
+	engine.downloader.cfg.MaxPagesPerSort = 1
 	input := nativeInput{Source: sourceHongguo, Category: "short_play", Page: 1}
 	if _, err := engine.nativeCatalog(context.Background(), input); err != nil {
 		t.Fatal(err)
@@ -318,6 +329,7 @@ func TestNativeCatalogSaveFailureRetriesWithoutAdvancing(t *testing.T) {
 	}
 }
 
+// TestNativeCatalogSizeLimitPreservesPreviousFile 验证「Native Catalog Size Limit Preserves Previous File」回归场景。
 func TestNativeCatalogSizeLimitPreservesPreviousFile(t *testing.T) {
 	var requests atomic.Int32
 	engine := sourceFixtureEngine(t, func(request *http.Request) (*http.Response, error) {
@@ -347,6 +359,7 @@ func TestNativeCatalogSizeLimitPreservesPreviousFile(t *testing.T) {
 	}
 }
 
+// TestNativeCatalogMetadataSaveExcludesInFlightCursor 验证「Native Catalog Metadata Save Excludes In Flight Cursor」回归场景。
 func TestNativeCatalogMetadataSaveExcludesInFlightCursor(t *testing.T) {
 	paused, release := make(chan struct{}), make(chan struct{})
 	transport := sourceFixtureTransport(func(request *http.Request) (*http.Response, error) {
@@ -363,6 +376,8 @@ func TestNativeCatalogMetadataSaveExcludesInFlightCursor(t *testing.T) {
 		return nativeHongguoResponse(request, payload.Offset+18, true, "fixture", strconv.Itoa(base+payload.Offset)), nil
 	})
 	engine := sourceFixtureEngine(t, transport)
+	engine.downloader.hongguoClient().state.Registered = true
+	engine.downloader.cfg.MaxPagesPerSort = 1
 	if _, err := engine.nativeCatalog(context.Background(), nativeInput{Source: sourceHongguo, Page: 1}); err != nil {
 		t.Fatal(err)
 	}
@@ -399,6 +414,7 @@ func TestNativeCatalogMetadataSaveExcludesInFlightCursor(t *testing.T) {
 	}
 }
 
+// TestNativeSourceRecordSaveFailureAndRetryDuringBackoff 验证「Native Source Record Save Failure And Retry During Backoff」回归场景。
 func TestNativeSourceRecordSaveFailureAndRetryDuringBackoff(t *testing.T) {
 	var requests atomic.Int32
 	engine := sourceFixtureEngine(t, func(request *http.Request) (*http.Response, error) {
@@ -450,5 +466,132 @@ func TestNativeSourceRecordSaveFailureAndRetryDuringBackoff(t *testing.T) {
 	restarted = reopenCatalogEngine(t, engine.directory, nil)
 	if restarted.sourceStatus(sourceHongguo).Health.Sample != "新诊断" {
 		t.Fatal("oversized records replaced the previous saved report")
+	}
+}
+
+// TestNativeGuipianSearchIncludesCatalogCache 验证「Native Guipian Search Includes Catalog Cache」回归场景。
+func TestNativeGuipianSearchIncludesCatalogCache(t *testing.T) {
+	for _, offline := range []bool{false, true} {
+		t.Run(fmt.Sprintf("rss-unavailable-%v", offline), func(t *testing.T) {
+			transport := sourceFixtureTransport(func(request *http.Request) (*http.Response, error) {
+				if request.URL.Path != "/xml/rss.xml" {
+					t.Fatalf("unexpected non-text request: %s", request.URL.Path)
+				}
+				if offline {
+					return sourceFixtureResponse(request, http.StatusServiceUnavailable, "synthetic source failure"), nil
+				}
+				return sourceFixtureResponse(request, http.StatusOK, `<rss><channel><item><title>合成旧剧一</title><link>https://guipianwu.com/nv/100.html</link></item></channel></rss>`), nil
+			})
+			engine := sourceFixtureEngine(t, transport)
+			engine.catalogs[sourceGuipian] = []nativeDrama{
+				{ID: "guipian:100", Source: sourceGuipian, Title: "合成旧剧一", Description: "已保存的合成详情"},
+			}
+			engine.catalogs[nativeCatalogKey(sourceGuipian, "3")] = []nativeDrama{
+				{ID: "guipian:101", Source: sourceGuipian, Title: "合成旧剧二"},
+			}
+			engine.catalogs[sourceSorani] = []nativeDrama{
+				{ID: "sorani:999", Source: sourceSorani, Title: "合成旧剧其他站源"},
+			}
+			result, err := engine.nativeCatalog(context.Background(), nativeInput{Source: sourceGuipian, Query: "合成旧剧", Page: 1})
+			if err != nil {
+				t.Fatal("cached title search must remain usable", err)
+			}
+			found := map[string]nativeDrama{}
+			for _, item := range result.Items {
+				if _, duplicate := found[item.ID]; duplicate {
+					t.Fatal("duplicate search result", item.ID)
+				}
+				found[item.ID] = item
+			}
+			if len(found) != 2 || found["guipian:100"].Description == "" || found["guipian:101"].Title == "" {
+				t.Fatalf("search lost cached titles or metadata: %+v", result.Items)
+			}
+			if offline && (!result.LocalSearch || result.Warning == "") {
+				t.Fatal("offline cache fallback must explain its search scope", result)
+			}
+			if !offline {
+				next, err := engine.nativeCatalog(context.Background(), nativeInput{Source: sourceGuipian, Query: "合成旧剧", Page: 2})
+				if err != nil || len(next.Items) != 0 {
+					t.Fatal("cached matches must not repeat on later RSS pages", next, err)
+				}
+			}
+		})
+	}
+}
+
+// TestNativeHanxiaoquanSearchKeepsCachedTitles 验证「Native Hanxiaoquan Search Keeps Cached Titles」回归场景。
+func TestNativeHanxiaoquanSearchKeepsCachedTitles(t *testing.T) {
+	transport := sourceFixtureTransport(func(request *http.Request) (*http.Response, error) {
+		if request.URL.Path != "/search.php" {
+			t.Fatalf("unexpected non-text request: %s", request.URL.Path)
+		}
+		return sourceFixtureResponse(request, http.StatusServiceUnavailable, "synthetic unavailable search"), nil
+	})
+	engine := sourceFixtureEngine(t, transport)
+	engine.catalogs[nativeCatalogKey(sourceHanxiaoquan, "1")] = []nativeDrama{
+		{ID: "hanxiaoquan:100", Source: sourceHanxiaoquan, Title: "合成韩剧", Episodes: 12},
+	}
+	result, err := engine.nativeCatalog(context.Background(), nativeInput{Source: sourceHanxiaoquan, Query: "合成韩剧", Page: 1})
+	if err != nil || len(result.Items) != 1 || result.Items[0].ID != "hanxiaoquan:100" || !result.LocalSearch || result.Warning == "" {
+		t.Fatal("unavailable online search must retain its cached title and explain the fallback", result, err)
+	}
+}
+
+// TestNativeCatalogLargerThanLegacyLimitPreservesAllSources 验证「Native Catalog Larger Than Legacy Limit Preserves All Sources」回归场景。
+func TestNativeCatalogLargerThanLegacyLimitPreservesAllSources(t *testing.T) {
+	engine, err := newNativeEngine(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(engine.downloads.close)
+	engine.catalogs[sourceHongguo] = []nativeDrama{{ID: "hongguo:1", Source: sourceHongguo, Title: "缓存边界验证", Description: strings.Repeat("a", 33<<20)}}
+	engine.catalogs["retired-source"] = []nativeDrama{{ID: "retired-source:2", Source: "retired-source", Title: "保留历史缓存"}}
+	if err := engine.writeCatalogDiskLocked(); err != nil {
+		t.Fatal("existing multi-source cache must be saved beyond the legacy 32 MiB boundary", err)
+	}
+	engine.catalogs = map[string][]nativeDrama{}
+	engine.loadCatalogCache()
+	if len(engine.catalogs[sourceHongguo]) != 1 || len(engine.catalogs[sourceHongguo][0].Description) != 33<<20 || len(engine.catalogs["retired-source"]) != 1 {
+		t.Fatal("cache reload lost current or previously retained source records")
+	}
+}
+
+// TestNativeCatalogSuccessfulSaveClearsOnlyRecoveredSaveWarning 验证「Native Catalog Successful Save Clears Only Recovered Save Warning」回归场景。
+func TestNativeCatalogSuccessfulSaveClearsOnlyRecoveredSaveWarning(t *testing.T) {
+	engine, err := newNativeEngine(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer engine.downloads.close()
+	engine.sourceRecords[sourceHongguo] = nativeSourceRecord{NeedsSave: true, Error: "已恢复可读取的缓存，请重新更新"}
+	engine.sourceRecords[sourceHuangdou] = nativeSourceRecord{NeedsSave: true, Error: "upstream HTTP 503"}
+	if err := engine.writeCatalogDiskLocked(); err != nil {
+		t.Fatal(err)
+	}
+	if record := engine.sourceRecords[sourceHongguo]; record.NeedsSave || record.Error != "" || record.Stage != "已保存，可继续更新" {
+		t.Fatalf("successful save still shows stale storage failure: %+v", record)
+	}
+	if engine.sourceRecords[sourceHuangdou].Error != "upstream HTTP 503" {
+		t.Fatal("successful storage retry erased an unrelated provider failure")
+	}
+}
+
+// TestNativeCatalogRetryAfterRestartSavesRecoveredCache 验证「Native Catalog Retry After Restart Saves Recovered Cache」回归场景。
+func TestNativeCatalogRetryAfterRestartSavesRecoveredCache(t *testing.T) {
+	engine, err := newNativeEngine(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer engine.downloads.close()
+	engine.catalogs[sourceHongguo] = []nativeDrama{{ID: "hongguo:1", Source: sourceHongguo, Title: "保留的剧集"}}
+	engine.sourceRecords[sourceHongguo] = nativeSourceRecord{Stage: "上次保存未完成", Error: "已恢复可读取的缓存，请重新更新"}
+	status := engine.retrySourceSave(sourceHongguo)
+	if status.Error != "" || status.StorageError != "" || status.Stage != "已保存，可继续更新" {
+		t.Fatalf("recovered cache could not be saved after restart: %+v", status)
+	}
+	engine.catalogs = map[string][]nativeDrama{}
+	engine.loadCatalogCache()
+	if len(engine.catalogs[sourceHongguo]) != 1 || engine.catalogs[sourceHongguo][0].ID != "hongguo:1" {
+		t.Fatal("retry save lost recovered source records")
 	}
 }

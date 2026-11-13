@@ -10,6 +10,7 @@ import 'background_downloads.dart';
 import 'core_bridge.dart';
 import 'local_store.dart';
 import 'media_pipeline.dart';
+import 'media_fingerprint.dart';
 import 'models.dart';
 
 part 'media_merge_queue.dart';
@@ -100,7 +101,7 @@ String embyShowNfo(Drama drama, {bool localPoster = false}) {
       : '';
   return '<?xml version="1.0" encoding="utf-8"?>\n<tvshow>'
       '<title>${xmlText(drama.title)}</title><plot>${xmlText(drama.description)}</plot>'
-      '<uniqueid type="zhenguojian" default="true">${xmlText(drama.id)}</uniqueid>'
+      '<uniqueid type="zhenguoshang" default="true">${xmlText(drama.id)}</uniqueid>'
       '${cover.isEmpty ? '' : '<thumb aspect="poster">${xmlText(cover)}</thumb>'}'
       '<season>1</season><episode>${drama.episodes}</episode></tvshow>\n';
 }
@@ -110,7 +111,7 @@ String embyEpisodeNfo(DownloadJob job) =>
     '<episodedetails><title>${xmlText(job.episode.title)}</title>'
     '<showtitle>${xmlText(job.drama.title)}</showtitle><season>1</season><episode>${job.episode.number}</episode>'
     '<plot>${xmlText(job.drama.description)}</plot>'
-    '<uniqueid type="zhenguojian" default="true">${xmlText(job.id)}</uniqueid></episodedetails>\n';
+    '<uniqueid type="zhenguoshang" default="true">${xmlText(job.id)}</uniqueid></episodedetails>\n';
 
 String _safeName(String name) {
   var result = name
@@ -120,6 +121,10 @@ String _safeName(String name) {
   if (result.isEmpty) result = '短剧';
   return String.fromCharCodes(result.runes.take(60));
 }
+
+String mediaSourceVersion(DownloadJob job) =>
+    '${job.created}-${job.bytes}-${job.actualQuality}'
+    '${job.revision > 0 ? '-${job.revision}' : ''}';
 
 class MediaLibrary extends ChangeNotifier {
   MediaLibrary(
@@ -163,6 +168,7 @@ class MediaLibrary extends ChangeNotifier {
   String? root;
   List<LocalMediaItem> _items = [];
   final _skipped = <String>{};
+  final _skippedVersions = <String, String>{};
   bool busy = false, _checking = false, _cancelled = false, _suspended = false;
   bool get suspended => _suspended;
   set suspended(bool value) {
@@ -181,7 +187,7 @@ class MediaLibrary extends ChangeNotifier {
     current?.dispose();
     final library = MediaLibrary(repository, store);
     current = library;
-    if (Platform.isAndroid && store.autoExport) {
+    if (Platform.isAndroid) {
       unawaited(
         BackgroundDownloads.ensureStarted().catchError((Object error) {
           library.error = error.toString();
@@ -225,6 +231,7 @@ class MediaLibrary extends ChangeNotifier {
     if (directory.isEmpty) throw AppFailure('无法读取下载位置');
     final file = File(path.join(directory, 'media-library.json'));
     var items = <LocalMediaItem>[];
+    final versions = <String, String>{};
     final skipped = <String>{},
         folders = <String, String>{},
         numbers = <String, int>{};
@@ -244,6 +251,9 @@ class MediaLibrary extends ChangeNotifier {
         throw AppFailure('本地媒体记录重复，原文件已保留');
       }
       skipped.addAll((data['skipped'] as List? ?? []).cast<String>());
+      versions.addAll(
+        Map<String, String>.from(data['skippedVersions'] as Map? ?? {}),
+      );
       for (final entry in (data['showFolders'] as Map? ?? {}).entries) {
         final folder = entry.value as String;
         if (!_validShowFolder(folder)) throw AppFailure('导出目录记录无效，原文件已保留');
@@ -255,7 +265,8 @@ class MediaLibrary extends ChangeNotifier {
         numbers[entry.key as String] = number;
       }
       for (final item in items.where((item) => !item.merged)) {
-        final folder = path.dirname(path.dirname(item.file));
+        final parent = path.dirname(item.file);
+        final folder = _validShowFolder(parent) ? parent : path.dirname(parent);
         if (_validShowFolder(folder)) {
           folders.putIfAbsent(item.drama.id, () => folder);
         }
@@ -288,6 +299,9 @@ class MediaLibrary extends ChangeNotifier {
     _skipped
       ..clear()
       ..addAll(skipped);
+    _skippedVersions
+      ..clear()
+      ..addAll(versions);
     _showFolders
       ..clear()
       ..addAll(folders);
@@ -308,6 +322,7 @@ class MediaLibrary extends ChangeNotifier {
     final content = jsonEncode({
       'items': _items.map((item) => item.toJson()).toList(),
       'skipped': _skipped.toList(),
+      'skippedVersions': _skippedVersions,
       'showFolders': _showFolders,
       'specialNumbers': _specialNumbers,
     });
@@ -439,6 +454,10 @@ class MediaLibrary extends ChangeNotifier {
       '-1',
       '-avoid_negative_ts',
       'make_zero',
+      if (path.extension(destination).toLowerCase() == '.mp4') ...[
+        '-movflags',
+        '+faststart',
+      ],
       destination,
     ]);
     _check();
@@ -450,80 +469,165 @@ class MediaLibrary extends ChangeNotifier {
     return probe;
   }
 
-  String _sourceVersion(DownloadJob job) =>
-      '${job.created}-${job.bytes}-${job.actualQuality}'
-      '${job.revision > 0 ? '-${job.revision}' : ''}';
+  String _sourceVersion(DownloadJob job) => mediaSourceVersion(job);
 
-  Future<void> _exportMetadata(DownloadJob job, File target) async {
-    await _writeShowMetadata(job.drama, target.parent.parent);
+  bool _skipsVersion(DownloadJob job) =>
+      _skipped.contains(job.id) &&
+      (_skippedVersions[job.id] == null ||
+          _skippedVersions[job.id] == _sourceVersion(job));
+
+  Future<void> _publishExport(DownloadJob job, LocalMediaItem item) async {
+    final file = File(fileFor(item));
+    if (!await file.exists() || await file.length() != item.bytes) {
+      throw AppFailure('第 ${job.episode.number} 集成品缺失或不完整，已保留缓存');
+    }
+    final checked = await executor.probe(file.path);
+    verifyMediaDuration(checked, item.duration);
     _check();
-    await _writeText(
-      File(path.setExtension(target.path, '.nfo')),
-      embyEpisodeNfo(job),
+    final hash = await mediaFileFingerprint(file);
+    _check();
+    await repository.publishDownload(
+      job,
+      path.split(item.file).join('/'),
+      item.bytes,
+      hash.toString(),
     );
+    for (final metadata in [
+      File(path.setExtension(file.path, '.nfo')),
+      File(path.join(file.parent.path, 'tvshow.nfo')),
+    ]) {
+      if (await metadata.exists()) await metadata.delete();
+    }
   }
 
   Future<void> exportJobs(
     List<DownloadJob> selected, {
     bool automatic = false,
   }) async {
-    final jobs = selected.where((job) => job.completed).toList()
-      ..sort((a, b) => a.episode.number.compareTo(b.episode.number));
+    final jobs =
+        selected.where((job) => job.completed || job.state == 'failed').toList()
+          ..sort((a, b) => a.episode.number.compareTo(b.episode.number));
     if (jobs.isEmpty) throw AppFailure('没有已下载的分集');
-    await _task('准备导出 Emby', (temporary) async {
+    await _task('准备保存独立 MP4', (temporary) async {
+      final failures = <String>[];
       for (var i = 0; i < jobs.length; i++) {
-        _check();
-        final job = jobs[i], id = 'export-${jobs[i].id}';
-        if (automatic && _skipped.contains(job.id)) continue;
-        final existing = _items.where((item) => item.id == id).firstOrNull;
-        if (existing?.sourceVersion == _sourceVersion(job) &&
-            await File(fileFor(existing!)).exists()) {
-          if (!automatic) {
-            await _exportMetadata(job, File(fileFor(existing)));
+        try {
+          _check();
+          final job = jobs[i], id = 'export-${jobs[i].id}';
+          if (automatic && _skipsVersion(job)) continue;
+          final existing = _items.where((item) => item.id == id).firstOrNull;
+          final show = await _showDirectory(job.drama);
+          final relative = path.join(
+            show,
+            'S01E${job.episode.number.toString().padLeft(3, '0')}.mp4',
+          );
+          final target = File(path.join(root!, relative));
+          final previousFile = existing == null
+              ? null
+              : File(fileFor(existing));
+          final reusable =
+              existing != null &&
+              existing.sourceVersion == _sourceVersion(job) &&
+              path.extension(existing.file).toLowerCase() == '.mp4';
+          var moved = false;
+          final oldPath = previousFile?.path;
+          late LocalMediaItem item;
+          if (reusable &&
+              ((await previousFile!.exists() &&
+                      await previousFile.length() == existing.bytes) ||
+                  (await target.exists() &&
+                      await target.length() == existing.bytes))) {
+            if (previousFile.path != target.path &&
+                await previousFile.exists()) {
+              await target.parent.create(recursive: true);
+              if (await target.exists()) {
+                final oldHash = await mediaFileFingerprint(previousFile);
+                final newHash = await mediaFileFingerprint(target);
+                if (oldHash != newHash) {
+                  throw AppFailure('同集目录已有不同视频，已保留两份文件，请手动确认');
+                }
+              } else {
+                await previousFile.rename(target.path);
+                moved = true;
+              }
+            }
+            item = LocalMediaItem.fromJson({
+              ...existing.toJson(),
+              'file': relative,
+            });
+          } else {
+            if (!job.completed) continue;
+            final intermediate = path.join(temporary.path, 'export-$i.mp4');
+            final probe = await _prepare(
+              job,
+              intermediate,
+              i / jobs.length,
+              .8 / jobs.length,
+            );
+            _check();
+            status = '保存第 ${job.episode.number} 集 MP4';
+            notifyListeners();
+            await target.parent.create(recursive: true);
+            if (await target.exists()) {
+              final oldHash = await mediaFileFingerprint(target);
+              final newHash = await mediaFileFingerprint(File(intermediate));
+              if (oldHash != newHash) throw AppFailure('同集目录已有不同视频，未覆盖现有文件');
+            } else {
+              await File(intermediate).rename(target.path);
+            }
+            item = LocalMediaItem(
+              id: id,
+              drama: job.drama,
+              file: relative,
+              kind: 'export',
+              episodes: [job.episode.number],
+              duration: probe.duration,
+              bytes: await target.length(),
+              created: DateTime.now(),
+              jobId: job.id,
+              sourceVersion: _sourceVersion(job),
+            );
+          }
+          final previous = List<LocalMediaItem>.of(_items);
+          _items.removeWhere((entry) => entry.id == id);
+          _items.add(item);
+          _skipped.remove(job.id);
+          _skippedVersions.remove(job.id);
+          try {
+            await _save();
+          } catch (_) {
+            _items = previous;
+            if (moved && oldPath != null) await target.rename(oldPath);
+            rethrow;
+          }
+          await _publishExport(job, item);
+          if (oldPath != null && oldPath != target.path) {
+            final old = File(oldPath);
+            if (await old.exists()) {
+              final oldHash = await mediaFileFingerprint(old);
+              final newHash = await mediaFileFingerprint(target);
+              if (oldHash == newHash) await old.delete();
+            }
+            final nfo = File(path.setExtension(oldPath, '.nfo'));
+            if (await nfo.exists()) await nfo.delete();
+            final season = Directory(path.dirname(oldPath));
+            if (path.basename(season.path) == 'Season 01' &&
+                await season.exists() &&
+                await season.list().isEmpty) {
+              await season.delete();
+            }
           }
           progress = (i + 1) / jobs.length;
           notifyListeners();
-          continue;
+        } catch (failure) {
+          _check();
+          failures.add(
+            '${jobs[i].drama.title} 第 ${jobs[i].episode.number} 集：$failure',
+          );
         }
-        final intermediate = path.join(temporary.path, 'export-$i.mkv');
-        final probe = await _prepare(
-          job,
-          intermediate,
-          i / jobs.length,
-          .8 / jobs.length,
-        );
-        _check();
-        status = '导出第 ${job.episode.number} 集';
-        notifyListeners();
-        final show = await _showDirectory(job.drama);
-        final relative = path.join(
-          show,
-          'Season 01',
-          'S01E${job.episode.number.toString().padLeft(3, '0')}.mkv',
-        );
-        final target = File(path.join(root!, relative));
-        await target.parent.create(recursive: true);
-        await File(intermediate).rename(target.path);
-        await _exportMetadata(job, target);
-        _items.removeWhere((item) => item.id == id);
-        _items.add(
-          LocalMediaItem(
-            id: id,
-            drama: job.drama,
-            file: relative,
-            kind: 'export',
-            episodes: [job.episode.number],
-            duration: probe.duration,
-            bytes: await target.length(),
-            created: DateTime.now(),
-            jobId: job.id,
-            sourceVersion: _sourceVersion(job),
-          ),
-        );
-        _skipped.remove(job.id);
-        await _save();
-        progress = (i + 1) / jobs.length;
-        notifyListeners();
+      }
+      if (failures.isNotEmpty) {
+        throw AppFailure('部分分集尚未保存，其他已完成任务保留：${failures.take(3).join('；')}');
       }
     }, sources: jobs.map((job) => job.drama.source).toSet());
   }
@@ -538,18 +642,62 @@ class MediaLibrary extends ChangeNotifier {
     _checking = true;
     try {
       if (automaticWorker) await store.reload();
-      if (!store.autoExport) return;
+      final epoch = store.profileEpoch;
       final jobs = await repository.downloads();
-      if (!jobs.any((job) => job.completed)) return;
+      if (jobs.isEmpty) return;
       await reload();
       final pending = <DownloadJob>[];
       for (final job in jobs.where(
-        (job) => job.completed && !_skipped.contains(job.id),
+        (job) =>
+            (job.completed || job.state == 'failed') && !_skipsVersion(job),
       )) {
         final item = _items
             .where((item) => item.id == 'export-${job.id}')
             .firstOrNull;
-        if (item == null ||
+        if (item != null && item.sourceVersion == _sourceVersion(job)) {
+          final folder = _showFolders[job.drama.id];
+          final recovered = folder == null
+              ? null
+              : File(
+                  path.join(
+                    root!,
+                    folder,
+                    'S01E${job.episode.number.toString().padLeft(3, '0')}.mp4',
+                  ),
+                );
+          if (!await File(fileFor(item)).exists() &&
+              !(recovered != null && await recovered.exists())) {
+            if (store.profileEpoch == epoch &&
+                store.canDownload &&
+                store.allowsSource(job.drama.source)) {
+              await _removeEmptyExportParents(File(fileFor(item)));
+              if (recovered != null) await _removeEmptyExportParents(recovered);
+            }
+            continue;
+          }
+        }
+        if (!job.completed) {
+          if (item == null || item.sourceVersion != _sourceVersion(job)) {
+            continue;
+          }
+          final folder = _showFolders[job.drama.id];
+          final recovered = folder == null
+              ? null
+              : File(
+                  path.join(
+                    root!,
+                    folder,
+                    'S01E${job.episode.number.toString().padLeft(3, '0')}.mp4',
+                  ),
+                );
+          if (!await File(fileFor(item)).exists() &&
+              !(recovered != null && await recovered.exists())) {
+            continue;
+          }
+        }
+        if (!job.published ||
+            item == null ||
+            path.basename(path.dirname(item.file)) == 'Season 01' ||
             item.sourceVersion != _sourceVersion(job) ||
             !await File(fileFor(item)).exists()) {
           pending.add(job);
@@ -574,10 +722,15 @@ class MediaLibrary extends ChangeNotifier {
           await file.parent.delete(recursive: true);
         }
       } else {
+        await _exportParentDirectories(file);
         if (await file.exists()) await file.delete();
         final metadata = File(path.setExtension(file.path, '.nfo'));
         if (await metadata.exists()) await metadata.delete();
-        if (item.jobId.isNotEmpty) _skipped.add(item.jobId);
+        await _removeEmptyExportParents(file);
+        if (item.jobId.isNotEmpty) {
+          _skipped.add(item.jobId);
+          _skippedVersions[item.jobId] = item.sourceVersion;
+        }
       }
       _items.removeWhere((entry) => entry.id == item.id);
       await _save();

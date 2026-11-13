@@ -7,10 +7,12 @@ import 'package:flutter/services.dart';
 import 'app_layout.dart';
 import 'core_bridge.dart';
 import 'download_collections.dart';
+import 'download_folders.dart';
 import 'local_store.dart';
 import 'local_media_screen.dart';
 import 'models.dart';
 import 'player_screen.dart';
+import 'resource_settings_screen.dart';
 import 'settings_screen.dart';
 import 'widgets.dart';
 
@@ -21,10 +23,12 @@ class DownloadsScreen extends StatefulWidget {
     required this.store,
     this.embedded = false,
     this.playerBuilder,
+    this.folderOpener = const DownloadFolderOpener(),
   });
   final AppRepository repository;
   final LocalStore store;
   final bool embedded;
+  final DownloadFolderOpener folderOpener;
   @visibleForTesting
   final Widget Function(DramaDetail, int, double)? playerBuilder;
   @override
@@ -42,10 +46,11 @@ class _DownloadsScreenState extends State<DownloadsScreen> {
   bool _loading = true,
       _refreshing = false,
       _opening = false,
+      _openingFolder = false,
       _selecting = false,
       _busy = false,
       _stopBatch = false;
-  String? _error, _retryCommand;
+  String? _error, _retryCommand, _openingJob;
   String _filter = 'all', _release = '', _operation = '';
   bool get _allowed =>
       widget.store.profileEpoch == _epoch && widget.store.canDownload;
@@ -83,7 +88,7 @@ class _DownloadsScreenState extends State<DownloadsScreen> {
   }
 
   Future<void> _refresh() async {
-    if (_refreshing || !_allowed) return;
+    if (_refreshing || _opening || !_allowed) return;
     _refreshing = true;
     try {
       final jobs = await widget.repository.downloads();
@@ -110,6 +115,23 @@ class _DownloadsScreenState extends State<DownloadsScreen> {
     }
   }
 
+  Future<void> _openFolder(Iterable<DownloadJob> jobs) async {
+    if (_openingFolder || !_allowed) return;
+    setState(() => _openingFolder = true);
+    try {
+      final directory = await widget.folderOpener.resolve(
+        widget.repository,
+        jobs.where((job) => widget.store.allowsSource(job.drama.source)),
+      );
+      if (!mounted || !_allowed) return;
+      await widget.folderOpener.open(directory);
+    } catch (error) {
+      if (mounted && _allowed) _message(error.toString());
+    } finally {
+      if (mounted) setState(() => _openingFolder = false);
+    }
+  }
+
   Future<void> _batch(String command, Iterable<DownloadJob> source) async {
     if (_busy || !_allowed) return;
     final jobs = source
@@ -128,6 +150,19 @@ class _DownloadsScreenState extends State<DownloadsScreen> {
       _message('没有适合此操作的任务');
       return;
     }
+    final selectedIds = jobs.map((job) => job.id).toSet();
+    final wholeCollections = <String, Drama>{};
+    if (command == 'remove') {
+      final partial = {
+        for (final job in _jobs)
+          if (!selectedIds.contains(job.id)) job.drama.id,
+      };
+      for (final job in jobs) {
+        if (!partial.contains(job.drama.id)) {
+          wholeCollections[job.drama.id] = job.drama;
+        }
+      }
+    }
     if (command == 'remove') {
       final completed = jobs.where((job) => job.completed).length;
       final accepted = await showDialog<bool>(
@@ -135,7 +170,9 @@ class _DownloadsScreenState extends State<DownloadsScreen> {
         builder: (context) => AlertDialog(
           title: Text(completed > 0 ? '删除所选视频？' : '取消所选下载？'),
           content: Text(
-            '共 ${jobs.length} 项${completed > 0 ? '，包含 $completed 个已下载视频' : ''}，文件也会删除。\n需要保留视频时，请选择“清理任务，保留视频”。',
+            '共 ${jobs.length} 项${completed > 0 ? '，包含 $completed 个已下载视频' : ''}，文件也会删除。'
+            '${wholeCollections.isEmpty ? '' : '\n整部合集还会删除该剧合并成品及导出的特别篇，并清理对应空目录。'}'
+            '\n需要保留视频时，请选择“清理任务，保留视频”。',
           ),
           actions: [
             TextButton(
@@ -160,14 +197,37 @@ class _DownloadsScreenState extends State<DownloadsScreen> {
     final failures = <String, String>{};
     var completed = 0;
     try {
-      for (var offset = 0; offset < jobs.length; offset += 500) {
+      final handled = <String>{};
+      for (final drama in wholeCollections.values) {
+        if (!mounted || !_allowed || _stopBatch) break;
+        final ids = jobs
+            .where((job) => job.drama.id == drama.id)
+            .map((job) => job.id)
+            .toList();
+        handled.addAll(ids);
+        setState(() => _operation = '正在删除合集及本地成品：${drama.title}');
+        try {
+          final result = await widget.repository.removeDownloadCollection(
+            drama,
+            ids,
+          );
+          if (!mounted || !_allowed) return;
+          completed += result.completed.length;
+          _selected.removeAll(result.completed);
+          failures.addAll(result.failures);
+        } catch (error) {
+          failures.addAll({for (final id in ids) id: error.toString()});
+        }
+      }
+      final remaining = jobs.where((job) => !handled.contains(job.id)).toList();
+      for (var offset = 0; offset < remaining.length; offset += 500) {
         if (!mounted || !_allowed || _stopBatch) break;
         setState(
           () => _operation =
-              '正在处理 ${math.min(offset + 500, jobs.length)}/${jobs.length} 项',
+              '正在处理 ${math.min(offset + 500, remaining.length)}/${remaining.length} 项',
         );
-        final ids = jobs
-            .sublist(offset, math.min(offset + 500, jobs.length))
+        final ids = remaining
+            .sublist(offset, math.min(offset + 500, remaining.length))
             .map((job) => job.id)
             .toList();
         try {
@@ -221,7 +281,10 @@ class _DownloadsScreenState extends State<DownloadsScreen> {
 
   Future<void> _play(DownloadJob job) async {
     if (_opening || !_allowed) return;
-    _opening = true;
+    setState(() {
+      _opening = true;
+      _openingJob = job.id;
+    });
     final completed =
         _jobs
             .where((entry) => entry.completed && entry.drama.id == job.drama.id)
@@ -229,7 +292,10 @@ class _DownloadsScreenState extends State<DownloadsScreen> {
           ..sort((a, b) => a.episode.number.compareTo(b.episode.number));
     final index = completed.indexWhere((entry) => entry.id == job.id);
     if (index < 0) {
-      _opening = false;
+      setState(() {
+        _opening = false;
+        _openingJob = null;
+      });
       return;
     }
     final detail = DramaDetail(
@@ -241,6 +307,9 @@ class _DownloadsScreenState extends State<DownloadsScreen> {
         ? watch.position
         : 0.0;
     try {
+      await WidgetsBinding.instance.endOfFrame;
+      await Future<void>.delayed(Duration.zero);
+      if (!mounted || !_allowed) return;
       await Navigator.of(context).push(
         MaterialPageRoute<void>(
           builder: (_) =>
@@ -257,7 +326,10 @@ class _DownloadsScreenState extends State<DownloadsScreen> {
       );
     } finally {
       _opening = false;
-      if (mounted) await _refresh();
+      if (mounted) {
+        setState(() => _openingJob = null);
+        await _refresh();
+      }
     }
   }
 
@@ -375,6 +447,7 @@ class _DownloadsScreenState extends State<DownloadsScreen> {
       ),
     ] else ...[
       IconButton(
+        key: const ValueKey('download-filters'),
         tooltip: '筛选下载合集',
         onPressed: _filters,
         icon: Badge(
@@ -383,6 +456,7 @@ class _DownloadsScreenState extends State<DownloadsScreen> {
         ),
       ),
       IconButton(
+        key: const ValueKey('download-select-tasks'),
         tooltip: '多选下载任务',
         onPressed: () => setState(() => _selecting = true),
         icon: const Icon(Icons.checklist_rounded),
@@ -402,23 +476,46 @@ class _DownloadsScreenState extends State<DownloadsScreen> {
         icon: const Icon(Icons.video_library_outlined),
       ),
     ],
-    PopupMenuButton<String>(
-      key: const ValueKey('download-queue-actions'),
-      tooltip: '队列操作',
-      enabled: !_busy,
-      onSelected: (value) {
-        if (value == 'refresh') {
-          _refresh();
-        } else {
-          _batch(value, _jobs);
-        }
-      },
-      itemBuilder: (_) => const [
-        PopupMenuItem(value: 'pause', child: Text('全部暂停')),
-        PopupMenuItem(value: 'resume', child: Text('全部继续')),
-        PopupMenuItem(value: 'archive', child: Text('清理已完成任务，保留视频')),
-        PopupMenuItem(value: 'refresh', child: Text('刷新记录')),
-      ],
+    if (widget.store.profile.admin)
+      IconButton(
+        key: const ValueKey('download-queue-settings'),
+        tooltip: '排队与下载限速',
+        onPressed: _busy || !_allowed
+            ? null
+            : () => Navigator.push(
+                context,
+                MaterialPageRoute<void>(
+                  builder: (_) => ResourceSettingsScreen(
+                    repository: widget.repository,
+                    store: widget.store,
+                  ),
+                ),
+              ),
+        icon: const Icon(Icons.tune_rounded),
+      ),
+    IconButton(
+      key: const ValueKey('download-queue-pause'),
+      tooltip: '全部暂停',
+      onPressed: _busy || !_allowed ? null : () => _batch('pause', _jobs),
+      icon: const Icon(Icons.pause_circle_outline_rounded),
+    ),
+    IconButton(
+      key: const ValueKey('download-queue-resume'),
+      tooltip: '全部继续',
+      onPressed: _busy || !_allowed ? null : () => _batch('resume', _jobs),
+      icon: const Icon(Icons.play_circle_outline_rounded),
+    ),
+    IconButton(
+      key: const ValueKey('download-queue-archive'),
+      tooltip: '清理已完成任务，保留视频',
+      onPressed: _busy || !_allowed ? null : () => _batch('archive', _jobs),
+      icon: const Icon(Icons.playlist_remove_rounded),
+    ),
+    IconButton(
+      key: const ValueKey('download-queue-refresh'),
+      tooltip: '刷新记录',
+      onPressed: _busy || !_allowed ? null : _refresh,
+      icon: const Icon(Icons.refresh_rounded),
     ),
   ];
 
@@ -459,15 +556,38 @@ class _DownloadsScreenState extends State<DownloadsScreen> {
           tooltip: '${collection.drama.title} · 合集操作',
           enabled: !_busy,
           onSelected: (value) {
-            if (value == 'update') {
+            if (value == 'folder') {
+              _openFolder(collection.jobs);
+            } else if (value == 'update') {
               _update(collection.drama);
             } else if (value == 'select') {
               _select(collection.jobs);
             } else {
-              _batch(value, collection.jobs);
+              _batch(
+                value,
+                value == 'remove'
+                    ? _jobs.where((job) => job.drama.id == collection.drama.id)
+                    : collection.jobs,
+              );
             }
           },
           itemBuilder: (_) => [
+            if (widget.folderOpener.supported)
+              PopupMenuItem(
+                key: ValueKey(
+                  'download-collection-open-folder-${collection.drama.id}',
+                ),
+                value: 'folder',
+                enabled: !_openingFolder && collection.completed > 0,
+                child: const Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.folder_open_outlined),
+                    SizedBox(width: 8),
+                    Text('打开已下载文件夹'),
+                  ],
+                ),
+              ),
             PopupMenuItem(
               value: 'update',
               enabled: !_updater.busy,
@@ -499,6 +619,11 @@ class _DownloadsScreenState extends State<DownloadsScreen> {
                     value: _selected.contains(job.id),
                     onChanged: _busy ? null : (_) => _select([job]),
                   )
+                : _openingJob == job.id
+                ? const SizedBox.square(
+                    dimension: 24,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
                 : Icon(
                     job.completed
                         ? Icons.offline_pin_outlined
@@ -510,7 +635,11 @@ class _DownloadsScreenState extends State<DownloadsScreen> {
               '第 ${job.episode.number} 集${job.episode.vip ? ' · VIP' : ''}',
             ),
             subtitle: Text(
-              '${job.archived ? '已保留视频' : job.stateLabel} · ${storageSize(job.bytes)}'
+              '${_openingJob == job.id
+                  ? '正在打开本地视频'
+                  : job.archived
+                  ? '已保留视频'
+                  : job.stateLabel} · ${storageSize(job.bytes)}'
               '${job.actualQuality > 0 ? ' · ${job.actualQuality}P' : ''}${job.error.isNotEmpty ? '\n${job.error}' : ''}',
             ),
             onTap: _busy
@@ -528,6 +657,8 @@ class _DownloadsScreenState extends State<DownloadsScreen> {
                     onSelected: (value) {
                       if (value == 'play') {
                         _play(job);
+                      } else if (value == 'folder') {
+                        _openFolder([job]);
                       } else {
                         _batch(value, [job]);
                       }
@@ -535,6 +666,15 @@ class _DownloadsScreenState extends State<DownloadsScreen> {
                     itemBuilder: (_) => [
                       if (job.completed)
                         const PopupMenuItem(value: 'play', child: Text('本地播放')),
+                      if (job.completed && widget.folderOpener.supported)
+                        PopupMenuItem(
+                          key: ValueKey(
+                            'download-episode-open-folder-${job.id}',
+                          ),
+                          value: 'folder',
+                          enabled: !_openingFolder,
+                          child: const Text('打开已下载文件夹'),
+                        ),
                       if (job.active)
                         const PopupMenuItem(value: 'pause', child: Text('暂停')),
                       if (job.resumable)
@@ -612,7 +752,12 @@ class _DownloadsScreenState extends State<DownloadsScreen> {
   );
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => LayoutBuilder(
+    builder: (context, constraints) =>
+        _buildContent(context, constraints.maxWidth),
+  );
+
+  Widget _buildContent(BuildContext context, double width) {
     if (!_allowed) {
       return const StatusPanel(title: '当前用户无权访问下载', message: '请返回后重新操作。');
     }
@@ -625,25 +770,44 @@ class _DownloadsScreenState extends State<DownloadsScreen> {
     ];
     final title = _selecting ? '已选 ${_selected.length} 项' : '下载合集';
     final actions = _titleActions(collections);
+    final scale = MediaQuery.textScalerOf(context).scale(20) / 20;
+    final compact = width < 640 * math.max(1, scale);
+    final toolbar = Align(
+      alignment: Alignment.centerRight,
+      child: Wrap(
+        key: const ValueKey('download-toolbar-wrap'),
+        alignment: WrapAlignment.end,
+        children: actions,
+      ),
+    );
+    final heading = Text(
+      title,
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      style: Theme.of(context).textTheme.titleLarge,
+    );
     final body = Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         if (widget.embedded)
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 4, 4, 0),
-            child: Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    title,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: Theme.of(context).textTheme.titleLarge,
+            child: compact
+                ? Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [heading, toolbar],
+                  )
+                : Row(
+                    children: [
+                      Expanded(child: heading),
+                      ...actions,
+                    ],
                   ),
-                ),
-                ...actions,
-              ],
-            ),
+          ),
+        if (!widget.embedded && compact)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8),
+            child: toolbar,
           ),
         Padding(
           padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
@@ -731,7 +895,10 @@ class _DownloadsScreenState extends State<DownloadsScreen> {
             Navigator.of(context).maybePop(),
       },
       child: Scaffold(
-        appBar: AppBar(title: Text(title), actions: actions),
+        appBar: AppBar(
+          title: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis),
+          actions: compact ? null : actions,
+        ),
         body: SafeArea(top: false, child: body),
       ),
     );

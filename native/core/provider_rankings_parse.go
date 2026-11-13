@@ -19,16 +19,17 @@ var errHongguoRankingFormat = errors.New("红果榜单格式或分页已变化�
 type hongguoRankingContent struct {
 	Success bool `json:"isSuccess"`
 	Rows    []struct {
-		ID          string   `json:"id"`
-		SeriesID    string   `json:"seriesId"`
-		Rank        int      `json:"rank"`
-		Title       string   `json:"title"`
-		Heat        string   `json:"heatText"`
-		Score       string   `json:"scoreText"`
-		Tags        []string `json:"tags"`
-		Description string   `json:"description"`
-		EpisodeIDs  []string `json:"episodeVids"`
-		Cover       any      `json:"cover"`
+		ID           string   `json:"id"`
+		SeriesID     string   `json:"seriesId"`
+		Rank         int      `json:"rank"`
+		Title        string   `json:"title"`
+		Heat         string   `json:"heatText"`
+		Score        string   `json:"scoreText"`
+		Tags         []string `json:"tags"`
+		Description  string   `json:"description"`
+		EpisodeIDs   []string `json:"episodeVids"`
+		EpisodeCount int      `json:"episodeCount"`
+		Cover        any      `json:"cover"`
 	} `json:"rankList"`
 	Pagination struct {
 		Page       int `json:"pageNum"`
@@ -36,6 +37,7 @@ type hongguoRankingContent struct {
 	} `json:"pagination"`
 }
 
+// parseHongguoRanking 解析红果排行榜。
 func parseHongguoRanking(body string, board rankingBoard, page int) (rankingPage, error) {
 	failure := errHongguoRankingFormat
 	loaderKey := "rank_" + board.path + "/page"
@@ -92,8 +94,8 @@ func parseHongguoRanking(body string, board rankingBoard, page int) (rankingPage
 		if len(row.Tags) > 0 {
 			drama.CategoryName = row.Tags[0]
 		}
-		if len(row.EpisodeIDs) > 0 {
-			drama.TotalEpisode = len(row.EpisodeIDs)
+		if row.EpisodeCount > 0 && row.EpisodeCount <= 1000000 {
+			drama.TotalEpisode = row.EpisodeCount
 		}
 		result.Items = append(result.Items, rankingItem{Rank: row.Rank, Drama: drama, Metric: row.Heat})
 	}
@@ -103,6 +105,7 @@ func parseHongguoRanking(body string, board rankingBoard, page int) (rankingPage
 	return result, nil
 }
 
+// parseHuangdouRanking 解析黄豆排行榜。
 func parseHuangdouRanking(decoded any, page int) (rankingPage, error) {
 	data := huangdouDataMap(decoded)
 	rows, valid := data["list"].([]any)
@@ -134,6 +137,7 @@ func parseHuangdouRanking(decoded any, page int) (rankingPage, error) {
 	return result, nil
 }
 
+// parseHuangguoRanking 解析黄果排行榜。
 func parseHuangguoRanking(body string, board rankingBoard) (rankingPage, error) {
 	failure := errors.New("黄果未返回有效榜单，可能是页面结构变化")
 	for _, match := range rankingJSONLD.FindAllStringSubmatch(body, -1) {
@@ -171,6 +175,10 @@ func parseHuangguoRanking(body string, board rankingBoard) (rankingPage, error) 
 				}
 				seen[id], previous = true, item.Position
 				drama := Drama{ID: providerDramaID(sourceHuangguoAI, id), Source: sourceHuangguoAI, SourceID: id, Title: item.Name, Name: item.Name}
+				drama, err = bindHuangguoWork(drama, item.URL, item.URL)
+				if err != nil {
+					return rankingPage{}, failure
+				}
 				for _, card := range parseHuangguoAIDramaCards(body, item.URL, "") {
 					if card.ID == drama.ID {
 						drama = card

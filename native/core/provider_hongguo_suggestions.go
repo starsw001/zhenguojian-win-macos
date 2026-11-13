@@ -14,7 +14,7 @@ import (
 
 const (
 	hongguoSuggestionLimit        = 10
-	hongguoSuggestionCacheLimit   = 128
+	hongguoSuggestionCacheLimit   = 256
 	hongguoSuggestionPendingLimit = 32
 	hongguoSuggestionBodyLimit    = 256 * 1024
 	hongguoSuggestionTimeout      = 5 * time.Second
@@ -44,6 +44,7 @@ type hongguoSuggestionCall struct {
 	err   error
 }
 
+// hongguoSearchSuggestions 搜索红果建议词列表。
 func (d *Downloader) hongguoSearchSuggestions(ctx context.Context, query string) ([]hongguoSearchSuggestion, error) {
 	query, err := hongguoSearchKeyword(query)
 	if err != nil {
@@ -95,8 +96,12 @@ func (d *Downloader) hongguoSearchSuggestions(ctx context.Context, query string)
 					oldestKey, oldestTime = key, entry.ExpiresAt
 				}
 			}
-			if len(client.suggestions) >= hongguoSuggestionCacheLimit {
+			for len(client.suggestions) >= d.cacheLimit("suggestionEntries") {
 				delete(client.suggestions, oldestKey)
+				for key := range client.suggestions {
+					oldestKey = key
+					break
+				}
 			}
 			client.suggestions[query] = hongguoSuggestionEntry{Items: items, ExpiresAt: now.Add(hongguoSuggestionTTL)}
 		}
@@ -108,6 +113,7 @@ func (d *Downloader) hongguoSearchSuggestions(ctx context.Context, query string)
 	}
 }
 
+// fetchHongguoSearchSuggestions 获取红果搜索建议词列表。
 func (d *Downloader) fetchHongguoSearchSuggestions(ctx context.Context, query string) ([]hongguoSearchSuggestion, error) {
 	records, err := d.fetchHongguoSuggestionRecords(ctx, query, hongguoSuggestionLimit)
 	if err != nil {
@@ -136,6 +142,7 @@ func (d *Downloader) fetchHongguoSearchSuggestions(ctx context.Context, query st
 	return items, nil
 }
 
+// fetchHongguoSuggestionRecords 获取红果建议词记录列表。
 func (d *Downloader) fetchHongguoSuggestionRecords(ctx context.Context, query string, count int) ([]hongguoSuggestionRecord, error) {
 	ctx, cancel := context.WithTimeout(ctx, hongguoSuggestionTimeout)
 	defer cancel()

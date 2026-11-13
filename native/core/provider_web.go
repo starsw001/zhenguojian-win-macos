@@ -17,11 +17,13 @@ type providerTextNoCacheKey struct{}
 
 var webProviderNumericID = regexp.MustCompile(`^[1-9][0-9]{0,17}$`)
 
+// webProviderInteger 从网页站源字段中读取整数。
 func webProviderInteger(value any, maximum int) (int, bool) {
 	number, err := strconv.Atoi(nativeText(value))
 	return number, err == nil && number >= 0 && number <= maximum
 }
 
+// providerHTMLAttr 按候选名称读取 HTML 元素属性。
 func providerHTMLAttr(node *html.Node, name string) string {
 	if node != nil {
 		for _, attribute := range node.Attr {
@@ -33,6 +35,7 @@ func providerHTMLAttr(node *html.Node, name string) string {
 	return ""
 }
 
+// providerHTMLClass 取得 HTML 元素的类名信息。
 func providerHTMLClass(node *html.Node, name string) bool {
 	for _, value := range strings.Fields(providerHTMLAttr(node, "class")) {
 		if value == name {
@@ -42,6 +45,7 @@ func providerHTMLClass(node *html.Node, name string) bool {
 	return false
 }
 
+// providerHTMLNodes 筛选匹配条件的 HTML 节点。
 func providerHTMLNodes(root *html.Node, match func(*html.Node) bool) []*html.Node {
 	var found []*html.Node
 	if root == nil {
@@ -61,6 +65,7 @@ func providerHTMLNodes(root *html.Node, match func(*html.Node) bool) []*html.Nod
 	return found
 }
 
+// providerHTMLFirstClass 取得首个匹配指定类名的 HTML 节点。
 func providerHTMLFirstClass(root *html.Node, names ...string) *html.Node {
 	for _, name := range names {
 		matches := providerHTMLNodes(root, func(node *html.Node) bool {
@@ -73,6 +78,7 @@ func providerHTMLFirstClass(root *html.Node, names ...string) *html.Node {
 	return nil
 }
 
+// providerHTMLText 提取 HTML 节点中的显示文本。
 func providerHTMLText(root *html.Node) string {
 	var text strings.Builder
 	for _, node := range providerHTMLNodes(root, func(node *html.Node) bool {
@@ -87,6 +93,7 @@ func providerHTMLText(root *html.Node) string {
 	return strings.Join(strings.Fields(text.String()), " ")
 }
 
+// fetchProviderPage 获取站源页面。
 func (d *Downloader) fetchProviderPage(ctx context.Context, address, referer, agent string) (*html.Node, string, error) {
 	responses := &playbackResponseURLs{}
 	ctx = context.WithValue(ctx, playbackResponseURLsKey{}, responses)
@@ -107,6 +114,7 @@ func (d *Downloader) fetchProviderPage(ctx context.Context, address, referer, ag
 	return document, address, err
 }
 
+// prepareWebProviderMedia 准备网页站源媒体。
 func (d *Downloader) prepareWebProviderMedia(ctx context.Context, media providerMedia, sourceName string) (providerMedia, error) {
 	address, err := url.Parse(media.URL)
 	if err != nil || !isProviderHTTPMediaURL(media.URL) || address.User != nil {

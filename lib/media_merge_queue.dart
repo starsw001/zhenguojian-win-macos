@@ -203,7 +203,7 @@ class MergeQueue {
     );
   }
 
-  Future<void> _change(void Function() update) {
+  Future<void> _change(FutureOr<void> Function() update) {
     final task = _writes.then((_) async {
       if (_disposed || !_loaded) return;
       var lease = false;
@@ -214,7 +214,7 @@ class MergeQueue {
           lease = true;
           _root = await library.repository.downloadDirectory();
         }
-        update();
+        await update();
         await _save();
         error = '';
       } catch (failure) {
@@ -249,7 +249,8 @@ class MergeQueue {
       throw AppFailure('用户已切换，请重新操作');
     }
     var count = 0;
-    await _change(() {
+    await library.reload();
+    await _change(() async {
       if (epoch != library.store.profileEpoch || !library.store.canDownload) {
         throw AppFailure('用户已切换，请重新操作');
       }
@@ -258,15 +259,41 @@ class MergeQueue {
         final versions = {
           for (final job in jobs) job.id: library._sourceVersion(job),
         };
-        if (_jobs.any(
+        var duplicate = false;
+        for (final job in _jobs.where(
           (job) =>
               job.owner == library.store.profile.id &&
               job.state != 'cancelled' &&
-              job.state != 'completed' &&
               listEquals(job.jobIds, ids) &&
               mapEquals(job.versions, versions),
         )) {
+          if (job.state != 'completed') {
+            duplicate = true;
+            break;
+          }
+          final output = library._items
+              .where(
+                (item) =>
+                    item.id == job.outputId &&
+                    item.merged &&
+                    item.decodeVerified &&
+                    item.drama.id == job.drama.id &&
+                    listEquals(item.episodes, job.episodes),
+              )
+              .firstOrNull;
+          if (output != null) {
+            final file = File(library.fileFor(output));
+            if (await file.exists() && await file.length() == output.bytes) {
+              duplicate = true;
+              break;
+            }
+          }
+        }
+        if (duplicate) {
           continue;
+        }
+        if (epoch != library.store.profileEpoch || !library.store.canDownload) {
+          throw AppFailure('用户已切换，请重新操作');
         }
         if (_jobs.length >= 500) throw AppFailure('合并队列记录已满，请清理已结束的任务记录');
         _jobs.add(

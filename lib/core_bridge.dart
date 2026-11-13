@@ -13,12 +13,15 @@ import 'danmaku_models.dart';
 import 'background_downloads.dart';
 import 'local_store.dart';
 import 'app_build.dart';
+import 'app_storage.dart';
 import 'source_status.dart';
 import 'ranking_models.dart';
 import 'cover_decoder.dart';
 import 'catalog_updates.dart';
 import 'download_collections.dart';
 import 'resource_settings.dart';
+import 'program_storage.dart';
+import 'cache_settings.dart';
 
 typedef _NativeRequest = Pointer<Utf8> Function(Pointer<Utf8>);
 typedef _DartRequest = Pointer<Utf8> Function(Pointer<Utf8>);
@@ -58,6 +61,38 @@ String _nativeRequest(String body) {
   }
 }
 
+Future<Map<String, dynamic>> requestAppLicense(
+  String action, {
+  String username = '',
+  String password = '',
+  String key = '',
+}) async {
+  if (!{
+    'licenseStatus',
+    'licenseUpdateReady',
+    'licenseNetworkCheck',
+    'licenseLogin',
+    'licenseActivate',
+    'licenseVerify',
+  }.contains(action)) {
+    throw AppFailure('授权操作无效');
+  }
+  final body = jsonEncode({
+    'action': action,
+    if (username.isNotEmpty) 'username': username,
+    if (password.isNotEmpty) 'password': password,
+    if (key.isNotEmpty) 'licenseKey': key,
+  });
+  final encoded = await Isolate.run(
+    () => _nativeRequest(body),
+  ).timeout(Duration(seconds: action == 'licenseLogin' ? 55 : 25));
+  final response = jsonDecode(encoded) as Map<String, dynamic>;
+  if (response['ok'] != true) {
+    throw AppFailure(response['error'] as String? ?? '授权核心未就绪');
+  }
+  return Map<String, dynamic>.from(response['data'] as Map);
+}
+
 class AppFailure implements Exception {
   AppFailure(this.message, {this.code = ''});
   final String message;
@@ -75,12 +110,13 @@ abstract class AppRepository {
     String version,
     String edition,
   ) async => throw AppFailure('当前环境不支持在线更新');
+  Future<bool> updateBusy() async => false;
   Future<Map<String, dynamic>> downloadUpdate(
     String version,
     String edition,
+    String ticket,
   ) async => throw AppFailure('当前环境不支持在线更新');
-  Future<Map<String, dynamic>> updateStatus() async =>
-      const {'state': 'idle'};
+  Future<Map<String, dynamic>> updateStatus() async => const {'state': 'idle'};
   Future<Map<String, dynamic>> applyUpdate() async =>
       throw AppFailure('当前环境不支持在线更新');
   Future<PlaybackPlan?> prepareHandoff(
@@ -126,9 +162,16 @@ abstract class AppRepository {
     String source, {
     bool force = false,
   }) async => const [CatalogCategory.all];
+  Future<List<CatalogCategory>> cachedCategories(String source) async =>
+      const [];
   bool get supportsSourceManagement => false;
+  bool get supportsRealSourcePlayback => false;
   Future<SourceStatus> sourceStatus(String source) async =>
       SourceStatus.fromJson({'source': source});
+  Future<SourceStatus> saveSourceHealth(
+    String source,
+    Map<String, dynamic> health,
+  ) async => throw AppFailure('当前环境不支持保存实播检测');
   Future<SourceStatus> startSourceJob(
     String source,
     String operation, {
@@ -142,15 +185,24 @@ abstract class AppRepository {
       (await storage())['directory'] as String? ?? '';
   Future<void> moveDownloads(String directory) async =>
       throw AppFailure('当前环境不支持迁移');
+  Future<void> moveDownloadsExactly(String directory) =>
+      moveDownloads(directory);
   Future<int> workLease(String id, String command) async => 0;
   bool get supportsDownloads => false;
   Future<List<DownloadJob>> downloads() async => [];
+  Future<String?> downloadedFolder(Iterable<DownloadJob> jobs) async => null;
   Future<int> enqueueDownloads(
     DramaDetail detail,
     List<Episode> episodes, {
     int quality = 0,
   }) async => throw AppFailure('当前环境不支持下载');
   Future<void> controlDownloads(String command, {String id = ''}) async {}
+  Future<void> publishDownload(
+    DownloadJob job,
+    String file,
+    int bytes,
+    String hash,
+  ) async {}
   Future<DownloadBatchResult> controlDownloadBatch(
     String command,
     List<String> ids, {
@@ -168,6 +220,11 @@ abstract class AppRepository {
     }
     return DownloadBatchResult(completed: completed, failures: failures);
   }
+
+  Future<DownloadBatchResult> removeDownloadCollection(
+    Drama drama,
+    List<String> ids,
+  ) => controlDownloadBatch('remove', ids);
 
   Future<int> updateDownloadCollection(
     DramaDetail detail,
@@ -194,18 +251,103 @@ abstract class AppRepository {
   Future<DramaDetail> detail(Drama drama);
   Future<PlaybackPlan> resolve(Drama drama, Episode episode, {int quality = 0});
   Future<PlaybackPlan> fallback(PlaybackPlan current);
+  Future<PlaybackPlan> selectPlaybackRoute(
+    PlaybackPlan current,
+    int index,
+  ) async => throw AppFailure('当前核心不支持切换地址');
+  Future<PlaybackRouteStatus> checkPlaybackRoute(
+    PlaybackPlan current,
+    int index,
+  ) async => PlaybackRouteStatus(index: index);
+  Future<int> enqueueDownloadsOnRoute(
+    DramaDetail detail,
+    List<Episode> episodes, {
+    int quality = 0,
+    int preferredRoute = 0,
+    PlaybackPlan? playback,
+  }) => enqueueDownloads(detail, episodes, quality: quality);
   Future<void> cancelPlayback();
   Future<void> release(String session);
 }
 
 class NativeRepository extends AppRepository {
   static final _coverDecoder = CoverDecoder();
-  NativeRepository({this.background = false});
+  NativeRepository({this.background = false, this.dataDirectory});
   final bool background;
+  final Directory? dataDirectory;
+  String? _initializedDirectory;
+  bool _startupPublicationsRequested = false;
+  bool _startupAICatalogRequested = false;
   LocalStore? access;
   final _readOwner = DateTime.now().microsecondsSinceEpoch.toString();
   int _readSequence = 0;
   final _activeReads = <String, int>{};
+
+  void scheduleSourceAddressRefresh() {
+    final store = access;
+    if (!allSourcesEnabled ||
+        background ||
+        dataDirectory != null ||
+        _initializedDirectory == null) {
+      return;
+    }
+    final aiAllowed =
+        store != null && !store.locked && store.allowsSource('huangguoai');
+    if (!aiAllowed && _startupAICatalogRequested) {
+      _startupAICatalogRequested = false;
+      unawaited(_stopStartupCatalog());
+    }
+    if (store == null ||
+        store.locked ||
+        !['huangguoai', 'huangguo-video'].any(store.allowsSource)) {
+      return;
+    }
+    final publications = !_startupPublicationsRequested;
+    final catalog = aiAllowed && !_startupAICatalogRequested;
+    if (!publications && !catalog) {
+      return;
+    }
+    _startupPublicationsRequested =
+        _startupPublicationsRequested || publications;
+    _startupAICatalogRequested = _startupAICatalogRequested || catalog;
+    unawaited(
+      _refreshStartupPublications(publications: publications, catalog: catalog),
+    );
+  }
+
+  Future<void> _refreshStartupPublications({
+    required bool publications,
+    required bool catalog,
+  }) async {
+    try {
+      await _call({
+        'action': 'initialize',
+        'directory': _initializedDirectory,
+        'refreshPublications': publications,
+        'refreshAICatalog': catalog,
+      });
+    } catch (error) {
+      if (publications) {
+        _startupPublicationsRequested = false;
+      }
+      if (catalog) {
+        _startupAICatalogRequested = false;
+      }
+      stderr.writeln('启动目录同步未开始，原记录保留：$error');
+    }
+  }
+
+  Future<void> _stopStartupCatalog() async {
+    try {
+      await _call({
+        'action': 'initialize',
+        'directory': _initializedDirectory,
+        'stopStartupCatalog': true,
+      });
+    } catch (error) {
+      stderr.writeln('停止启动目录同步失败：$error');
+    }
+  }
 
   @override
   Future<Map<String, dynamic>> lan(
@@ -213,21 +355,28 @@ class NativeRepository extends AppRepository {
     Map<String, dynamic> payload,
   ) => _call({'action': 'lan', 'command': command, 'lan': payload});
   @override
-  Future<Map<String, dynamic>> checkForUpdate(
-    String version,
-    String edition,
-  ) => _call({
-    'action': 'updateCheck',
-    'query': jsonEncode({'version': version, 'edition': edition}),
-  });
+  Future<Map<String, dynamic>> checkForUpdate(String version, String edition) =>
+      _call({
+        'action': 'updateCheck',
+        'query': jsonEncode({'version': version, 'edition': edition}),
+      });
+
+  @override
+  Future<bool> updateBusy() async =>
+      (await _call({'action': 'updateBusy'}))['busy'] != false;
 
   @override
   Future<Map<String, dynamic>> downloadUpdate(
     String version,
     String edition,
+    String ticket,
   ) => _call({
     'action': 'updateDownload',
-    'query': jsonEncode({'version': version, 'edition': edition}),
+    'query': jsonEncode({
+      'version': version,
+      'edition': edition,
+      'ticket': ticket,
+    }),
   });
 
   @override
@@ -267,9 +416,11 @@ class NativeRepository extends AppRepository {
   @override
   Future<ResourceSettings> resourceSettings() async {
     _adminPermission();
-    return ResourceSettings.fromJson(
+    final settings = ResourceSettings.fromJson(
       await _call({'action': 'resourceSettings'}),
     );
+    CacheRuntime.apply(settings.cacheLimits);
+    return settings;
   }
 
   @override
@@ -277,12 +428,14 @@ class NativeRepository extends AppRepository {
     ResourceSettings settings,
   ) async {
     _adminPermission();
-    return ResourceSettings.fromJson(
+    final saved = ResourceSettings.fromJson(
       await _call({
         'action': 'saveResourceSettings',
         'settings': settings.toJson(),
       }),
     );
+    CacheRuntime.apply(saved.cacheLimits);
+    return saved;
   }
 
   Future<Map<String, dynamic>> _read(
@@ -407,6 +560,9 @@ class NativeRepository extends AppRepository {
   bool get supportsSourceManagement => true;
 
   @override
+  bool get supportsRealSourcePlayback => Platform.isWindows;
+
+  @override
   Future<List<RankingBoard>> rankingBoards() async {
     final result = await _call({'action': 'rankingBoards'});
     return [
@@ -440,6 +596,18 @@ class NativeRepository extends AppRepository {
       SourceStatus.fromJson(
         await _call({'action': 'sourceStatus', 'source': source}),
       );
+
+  @override
+  Future<SourceStatus> saveSourceHealth(
+    String source,
+    Map<String, dynamic> health,
+  ) async => SourceStatus.fromJson(
+    await _call({
+      'action': 'saveSourceHealth',
+      'source': source,
+      'health': health,
+    }),
+  );
 
   @override
   Future<SourceStatus> startSourceJob(
@@ -511,7 +679,14 @@ class NativeRepository extends AppRepository {
   }
 
   @override
-  Future<void> moveDownloads(String directory) async {
+  Future<void> moveDownloads(String directory) =>
+      _moveDownloads(directory, false);
+
+  @override
+  Future<void> moveDownloadsExactly(String directory) =>
+      _moveDownloads(directory, true);
+
+  Future<void> _moveDownloads(String directory, bool exact) async {
     _downloadPermission();
     if (access != null && !access!.profile.admin) {
       throw AppFailure('仅管理员可更改下载目录');
@@ -519,7 +694,11 @@ class NativeRepository extends AppRepository {
     await BackgroundDownloads.ensureStarted();
     await workLease('storage', 'start');
     try {
-      await _call({'action': 'moveDownloads', 'directory': directory});
+      await _call({
+        'action': 'moveDownloads',
+        'directory': directory,
+        if (exact) 'command': 'exact',
+      });
     } finally {
       await workLease('storage', 'end');
     }
@@ -572,8 +751,14 @@ class NativeRepository extends AppRepository {
         'sourceStatus',
         'sourceJob',
         'cancelSourceJob',
+        'saveSourceHealth',
       }.contains(action)) {
-        _authorize(input['source'] as String);
+        final source = input['source'] as String;
+        if (!(action == 'sourceStatus' &&
+            access?.profile.admin == true &&
+            SourceSite.isAvailable(source))) {
+          _authorize(source);
+        }
       }
       if ({
         'cover',
@@ -598,8 +783,10 @@ class NativeRepository extends AppRepository {
             'controlDownloadBatch',
             'storage',
             'downloadDirectory',
+            'downloadFolder',
             'moveDownloads',
             'workLease',
+            'publishDownload',
           }.contains(action)) {
         _downloadPermission();
       }
@@ -609,8 +796,10 @@ class NativeRepository extends AppRepository {
       final body = jsonEncode(input);
       final encoded = await Isolate.run(() => _nativeRequest(body)).timeout(
         Duration(
-          seconds: action == 'moveDownloads'
+          seconds: action == 'moveDownloads' || action == 'publishDownload'
               ? 620
+              : action == 'downloadFolder'
+              ? 4
               : action == 'danmaku'
               ? 15
               : action == 'preload'
@@ -659,7 +848,11 @@ class NativeRepository extends AppRepository {
           }).catchError((Object _) => <String, dynamic>{}),
         );
       }
-      throw AppFailure('站源响应超时，请重试');
+      throw AppFailure(
+        input['action'] == 'downloadFolder'
+            ? '读取下载目录超时，请检查磁盘后重试'
+            : '站源响应超时，请重试',
+      );
     } catch (_) {
       throw AppFailure('本地核心加载失败，请使用完整安装包重新安装');
     }
@@ -667,14 +860,36 @@ class NativeRepository extends AppRepository {
 
   @override
   Future<void> initialize() async {
-    final directory = await getApplicationSupportDirectory();
+    final Directory directory;
+    if (dataDirectory == null) {
+      await prepareAppStorage();
+      directory = await getApplicationSupportDirectory();
+    } else {
+      directory = dataDirectory!.absolute;
+      await directory.create(recursive: true);
+    }
     final build = await _call({
       'action': 'initialize',
       'directory': directory.path,
+      'rebuildOrdinaryCatalogs': !background && dataDirectory == null,
+      ...programStorageDefaults(
+        windows: Platform.isWindows,
+        executable:
+            Platform.isWindows &&
+                (Platform.environment['GUO_UPDATE_ROOT'] ?? '').isNotEmpty
+            ? path.join(
+                Platform.environment['GUO_UPDATE_ROOT']!,
+                'application.exe',
+              )
+            : Platform.resolvedExecutable,
+        isolated: dataDirectory != null,
+      ),
     });
     if (build['allSources'] != allSourcesEnabled) {
       throw AppFailure('应用与原生核心的站源版本不一致，请使用完整安装包重新安装');
     }
+    _initializedDirectory = directory.path;
+    CacheRuntime.apply(CacheLimits.fromJson(build['cacheLimits']));
     if (!background) await BackgroundDownloads.prepare();
     if (!background) {
       SystemProxyMonitor.start((value) async {
@@ -692,6 +907,19 @@ class NativeRepository extends AppRepository {
       'action': 'categories',
       'source': source,
       'force': force,
+    });
+    return [
+      for (final row in result['items'] as List? ?? const [])
+        CatalogCategory.fromJson(Map<String, dynamic>.from(row as Map)),
+    ];
+  }
+
+  @override
+  Future<List<CatalogCategory>> cachedCategories(String source) async {
+    _authorize(source);
+    final result = await _call({
+      'action': 'cachedCategories',
+      'source': source,
     });
     return [
       for (final row in result['items'] as List? ?? const [])
@@ -735,7 +963,10 @@ class NativeRepository extends AppRepository {
     });
     final file = result['path'] as String? ?? '';
     if (file.isEmpty) throw AppFailure('海报暂不可用');
-    if (result['heic'] != true) return file;
+    if (result['heic'] != true &&
+        !(Platform.isWindows && result['avif'] == true)) {
+      return file;
+    }
     final converted = await _coverDecoder.convert(
       file,
       () => _call({'action': 'prepareCover', 'drama': drama.toJson()}),
@@ -774,6 +1005,54 @@ class NativeRepository extends AppRepository {
           'sequence': ++_playbackSequence,
         }),
       );
+  @override
+  Future<PlaybackPlan> selectPlaybackRoute(
+    PlaybackPlan current,
+    int index,
+  ) async => PlaybackPlan.fromJson(
+    await _call({
+      'action': 'selectPlaybackRoute',
+      'session': current.session,
+      'routeIndex': index,
+      'sequence': ++_playbackSequence,
+    }),
+  );
+  @override
+  Future<PlaybackRouteStatus> checkPlaybackRoute(
+    PlaybackPlan current,
+    int index,
+  ) async => PlaybackRouteStatus.fromJson(
+    await _call({
+      'action': 'checkPlaybackRoute',
+      'session': current.session,
+      'routeIndex': index,
+    }),
+  );
+  @override
+  Future<int> enqueueDownloadsOnRoute(
+    DramaDetail detail,
+    List<Episode> episodes, {
+    int quality = 0,
+    int preferredRoute = 0,
+    PlaybackPlan? playback,
+  }) async {
+    _authorize(detail.drama.source, download: true);
+    final epoch = access?.profileEpoch;
+    await BackgroundDownloads.ensureStarted();
+    if (epoch != access?.profileEpoch) throw AppFailure('用户已切换，请重新操作');
+    final result = await _call({
+      'action': 'enqueueDownloads',
+      'drama': detail.drama.toJson(),
+      'quality': quality,
+      'preferredRoute': preferredRoute,
+      'session': preferredRoute > 0 ? playback?.session ?? '' : '',
+      'entries': episodes
+          .map((episode) => {'chapter': episode.raw, 'index': episode.number})
+          .toList(),
+    });
+    return intValue(result['added']);
+  }
+
   @override
   Future<void> cancelPlayback() async {
     await _call({'action': 'cancelPlayback', 'sequence': ++_playbackSequence});
@@ -865,6 +1144,22 @@ class NativeRepository extends AppRepository {
   }
 
   @override
+  Future<DownloadBatchResult> removeDownloadCollection(
+    Drama drama,
+    List<String> ids,
+  ) async {
+    _authorize(drama.source, download: true);
+    return DownloadBatchResult.fromJson(
+      await _call({
+        'action': 'controlDownloadBatch',
+        'command': 'remove',
+        'drama': drama.toJson(),
+        'jobIds': ids,
+      }),
+    );
+  }
+
+  @override
   Future<void> controlDownloads(String command, {String id = ''}) async {
     _downloadPermission();
     if (command == 'resume' || command == 'resumeAll') {
@@ -896,6 +1191,21 @@ class NativeRepository extends AppRepository {
   }
 
   @override
+  Future<String?> downloadedFolder(Iterable<DownloadJob> jobs) async {
+    final ids = <String>{};
+    for (final job in jobs.where((job) => job.completed)) {
+      _authorize(job.drama.source, download: true);
+      ids.add(job.id);
+    }
+    if (ids.isEmpty) return null;
+    final result = await _call({
+      'action': 'downloadFolder',
+      'jobIds': ids.toList(),
+    });
+    return result['directory'] as String?;
+  }
+
+  @override
   Future<PlaybackPlan?> localPlayback(Drama drama, Episode episode) async {
     final result = await _call({
       'action': 'localPlayback',
@@ -904,6 +1214,27 @@ class NativeRepository extends AppRepository {
     });
     if ((result['url'] as String? ?? '').isEmpty) return null;
     return PlaybackPlan.fromJson(result);
+  }
+
+  @override
+  Future<void> publishDownload(
+    DownloadJob job,
+    String file,
+    int bytes,
+    String hash,
+  ) async {
+    _authorize(job.drama.source, download: true);
+    await _call({
+      'action': 'publishDownload',
+      'jobId': job.id,
+      'expectedVersions': {
+        job.id:
+            '${job.created}-${job.bytes}-${job.actualQuality}${job.revision > 0 ? '-${job.revision}' : ''}',
+      },
+      'publishedFile': file,
+      'publishedBytes': bytes,
+      'publishedSHA256': hash,
+    });
   }
 
   @override

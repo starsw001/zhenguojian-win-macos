@@ -8,6 +8,7 @@ import (
 	"time"
 )
 
+// TestProbeRegister 验证「Probe Register」回归场景。
 func TestProbeRegister(t *testing.T) {
 	if os.Getenv("HG_PROBE") == "" {
 		t.Skip("probe disabled")

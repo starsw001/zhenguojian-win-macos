@@ -9,6 +9,7 @@ import (
 	"time"
 )
 
+// TestProbeBookmall 验证「Probe Bookmall」回归场景。
 func TestProbeBookmall(t *testing.T) {
 	if os.Getenv("HG_PROBE") == "" {
 		t.Skip("probe disabled")
@@ -54,4 +55,3 @@ func TestProbeBookmall(t *testing.T) {
 		fmt.Printf("[tab=%s] HTTP %d len=%d head=%.200s\n", tab, resp.StatusCode, n, string(body[:200]))
 	}
 }
-

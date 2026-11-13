@@ -108,8 +108,15 @@ class _SavedLibraryState extends State<SavedLibrary> {
     builder: (context, _) {
       final history = widget.store.history;
       final all = widget.history
-          ? history.map((entry) => entry.drama).toList()
-          : widget.store.favorites;
+          ? history
+                .where(
+                  (entry) => widget.store.isSourceVisible(entry.drama.source),
+                )
+                .map((entry) => entry.drama)
+                .toList()
+          : widget.store.favorites
+                .where((drama) => widget.store.isSourceVisible(drama.source))
+                .toList();
       final items = all.where((drama) {
         if (!matchesDramaQuery(drama, _search.text)) return false;
         final state = widget.store.following(drama.id);

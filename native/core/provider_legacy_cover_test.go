@@ -13,6 +13,7 @@ import (
 	"testing"
 )
 
+// TestLegacyCoverAddressesAndSyntheticPayloads 验证「Legacy Cover Addresses And Synthetic Payloads」回归场景。
 func TestLegacyCoverAddressesAndSyntheticPayloads(t *testing.T) {
 	var encoded bytes.Buffer
 	picture := image.NewRGBA(image.Rect(0, 0, 4, 4))

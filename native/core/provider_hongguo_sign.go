@@ -12,6 +12,7 @@ import (
 	"time"
 )
 
+// newHongguoDeviceID 生成红果客户端使用的随机设备标识。
 func newHongguoDeviceID() string {
 	var random [8]byte
 	if _, err := rand.Read(random[:]); err != nil {
@@ -20,6 +21,7 @@ func newHongguoDeviceID() string {
 	return strconv.FormatUint(1_000_000_000_000_000_000+binary.BigEndian.Uint64(random[:])%8_000_000_000_000_000_000, 10)
 }
 
+// signHongguoRequest 为红果客户端请求计算签名参数。
 func signHongguoRequest(request *http.Request, body []byte, now time.Time) {
 	timestamp := uint32(now.Unix())
 	queryHash := md5.Sum([]byte(request.URL.RawQuery))

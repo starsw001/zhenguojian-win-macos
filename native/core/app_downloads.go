@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
@@ -23,57 +24,73 @@ type nativeDownloadEpisode struct {
 }
 
 type nativeDownloadJob struct {
-	ID            string      `json:"id"`
-	Drama         nativeDrama `json:"drama"`
-	Chapter       Chapter     `json:"chapter"`
-	Index         int         `json:"index"`
-	Quality       int         `json:"quality"`
-	ActualQuality int         `json:"actualQuality"`
-	State         string      `json:"state"`
-	Archived      bool        `json:"archived,omitempty"`
-	Folder        string      `json:"folder,omitempty"`
-	Bytes         int64       `json:"bytes"`
-	Total         int64       `json:"total"`
-	Progress      float64     `json:"progress"`
-	Error         string      `json:"error,omitempty"`
-	Created       int64       `json:"created"`
-	Revision      int64       `json:"revision,omitempty"`
+	PreferredRoute    int         `json:"preferredRoute,omitempty"`
+	PreferredRouteKey string      `json:"preferredRouteKey,omitempty"`
+	ID                string      `json:"id"`
+	Drama             nativeDrama `json:"drama"`
+	Chapter           Chapter     `json:"chapter"`
+	Index             int         `json:"index"`
+	Quality           int         `json:"quality"`
+	ActualQuality     int         `json:"actualQuality"`
+	State             string      `json:"state"`
+	Archived          bool        `json:"archived,omitempty"`
+	Folder            string      `json:"folder,omitempty"`
+	Bytes             int64       `json:"bytes"`
+	Total             int64       `json:"total"`
+	Progress          float64     `json:"progress"`
+	Error             string      `json:"error,omitempty"`
+	Created           int64       `json:"created"`
+	Revision          int64       `json:"revision,omitempty"`
+	Published         bool        `json:"published,omitempty"`
 }
 
 type nativeDownloadRecord struct {
 	nativeDownloadJob
-	File string `json:"file,omitempty"`
-	Key  string `json:"key,omitempty"`
+	File            string `json:"file,omitempty"`
+	Key             string `json:"key,omitempty"`
+	PublishedFile   string `json:"publishedFile,omitempty"`
+	PublishedBytes  int64  `json:"publishedBytes,omitempty"`
+	PublishedSHA256 string `json:"publishedSHA256,omitempty"`
 }
 
 type nativeDownloadResult struct {
 	file    string
 	key     string
 	quality int
+	chapter *Chapter
 }
 
 type nativeDownloads struct {
-	mu          sync.Mutex
-	root        string
-	engine      *nativeEngine
-	jobs        map[string]*nativeDownloadRecord
-	active      map[string]context.CancelFunc
-	closed      bool
-	moving      bool
-	mediaBusy   bool
-	loadErr     error
-	workers     sync.WaitGroup
-	lastSaved   time.Time
-	concurrency int
-	bySource    bool
-	resolve     func(context.Context, nativeDownloadJob) (providerMedia, error)
+	updateHandoff     bool
+	mu                sync.Mutex
+	root              string
+	engine            *nativeEngine
+	jobs              map[string]*nativeDownloadRecord
+	active            map[string]context.CancelFunc
+	closed            bool
+	moving            bool
+	mediaBusy         bool
+	loadErr           error
+	workers           sync.WaitGroup
+	lastSaved         time.Time
+	concurrency       int
+	sourceConcurrency int
+	sourceStarts      map[string]time.Time
+	sourceBackoffs    map[string]*requestBackoff
+	queueTimer        *time.Timer
+	queueGeneration   uint64
+	queueDelay        func() time.Duration
+	bySource          bool
+	resolve           func(context.Context, nativeDownloadJob) (providerMedia, error)
 }
 
+// nativeDownloadID 根据下载任务的关键字段生成任务标识。
 func nativeDownloadID(drama string, episode int) string {
 	hash := sha256.Sum256([]byte(drama + "\x00" + strconv.Itoa(episode)))
 	return hex.EncodeToString(hash[:16])
 }
 
+// nativeDownloadVersion 取得下载任务用于并发控制的版本标识。
 func nativeDownloadVersion(job nativeDownloadJob) string {
 	version := fmt.Sprintf("%d-%d-%d", job.Created, job.Bytes, job.ActualQuality)
 	if job.Revision > 0 {
@@ -82,6 +99,7 @@ func nativeDownloadVersion(job nativeDownloadJob) string {
 	return version
 }
 
+// unarchivedCountLocked 返回未归档数量，供内部持锁路径调用。
 func (manager *nativeDownloads) unarchivedCountLocked() int {
 	count := 0
 	for _, job := range manager.jobs {
@@ -92,22 +110,44 @@ func (manager *nativeDownloads) unarchivedCountLocked() int {
 	return count
 }
 
+// newNativeDownloads 创建原生下载任务。
 func newNativeDownloads(engine *nativeEngine) *nativeDownloads {
-	manager := &nativeDownloads{root: nativeDownloadLocation(engine.directory), engine: engine,
+	manager := &nativeDownloads{root: nativeDownloadLocation(engine.directory, engine.defaultDownloadDirectory), engine: engine,
 		jobs: map[string]*nativeDownloadRecord{}, active: map[string]context.CancelFunc{}}
 	settings := engine.resourceSettings()
 	manager.concurrency, manager.bySource = settings.DownloadConcurrency, settings.DownloadBySource
+	manager.sourceConcurrency = settings.DownloadSourceConcurrency
 	manager.resolve = func(ctx context.Context, job nativeDownloadJob) (providerMedia, error) {
-		return engine.downloader.resolveProviderMedia(ctx, Task{
+		return engine.downloader.resolvePlaybackMedia(ctx, Task{
 			DramaID: job.Drama.ID, DramaTitle: job.Drama.Title, Chapter: job.Chapter, Index: job.Index})
 	}
 	manager.loadErr = manager.load()
+	if manager.loadErr == nil && engine.defaultDownloadDirectory != "" {
+		location := filepath.Join(engine.directory, "download-location.json")
+		body, readErr := os.ReadFile(location)
+		var saved struct {
+			Directory string `json:"directory"`
+			Mode      string `json:"mode"`
+		}
+		updateDefault := json.Unmarshal(body, &saved) == nil && saved.Mode == "default" && saved.Directory != manager.root && manager.root == engine.defaultDownloadDirectory
+		if os.IsNotExist(readErr) || updateDefault {
+			mode := "custom"
+			if manager.root == engine.defaultDownloadDirectory {
+				mode = "default"
+			}
+			data, _ := json.Marshal(map[string]string{"directory": manager.root, "mode": mode})
+			if err := nativeDownloadWrite(location, data); err != nil {
+				manager.loadErr = errors.New("无法保存下载位置，请检查应用数据目录权限")
+			}
+		}
+	}
 	return manager
 }
 
+// load 从本地文件恢复下载任务与任务状态。
 func (manager *nativeDownloads) load() error {
 	if err := os.MkdirAll(manager.root, 0700); err != nil {
-		return errors.New("无法创建下载目录，请检查存储空间和权限")
+		return errors.New("无法创建下载目录，请在设置的「下载目录与空间」选择可写位置，不需要管理员权限")
 	}
 	path := filepath.Join(manager.root, "index.json")
 	info, err := os.Stat(path)
@@ -128,11 +168,15 @@ func (manager *nativeDownloads) load() error {
 			return errors.New("下载记录条目无效，原索引和文件已保留")
 		}
 		seen[record.ID] = true
-		if record.Folder != "" && record.Folder != record.Drama.Source+"/"+record.ID {
+		if record.Folder != "" && record.Folder != record.Drama.Source+"/"+record.ID &&
+			record.Folder != ".download-cache/"+record.ID && record.Folder != ".download-cache/"+record.Drama.Source+"/"+record.ID {
 			return errors.New("下载目录记录无效，原文件已保留")
 		}
 		if record.File != "" && record.File != "media.mp4" && record.File != "index.m3u8" {
 			return errors.New("下载记录文件信息无效，原索引和文件已保留")
+		}
+		if record.PublishedFile != "" && !nativePublishedName(record.nativeDownloadJob, record.PublishedFile) {
+			return errors.New("MP4 成品记录路径无效，原索引和视频已保留")
 		}
 		switch record.State {
 		case "removing", "downloading", "queued", "paused", "failed", "completed":
@@ -148,7 +192,7 @@ func (manager *nativeDownloads) load() error {
 		}
 		switch record.State {
 		case "removing":
-			if err := os.RemoveAll(manager.jobDirectory(record.nativeDownloadJob)); err != nil {
+			if err := manager.removeFiles(*record); err != nil {
 				return err
 			}
 			continue
@@ -164,6 +208,7 @@ func (manager *nativeDownloads) load() error {
 	return nil
 }
 
+// nativeDownloadWrite 下载原生写入。
 func nativeDownloadWrite(path string, data []byte) error {
 	file, err := os.CreateTemp(filepath.Dir(path), ".download-write-")
 	if err != nil {
@@ -187,6 +232,7 @@ func nativeDownloadWrite(path string, data []byte) error {
 	return os.Rename(temporary, path)
 }
 
+// saveLocked 将下载任务快照写入本地存储，供内部持锁流程调用。
 func (manager *nativeDownloads) saveLocked() error {
 	if manager.loadErr != nil {
 		return manager.loadErr
@@ -210,6 +256,7 @@ func (manager *nativeDownloads) saveLocked() error {
 	return nil
 }
 
+// snapshot 返回当前下载任务的快照与持久化状态。
 func (manager *nativeDownloads) snapshot() ([]nativeDownloadJob, error) {
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
@@ -231,10 +278,12 @@ func (manager *nativeDownloads) snapshot() ([]nativeDownloadJob, error) {
 	return jobs, nil
 }
 
+// enqueue 将请求中的分集加入下载队列。
 func (manager *nativeDownloads) enqueue(input nativeInput) (int, error) {
 	return manager.enqueueContext(context.Background(), input)
 }
 
+// enqueueContext 加入队列：上下文。
 func (manager *nativeDownloads) enqueueContext(ctx context.Context, input nativeInput) (int, error) {
 	if !nativeDramaAvailable(input.Drama) {
 		return 0, errNativeBuildSource
@@ -253,10 +302,23 @@ func (manager *nativeDownloads) enqueueContext(ctx context.Context, input native
 			return 0, errors.New("下载集数无效")
 		}
 	}
+	if input.PreferredRoute < 0 || input.PreferredRoute > 1000 {
+		return 0, errors.New("下载候选地址无效")
+	}
+	preferredKey, preferredEpisode := "", 0
+	if input.PreferredRoute > 0 && input.Session != "" {
+		manager.engine.mu.Lock()
+		choice, ok := manager.engine.playbacks[input.Session]
+		manager.engine.mu.Unlock()
+		if !ok || choice.dramaID != input.Drama.ID || input.PreferredRoute > len(choice.media) {
+			return 0, errors.New("所选候选地址已失效，请重新选择")
+		}
+		preferredKey, preferredEpisode = nativeRouteKey(choice.media[input.PreferredRoute-1]), choice.episodeIndex
+	}
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
-	if manager.closed || manager.moving {
-		return 0, errors.New("下载目录正在迁移或队列已关闭，请稍后重试")
+	if manager.closed || manager.moving || manager.updateHandoff {
+		return 0, errors.New("下载目录正在迁移、正在切换软件版本或队列已关闭，请稍后重试")
 	}
 	if manager.loadErr != nil {
 		return 0, manager.loadErr
@@ -279,6 +341,10 @@ func (manager *nativeDownloads) enqueueContext(ctx context.Context, input native
 			return 0, err
 		}
 		id := nativeDownloadID(input.Drama.ID, entry.Index)
+		routeKey := ""
+		if entry.Index == preferredEpisode {
+			routeKey = preferredKey
+		}
 		if existing := manager.jobs[id]; existing != nil {
 			if input.Force {
 				if _, changed := previous[id]; !changed {
@@ -286,7 +352,10 @@ func (manager *nativeDownloads) enqueueContext(ctx context.Context, input native
 				}
 				existing.Drama = mergeNativeDrama(existing.Drama, input.Drama)
 			}
-			if input.Force && (existing.State == "failed" || existing.State == "completed" && !manager.localFilesValid(*existing)) {
+			if (input.Force || input.PreferredRoute > 0) && existing.State == "failed" || (existing.State == "completed" || existing.State == "failed" && existing.File != "") && !manager.localFilesValid(*existing) {
+				if _, changed := previous[id]; !changed {
+					previous[id] = *existing
+				}
 				if existing.Archived {
 					if tasks >= 5000 {
 						rollback()
@@ -296,6 +365,8 @@ func (manager *nativeDownloads) enqueueContext(ctx context.Context, input native
 				}
 				repaired++
 				existing.Chapter, existing.Quality = entry.Chapter, input.Quality
+				existing.PreferredRoute = input.PreferredRoute
+				existing.PreferredRouteKey = routeKey
 				existing.State, existing.Error, existing.Archived = "queued", "", false
 			}
 			continue
@@ -306,9 +377,10 @@ func (manager *nativeDownloads) enqueueContext(ctx context.Context, input native
 		}
 		manager.jobs[id] = &nativeDownloadRecord{nativeDownloadJob: nativeDownloadJob{
 			ID: id, Drama: input.Drama, Chapter: entry.Chapter, Index: entry.Index,
-			Quality: input.Quality, State: "queued", Created: time.Now().UnixMilli()}}
+			Quality: input.Quality, PreferredRoute: input.PreferredRoute, PreferredRouteKey: routeKey, State: "queued", Created: time.Now().UnixMilli()}}
+		manager.jobs[id].Folder = ".download-cache/" + id
 		if manager.bySource {
-			manager.jobs[id].Folder = input.Drama.Source + "/" + id
+			manager.jobs[id].Folder = ".download-cache/" + input.Drama.Source + "/" + id
 		}
 		added = append(added, id)
 		tasks++
@@ -321,18 +393,20 @@ func (manager *nativeDownloads) enqueueContext(ctx context.Context, input native
 	return len(added) + repaired, nil
 }
 
+// control 执行指定下载任务的控制动作。
 func (manager *nativeDownloads) control(id, action string) error {
 	return manager.controlExpected(id, action, "")
 }
 
+// controlExpected 校验任务预期版本后执行单条下载控制。
 func (manager *nativeDownloads) controlExpected(id, action, version string) error {
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
 	if manager.loadErr != nil {
 		return manager.loadErr
 	}
-	if manager.closed || manager.moving {
-		return errors.New("下载目录正在迁移或队列已关闭，请稍后重试")
+	if manager.closed || manager.moving || manager.updateHandoff {
+		return errors.New("下载目录正在迁移、正在切换软件版本或队列已关闭，请稍后重试")
 	}
 	if action == "remove" && manager.mediaBusy {
 		return errors.New("请等待合并或导出完成后再删除分集")
@@ -412,7 +486,7 @@ func (manager *nativeDownloads) controlExpected(id, action, version string) erro
 	}
 	if action == "remove" && manager.active[id] == nil {
 		job := manager.jobs[id]
-		if err := os.RemoveAll(manager.jobDirectory(job.nativeDownloadJob)); err != nil {
+		if err := manager.removeFiles(*job); err != nil {
 			job.Error = "文件正在使用或无法删除，请退出播放后重试"
 			_ = manager.saveLocked()
 			return errors.New(job.Error)
@@ -428,25 +502,56 @@ func (manager *nativeDownloads) controlExpected(id, action, version string) erro
 	return nil
 }
 
+// scheduleLocked 调度下载任务管理器，供内部持锁路径调用。
 func (manager *nativeDownloads) scheduleLocked() {
+	if manager.updateHandoff {
+		return
+	}
+	if nativeLicenseEnabled() && !nativeLicenseManager().Allowed() {
+		return
+	}
+	manager.stopQueueTimerLocked()
 	if manager.closed || manager.moving {
 		return
 	}
-	for len(manager.active) < max(1, manager.concurrency) {
+	for len(manager.active) < max(1, min(10, manager.concurrency)) {
 		var next *nativeDownloadRecord
+		var wake time.Time
+		now := time.Now()
+		activeSources := map[string]int{}
+		for id := range manager.active {
+			if record := manager.jobs[id]; record != nil {
+				activeSources[sourceFromDramaID(record.Drama.ID)]++
+			}
+		}
 		for _, candidate := range manager.jobs {
 			if candidate.State != "queued" || manager.active[candidate.ID] != nil || !nativeDownloadAvailable(candidate.nativeDownloadJob) {
 				continue
 			}
+			source := sourceFromDramaID(candidate.Drama.ID)
+			if activeSources[source] >= max(1, min(10, manager.sourceConcurrency)) {
+				continue
+			}
+			ready := manager.sourceReadyLocked(source)
+			if ready.After(now) {
+				if wake.IsZero() || ready.Before(wake) {
+					wake = ready
+				}
+				continue
+			}
 			if next == nil || candidate.Created < next.Created ||
-				(candidate.Created == next.Created && candidate.Index < next.Index) {
+				(candidate.Created == next.Created && candidate.Index < next.Index) ||
+				(candidate.Created == next.Created && candidate.Index == next.Index && candidate.ID < next.ID) {
 				next = candidate
 			}
 		}
 		if next == nil {
+			manager.wakeQueueLocked(wake)
 			return
 		}
 		ctx, cancel := context.WithCancel(context.Background())
+		ctx = context.WithValue(ctx, nativeDownloadSourceKey{}, sourceFromDramaID(next.Drama.ID))
+		ctx = context.WithValue(ctx, nativeDownloadManagerKey{}, manager)
 		next.State, next.Error = "downloading", ""
 		manager.active[next.ID] = cancel
 		if err := manager.saveLocked(); err != nil {
@@ -456,11 +561,13 @@ func (manager *nativeDownloads) scheduleLocked() {
 			return
 		}
 		copy := next.nativeDownloadJob
+		manager.delaySourceLocked(sourceFromDramaID(next.Drama.ID))
 		manager.workers.Add(1)
 		go manager.run(ctx, copy)
 	}
 }
 
+// progress 更新下载任务的字节数与进度。
 func (manager *nativeDownloads) progress(id string, downloaded, total int64, progress float64) {
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
@@ -474,6 +581,7 @@ func (manager *nativeDownloads) progress(id string, downloaded, total int64, pro
 	}
 }
 
+// run 执行一项下载任务，并维护进度、完成或失败状态。
 func (manager *nativeDownloads) run(ctx context.Context, job nativeDownloadJob) {
 	defer manager.workers.Done()
 	result, err := manager.transfer(ctx, job)
@@ -484,13 +592,22 @@ func (manager *nativeDownloads) run(ctx context.Context, job nativeDownloadJob) 
 		cancel()
 	}
 	delete(manager.active, job.ID)
+	source := sourceFromDramaID(job.Drama.ID)
+	manager.delaySourceLocked(source)
+	var backoff *requestBackoff
+	if errors.As(err, &backoff) {
+		manager.recordSourceBackoffLocked(source, backoff)
+	} else if !interrupted && source == sourceHongguo && errors.Is(err, errHongguoEmptyPrimaryPlayback) {
+		manager.recordSourceBackoffLocked(source, &requestBackoff{host: "红果取流接口", status: http.StatusOK, until: time.Now().Add(time.Minute), reason: "取流响应为空，暂缓后续红果下载"})
+		err = fmt.Errorf("%w；后续红果下载任务暂缓 1 分钟", err)
+	}
 	record := manager.jobs[job.ID]
 	if record == nil {
 		return
 	}
 	switch {
 	case record.State == "removing":
-		if removeErr := os.RemoveAll(manager.jobDirectory(job)); removeErr == nil {
+		if removeErr := manager.removeFiles(*record); removeErr == nil {
 			delete(manager.jobs, job.ID)
 		} else {
 			record.State, record.Error = "failed", "文件无法删除，请稍后重试"
@@ -498,7 +615,11 @@ func (manager *nativeDownloads) run(ctx context.Context, job nativeDownloadJob) 
 	case err == nil:
 		record.State, record.Progress = "completed", 1
 		record.File, record.Key, record.ActualQuality = result.file, result.key, result.quality
+		if result.chapter != nil {
+			record.Chapter = *result.chapter
+		}
 		record.Revision++
+		record.Published, record.PublishedFile, record.PublishedBytes, record.PublishedSHA256 = false, "", 0, ""
 		record.Error = ""
 	case record.State == "downloading":
 		record.State = "failed"
@@ -514,28 +635,105 @@ func (manager *nativeDownloads) run(ctx context.Context, job nativeDownloadJob) 
 	manager.scheduleLocked()
 }
 
+// transfer 按任务计划下载媒体，并返回下载成品信息。
 func (manager *nativeDownloads) transfer(ctx context.Context, job nativeDownloadJob) (nativeDownloadResult, error) {
+	if err := manager.downloadSourceBackoff(ctx); err != nil {
+		return nativeDownloadResult{}, err
+	}
 	media, err := manager.resolve(ctx, job)
 	if err != nil {
 		return nativeDownloadResult{}, err
 	}
-	choices := nativePlaybackChoices(media, job.Quality).media
+	choices := nativePlaybackChoicesForSource(sourceFromDramaID(job.Drama.ID), media, job.Quality).media
 	if len(choices) == 0 {
 		return nativeDownloadResult{}, errors.New("该集没有可用的下载地址")
 	}
 	var result nativeDownloadResult
-	for _, option := range choices[:min(3, len(choices))] {
+	choices = nativeDownloadRouteOrder(choices, job.PreferredRoute, true, job.PreferredRouteKey)
+	for _, option := range choices {
 		if err = ctx.Err(); err != nil {
 			break
 		}
-		result, err = manager.transferMedia(ctx, job, option)
+		if err = manager.downloadSourceBackoff(ctx); err != nil {
+			break
+		}
+		resolved, resolveErr := manager.engine.downloader.materializePlaybackMedia(ctx, option)
+		err = resolveErr
+		if err == nil {
+			result, err = manager.transferMedia(ctx, job, resolved)
+		}
 		if err == nil {
 			return result, nil
+		}
+		if nativeRouteMustStop(err) {
+			break
+		}
+	}
+	var temporary *nativeDownloadTransientFailure
+	if sourceFromDramaID(job.Drama.ID) == sourceWuguo && ctx.Err() == nil && errors.As(err, &temporary) {
+		if recovered, alternateErr := manager.tryWuguoDownloadLine(ctx, job); alternateErr == nil {
+			return recovered, nil
 		}
 	}
 	return nativeDownloadResult{}, err
 }
 
+// tryWuguoDownloadLine 尝试伍果下载Line。
+func (manager *nativeDownloads) tryWuguoDownloadLine(ctx context.Context, job nativeDownloadJob) (nativeDownloadResult, error) {
+	_, id, _ := splitProviderDramaID(job.Drama.ID)
+	_, chapters, err := manager.engine.downloader.fetchDuanjuDetail(ctx, sourceWuguo, id)
+	if err != nil {
+		return nativeDownloadResult{}, err
+	}
+	attempts := 0
+	var candidates []Chapter
+	for _, chapter := range chapters {
+		candidates = append(candidates, chapter)
+		candidates = append(candidates, chapter.Alternatives...)
+	}
+	for _, chapter := range candidates {
+		chapter.Alternatives = nil
+		if chapter.VIP || chapter.EpisodeString(0) != strconv.Itoa(job.Index) || chapter.VideoURL == job.Chapter.VideoURL && chapter.PageURL == job.Chapter.PageURL {
+			continue
+		}
+		if attempts >= 2 || ctx.Err() != nil {
+			break
+		}
+		attempts++
+		alternate := job
+		alternate.Chapter = chapter
+		media, resolveErr := manager.resolve(ctx, alternate)
+		if resolveErr != nil {
+			err = resolveErr
+			if nativeRouteMustStop(err) {
+				return nativeDownloadResult{}, err
+			}
+			continue
+		}
+		options := nativePlaybackChoices(media, job.Quality).media
+		for _, option := range options[:min(3, len(options))] {
+			var result nativeDownloadResult
+			resolved, resolveErr := manager.engine.downloader.materializePlaybackMedia(ctx, option)
+			err = resolveErr
+			if err == nil {
+				result, err = manager.transferMedia(ctx, alternate, resolved)
+			}
+			if nativeRouteMustStop(err) {
+				return nativeDownloadResult{}, err
+			}
+			if err == nil {
+				result.chapter = &chapter
+				return result, nil
+			}
+		}
+	}
+	if err == nil {
+		err = errors.New("没有其他可用的免费分集线路")
+	}
+	return nativeDownloadResult{}, err
+}
+
+// localPlan 为已下载分集构造本地播放计划。
 func (manager *nativeDownloads) localPlan(drama string, index int) (nativePlan, bool, error) {
 	if !nativeDramaAvailable(nativeDrama{ID: drama}) {
 		return nativePlan{}, false, errNativeBuildSource
@@ -562,13 +760,20 @@ func (manager *nativeDownloads) localPlan(drama string, index int) (nativePlan, 
 		_ = manager.saveLocked()
 		return nativePlan{}, true, errNativeLocalFile
 	}
+	if manager.publishedValid(*record) {
+		path = filepath.Join(manager.root, filepath.FromSlash(record.PublishedFile))
+		return nativePlan{URL: path, Local: true, Quality: record.ActualQuality,
+			Qualities: []int{}, Headers: map[string]string{}, RouteCount: 1}, true, nil
+	}
 	return nativePlan{URL: path, Key: record.Key, Local: true, Quality: record.ActualQuality,
 		Qualities: []int{}, Headers: map[string]string{}, RouteCount: 1}, true, nil
 }
 
+// close 停止下载管理器并释放其任务资源。
 func (manager *nativeDownloads) close() {
 	manager.mu.Lock()
 	manager.closed = true
+	manager.stopQueueTimerLocked()
 	for id, cancel := range manager.active {
 		if job := manager.jobs[id]; job != nil && job.State == "downloading" {
 			job.State = "paused"
@@ -580,6 +785,7 @@ func (manager *nativeDownloads) close() {
 	manager.workers.Wait()
 }
 
+// nativeDownloadError 下载原生错误。
 func nativeDownloadError(status int) error {
 	return fmt.Errorf("媒体服务器返回 HTTP %d，请稍后重试", status)
 }

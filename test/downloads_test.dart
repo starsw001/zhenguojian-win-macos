@@ -1,6 +1,7 @@
 import 'package:duanju_app/core_bridge.dart';
 import 'package:duanju_app/detail_screen.dart';
 import 'package:duanju_app/downloads_screen.dart';
+import 'package:duanju_app/download_folders.dart';
 import 'package:duanju_app/home_screen.dart';
 import 'package:duanju_app/local_store.dart';
 import 'package:duanju_app/models.dart';
@@ -15,6 +16,25 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'fixtures.dart';
 import 'player_fixtures.dart';
 import 'remote_test_helpers.dart';
+
+class RecordingFolderOpener extends DownloadFolderOpener {
+  RecordingFolderOpener() : super(desktopSupported: true);
+  final opened = <String>[];
+  final resolved = <List<String>>[];
+  bool fail = false;
+  @override
+  Future<String> resolve(
+    AppRepository repository,
+    Iterable<DownloadJob> jobs,
+  ) async {
+    resolved.add(jobs.map((j) => j.id).toList());
+    if (fail) throw AppFailure('找不到已下载的 MP4');
+    return r'D:\fixture\已下载剧集';
+  }
+
+  @override
+  Future<void> open(String directory) async => opened.add(directory);
+}
 
 class DownloadRepository extends FixtureRepository {
   final commands = <String>[];
@@ -136,6 +156,94 @@ void main() {
       await tester.pump(const Duration(milliseconds: 10));
     }
   }
+
+  testWidgets(
+    'completed collection and episode open folder without playback or deletion',
+    (tester) async {
+      size(tester, const Size(1100, 900));
+      final repository = DownloadRepository();
+      repository.jobs = [
+        repository.job(1, 'completed'),
+        repository.job(2, 'failed'),
+      ];
+      final store = await makeStore();
+      final folders = RecordingFolderOpener();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: DownloadsScreen(
+            repository: repository,
+            store: store,
+            folderOpener: folders,
+          ),
+        ),
+      );
+      await tick(tester);
+      await tester.tap(find.byTooltip('测试短剧 · 合集操作'));
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.byKey(
+          const ValueKey('download-collection-open-folder-hongguo:100'),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(folders.opened, [r'D:\fixture\已下载剧集']);
+      expect(folders.resolved.single, ['1', '2']);
+      await tester.tap(find.text('测试短剧'));
+      await tick(tester);
+      await tester.tap(find.byTooltip('分集操作').first);
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.byKey(const ValueKey('download-episode-open-folder-1')),
+      );
+      await tester.pumpAndSettle();
+      expect(folders.opened.length, 2);
+      expect(folders.resolved.last, ['1']);
+      expect(repository.commands, isEmpty);
+      expect(repository.localCalls, 0);
+      expect(repository.onlineCalls, 0);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
+
+  testWidgets(
+    'empty collection disables folder action and missing file gives message',
+    (tester) async {
+      size(tester, const Size(1100, 900));
+      final repository = DownloadRepository();
+      repository.jobs = [repository.job(1, 'failed')];
+      final store = await makeStore();
+      final folders = RecordingFolderOpener()..fail = true;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: DownloadsScreen(
+            repository: repository,
+            store: store,
+            folderOpener: folders,
+          ),
+        ),
+      );
+      await tick(tester);
+      await tester.tap(find.byTooltip('测试短剧 · 合集操作'));
+      await tester.pumpAndSettle();
+      final menu = find.byKey(
+        const ValueKey('download-collection-open-folder-hongguo:100'),
+      );
+      expect(tester.widget<PopupMenuItem<String>>(menu).enabled, isFalse);
+      Navigator.of(tester.element(menu)).pop();
+      await tester.pumpAndSettle();
+      repository.jobs = [repository.job(1, 'completed')];
+      await tester.pump(const Duration(seconds: 2));
+      await tick(tester);
+      await tester.tap(find.byTooltip('测试短剧 · 合集操作'));
+      await tester.pumpAndSettle();
+      await tester.tap(menu);
+      await tester.pumpAndSettle();
+      expect(find.textContaining('找不到已下载的 MP4'), findsOneWidget);
+      expect(folders.opened, isEmpty);
+      expect(repository.commands, isEmpty);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
 
   test(
     'local-only loader never falls through to online; explicit online bypasses it',
@@ -325,23 +433,37 @@ void main() {
       ),
     );
     await tick(tester);
-    await tester.tap(find.byKey(const ValueKey('pause-1')));
+    await tester.tap(find.text('测试短剧'));
+    await tick(tester);
+    await tester.tap(find.byTooltip('分集操作').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('暂停'));
     await tick(tester);
     expect(repository.commands, ['pause:1']);
-    await tester.tap(find.byKey(const ValueKey('resume-1')));
+    await tester.tap(find.byTooltip('分集操作').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('继续 / 重试'));
     await tick(tester);
     expect(repository.commands.last, 'resume:1');
-    await tester.tap(find.text('已下载').first);
+    await tester.tap(find.byTooltip('筛选下载合集'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(ChoiceChip, '已下载'));
+    await tester.tap(find.text('应用'));
+    await tester.pumpAndSettle();
     await tick(tester);
     expect(find.byKey(const ValueKey('download-task-1')), findsNothing);
-    await tester.tap(find.byKey(const ValueKey('remove-2')));
+    await tester.tap(find.byTooltip('分集操作'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('删除视频'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('保留'));
     await tester.pumpAndSettle();
     expect(repository.commands, isNot(contains('remove:2')));
-    await tester.tap(find.byKey(const ValueKey('remove-2')));
+    await tester.tap(find.byTooltip('分集操作'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('删除'));
+    await tester.tap(find.text('删除视频'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('确认删除'));
     await tester.pumpAndSettle();
     expect(repository.commands.last, 'remove:2');
     expect(find.text('暂无符合条件的任务'), findsOneWidget);
@@ -384,7 +506,14 @@ void main() {
         ),
       );
       await tick(tester);
-      await tester.tap(find.byKey(const ValueKey('local-play-3')));
+      await tester.tap(find.text('测试短剧'));
+      await tick(tester);
+      await tester.tap(
+        find.descendant(
+          of: find.byKey(const ValueKey('download-task-3')),
+          matching: find.byType(ListTile),
+        ),
+      );
       await tester.pumpAndSettle();
       expect(find.text('offline player'), findsOneWidget);
       expect(repository.detailCalls, 0);
@@ -476,7 +605,7 @@ void main() {
   );
 
   testWidgets(
-    'TV download navigation and long queue remain usable with only the remote',
+    'TV collection and direct queue button resume long queues with only the remote',
     (tester) async {
       size(tester, const Size(960, 540));
       final repository = DownloadRepository();
@@ -494,18 +623,26 @@ void main() {
       await tester.pumpAndSettle();
       await tester.sendKeyEvent(LogicalKeyboardKey.select);
       await tester.pumpAndSettle();
-      focusRemote(tester, find.byKey(const ValueKey('download-task-1')));
+      Focus.of(tester.element(find.text('测试短剧'))).requestFocus();
       await tester.pumpAndSettle();
-      for (var i = 0; i < 12; i++) {
-        await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
-        await tester.pumpAndSettle();
-      }
       await tester.sendKeyEvent(LogicalKeyboardKey.select);
       await tester.pumpAndSettle();
-      expect(find.text('测试短剧 · 第 13 集').last, findsOneWidget);
+      expect(find.byKey(const ValueKey('download-task-1')), findsOneWidget);
+      final queueIcon = find
+          .descendant(
+            of: find.byKey(const ValueKey('download-queue-resume')),
+            matching: find.byType(Icon),
+          )
+          .first;
+      Focus.of(tester.element(queueIcon)).requestFocus();
+      await tester.pumpAndSettle();
       await tester.sendKeyEvent(LogicalKeyboardKey.select);
-      await tick(tester);
-      expect(repository.commands.last, 'resume:13');
+      await tester.pumpAndSettle();
+      expect(repository.commands.length, 20);
+      expect(
+        repository.commands,
+        containsAll(List.generate(20, (i) => 'resume:${i + 1}')),
+      );
       await tester.pumpWidget(const SizedBox.shrink());
       expect(tester.takeException(), isNull);
     },

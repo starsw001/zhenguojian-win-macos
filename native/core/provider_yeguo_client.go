@@ -70,6 +70,7 @@ type yeguoAPIClient struct {
 	httpClient *http.Client
 }
 
+// yeguoClient 取得椰果请求使用的客户端。
 func (d *Downloader) yeguoClient() *yeguoAPIClient {
 	d.yeguoOnce.Do(func() {
 		d.yeguo = &yeguoAPIClient{downloader: d, site: d.providerBaseURL(sourceYeguo)}
@@ -77,6 +78,7 @@ func (d *Downloader) yeguoClient() *yeguoAPIClient {
 	return d.yeguo
 }
 
+// siteURL 取得椰果 API 客户端使用的站点地址。
 func (client *yeguoAPIClient) siteURL() string {
 	client.mu.Lock()
 	defer client.mu.Unlock()
@@ -89,6 +91,7 @@ func (client *yeguoAPIClient) siteURL() string {
 	return yeguoBaseURL
 }
 
+// validYeguoSite 判断是否有效：椰果Site。
 func validYeguoSite(raw string) string {
 	address, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil || !isProviderHTTPMediaURL(raw) || address.User != nil || address.RawQuery != "" || address.Fragment != "" || address.Host == "" {
@@ -105,6 +108,7 @@ func validYeguoSite(raw string) string {
 	return strings.TrimRight(address.String(), "/")
 }
 
+// isYeguoActiveSite 判断是否为椰果ActiveSite。
 func isYeguoActiveSite(raw string) bool {
 	address, err := url.Parse(raw)
 	if err != nil {
@@ -116,6 +120,7 @@ func isYeguoActiveSite(raw string) bool {
 		strings.HasSuffix(host, ".fzchosdi.cc")
 }
 
+// yeguoTransitDecodedText 解码椰果中转页中的文本载荷。
 func yeguoTransitDecodedText(body string) string {
 	var parts []string
 	parts = append(parts, body)
@@ -128,6 +133,7 @@ func yeguoTransitDecodedText(body string) string {
 	return strings.Join(parts, "\n")
 }
 
+// yeguoTransitSeedWords 取得中转配置中用作候选的地址文本。
 func yeguoTransitSeedWords(text string) []string {
 	var words []string
 	seen := map[string]bool{}
@@ -168,6 +174,7 @@ func yeguoTransitSeedWords(text string) []string {
 	return words
 }
 
+// yeguoTransitSites 从中转页数据中提取站点候选。
 func yeguoTransitSites(body string) []string {
 	text := yeguoTransitDecodedText(body)
 	var sites []string
@@ -199,6 +206,7 @@ func yeguoTransitSites(body string) []string {
 	return sites
 }
 
+// discoverTransitSites 按既有配置发现中转页提供的站点候选。
 func (client *yeguoAPIClient) discoverTransitSites(ctx context.Context) []string {
 	body, err := client.downloader.fetchProviderText(context.WithValue(ctx, providerTextNoCacheKey{}, true), yeguoTransitURL+"/", yeguoTransitURL+"/")
 	if err != nil {
@@ -207,6 +215,7 @@ func (client *yeguoAPIClient) discoverTransitSites(ctx context.Context) []string
 	return yeguoTransitSites(body)
 }
 
+// configuration 取得椰果 API 客户端使用的访问配置。
 func (client *yeguoAPIClient) configuration(ctx context.Context) (*yeguoAccess, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -244,6 +253,7 @@ func (client *yeguoAPIClient) configuration(ctx context.Context) (*yeguoAccess, 
 	return access, err
 }
 
+// requestClient 取得请求请求使用的客户端。
 func (client *yeguoAPIClient) requestClient() *http.Client {
 	client.httpOnce.Do(func() {
 		if client.downloader.client != nil && client.downloader.client.Transport != nil {
@@ -274,6 +284,7 @@ func (client *yeguoAPIClient) requestClient() *http.Client {
 	return client.httpClient
 }
 
+// do 处理椰果 API 客户端的 API 请求与响应。
 func (client *yeguoAPIClient) do(ctx context.Context, request *http.Request, timeout time.Duration) (*http.Response, error) {
 	release := func() {}
 	var err error
@@ -302,6 +313,7 @@ func (client *yeguoAPIClient) do(ctx context.Context, request *http.Request, tim
 	return response, nil
 }
 
+// yeguoAPIBase 取得页面或配置声明的 API 基础地址。
 func yeguoAPIBase(document *html.Node, configured string) (string, error) {
 	base := strings.TrimRight(configured, "/")
 	if base == "" {
@@ -337,6 +349,7 @@ func yeguoAPIBase(document *html.Node, configured string) (string, error) {
 	return strings.TrimRight(base, "/"), nil
 }
 
+// yeguoScriptURL 规整页面脚本资源的地址。
 func yeguoScriptURL(base, reference string) string {
 	page, err := url.Parse(base)
 	if err != nil {
@@ -355,6 +368,7 @@ func yeguoScriptURL(base, reference string) string {
 	return address.String()
 }
 
+// yeguoPublicBytes 构造公开椰果字节。
 func yeguoPublicBytes(value string) []byte {
 	if !strings.Contains(value, "_") {
 		return []byte(value)
@@ -370,6 +384,7 @@ func yeguoPublicBytes(value string) []byte {
 	return decoded
 }
 
+// parseYeguoPublicConfiguration 解析椰果公共配置。
 func parseYeguoPublicConfiguration(script string) *yeguoAccess {
 	fields := map[string]string{}
 	for _, match := range yeguoPublicField.FindAllStringSubmatch(script, 32) {
@@ -387,6 +402,7 @@ func parseYeguoPublicConfiguration(script string) *yeguoAccess {
 	return access
 }
 
+// discoverConfiguration 发现配置。
 func (client *yeguoAPIClient) discoverConfiguration(ctx context.Context) (*yeguoAccess, error) {
 	ctx, cancel := context.WithTimeout(ctx, 25*time.Second)
 	defer cancel()
@@ -417,6 +433,7 @@ func (client *yeguoAPIClient) discoverConfiguration(ctx context.Context) (*yeguo
 	return nil, errors.Join(errors.New("野果线路暂不可用，请稍后重试"), lastErr)
 }
 
+// discoverConfigurationAt 发现配置指定地址。
 func (client *yeguoAPIClient) discoverConfigurationAt(ctx context.Context, site string) (*yeguoAccess, error) {
 	d := client.downloader
 	document, pageURL, err := d.fetchProviderPage(ctx, site+"/", site+"/", "")
@@ -483,6 +500,7 @@ func (client *yeguoAPIClient) discoverConfigurationAt(ctx context.Context, site 
 	return nil, errors.Join(errors.New("野果接口配置已变化，暂时无法解码，请稍后重试"), lastErr)
 }
 
+// decodeYeguoJSONObject 解码椰果JSONObject。
 func decodeYeguoJSONObject(body []byte) (map[string]any, error) {
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.UseNumber()
@@ -493,6 +511,7 @@ func decodeYeguoJSONObject(body []byte) (map[string]any, error) {
 	return value, nil
 }
 
+// yeguoResponseSignature 提取接口响应使用的签名字段。
 func yeguoResponseSignature(value map[string]any, key []byte) (string, error) {
 	var fields []string
 	for name, field := range value {
@@ -524,6 +543,7 @@ func yeguoResponseSignature(value map[string]any, key []byte) (string, error) {
 	return hex.EncodeToString(signature[:]), nil
 }
 
+// decodeYeguoResponse 解码椰果响应。
 func decodeYeguoResponse(body []byte, access *yeguoAccess) (map[string]any, error) {
 	envelope, err := decodeYeguoJSONObject(body)
 	if err != nil {
@@ -558,6 +578,7 @@ func decodeYeguoResponse(body []byte, access *yeguoAccess) (map[string]any, erro
 	return envelope, nil
 }
 
+// call 处理椰果 API 客户端的 API 请求与响应。
 func (client *yeguoAPIClient) call(ctx context.Context, route string, parameters url.Values) (map[string]any, error) {
 	for attempt := 0; attempt < 2; attempt++ {
 		access, err := client.configuration(ctx)

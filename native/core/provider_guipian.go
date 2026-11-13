@@ -55,6 +55,8 @@ var guipianCategories = []nativeCategory{
 
 var (
 	reGuipianMainList   = regexp.MustCompile(`(?is)<ul class="row video-list video-film-list[^"]*">(.*?)</ul>`)
+	reGuipianPager      = regexp.MustCompile(`(?is)<ul\b[^>]*class=["'][^"']*\bewave-page\b[^"']*["'][^>]*>(.*?)</ul>`)
+	reGuipianPageTotal  = regexp.MustCompile(`(?is)<span\b[^>]*class=["'][^"']*\bnum\b[^"']*["'][^>]*>\s*(\d+)\s*/\s*(\d+)\s*</span>`)
 	reGuipianCard       = regexp.MustCompile(`(?is)<a class="video-link" href="/nv/(\d+)\.html"[^>]*title="([^"]*)"(.*?)</a>`)
 	reGuipianCover      = regexp.MustCompile(`(?is)data-(?:original|background)="([^"]+)"`)
 	reGuipianRemark     = regexp.MustCompile(`(?is)<div class="video-duration">(.*?)</div>`)
@@ -80,6 +82,7 @@ var (
 	reGuipianTag        = regexp.MustCompile(`<[^>]+>`)
 )
 
+// validGuipianCategory 判断是否有效：鬼片分类。
 func validGuipianCategory(category string) bool {
 	if category == "" {
 		return true
@@ -95,6 +98,7 @@ func validGuipianCategory(category string) bool {
 	return false
 }
 
+// guipianNumericID 判断鬼片数字标识是否满足当前规则。
 func guipianNumericID(value string) bool {
 	value = strings.TrimSpace(value)
 	if value == "" || len(value) > 12 {
@@ -115,6 +119,7 @@ func guipianClean(text string) string {
 	return strings.Join(strings.Fields(text), " ")
 }
 
+// guipianUnescape 反转义鬼片页面中的文本。
 func guipianUnescape(text string) string {
 	replacer := strings.NewReplacer(
 		"&amp;", "&", "&lt;", "<", "&gt;", ">", "&quot;", "\"",
@@ -143,6 +148,7 @@ func guipianUnescape(text string) string {
 	return text
 }
 
+// guipianFixURL 修正鬼片来源返回的地址格式。
 func guipianFixURL(raw string) string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -160,10 +166,12 @@ func guipianFixURL(raw string) string {
 	return parsed.String()
 }
 
+// fetchGuipianCategories 获取鬼片分类列表。
 func (d *Downloader) fetchGuipianCategories() []nativeCategory {
 	return append([]nativeCategory(nil), guipianCategories...)
 }
 
+// guipianGet 读取鬼片站源的页面或接口响应。
 func (d *Downloader) guipianGet(ctx context.Context, path string) (string, error) {
 	site := d.providerBaseURL(sourceGuipian)
 	address := path
@@ -216,6 +224,15 @@ func parseGuipianCards(body string) []Drama {
 
 // guipianPageCount 从分页链接推断末页；拿不到时按当前页是否满页保守判断。
 func guipianPageCount(body, category string, page, count int) int {
+	if pager := reGuipianPager.FindStringSubmatch(body); len(pager) > 1 {
+		if total := reGuipianPageTotal.FindStringSubmatch(pager[1]); len(total) > 2 {
+			current, currentErr := strconv.Atoi(total[1])
+			last, lastErr := strconv.Atoi(total[2])
+			if currentErr == nil && lastErr == nil && current > 0 && current <= last && last < 100000 {
+				return last
+			}
+		}
+	}
 	pattern := regexp.MustCompile(fmt.Sprintf(`(?is)/list/%s_(\d+)\.html`, regexp.QuoteMeta(category)))
 	maxPage := page
 	for _, match := range pattern.FindAllStringSubmatch(body, -1) {
@@ -232,6 +249,7 @@ func guipianPageCount(body, category string, page, count int) int {
 	return page
 }
 
+// fetchGuipianCatalogPage 获取鬼片目录页。
 func (d *Downloader) fetchGuipianCatalogPage(ctx context.Context, page int, category, query string) ([]Drama, bool, error) {
 	if page < 1 || page > 100000 {
 		return nil, false, errors.New("鬼片网目录页码无效")
@@ -261,6 +279,7 @@ func (d *Downloader) fetchGuipianCatalogPage(ctx context.Context, page int, cate
 	return items, page < pageCount, nil
 }
 
+// guipianExtractField 提取鬼片字段。
 func guipianExtractField(body, label string, re *regexp.Regexp) string {
 	if match := re.FindStringSubmatch(body); len(match) > 1 {
 		return guipianClean(match[1])
@@ -268,6 +287,7 @@ func guipianExtractField(body, label string, re *regexp.Regexp) string {
 	return ""
 }
 
+// guipianActors 返回鬼片演员。
 func guipianActors(body string) string {
 	match := reGuipianActor.FindStringSubmatch(body)
 	if len(match) < 2 {
@@ -286,7 +306,7 @@ func guipianActors(body string) string {
 }
 
 // guipianPickPlaylist 选出分集最多的一条线路。
-func guipianPickPlaylist(body string) (string, []Chapter, error) {
+func guipianPickPlaylist(body string, sourceIDs ...string) (string, []Chapter, error) {
 	tabs := reGuipianTab.FindAllStringSubmatch(body, -1)
 	if len(tabs) == 0 {
 		return "", nil, errors.New("鬼片网未找到可用播放线路")
@@ -294,6 +314,8 @@ func guipianPickPlaylist(body string) (string, []Chapter, error) {
 	site := guipianSiteBaseURL
 	bestName := ""
 	var best []Chapter
+	var allChapters []Chapter
+	playID := regexp.MustCompile(`/play/(\d+)-`)
 	seen := map[string]bool{}
 	for _, tab := range tabs {
 		anchor, name := tab[1], strings.TrimSpace(tab[2])
@@ -326,6 +348,12 @@ func guipianPickPlaylist(body string) (string, []Chapter, error) {
 			if playURL == "" || seenPath[playURL] {
 				continue
 			}
+			if len(sourceIDs) > 0 {
+				match := playID.FindStringSubmatch(playURL)
+				if len(match) != 2 || match[1] != sourceIDs[0] {
+					continue
+				}
+			}
 			seenPath[playURL] = true
 			order := index + 1
 			if num := reGuipianLeadNum.FindString(epTitle); num != "" {
@@ -346,6 +374,7 @@ func guipianPickPlaylist(body string) (string, []Chapter, error) {
 				Referer:        site + "/",
 			})
 		}
+		allChapters = append(allChapters, chapters...)
 		if len(chapters) > len(best) {
 			best, bestName = chapters, name
 		}
@@ -358,7 +387,7 @@ func guipianPickPlaylist(body string) (string, []Chapter, error) {
 		right, _ := strconv.Atoi(best[j].EpisodeString(j + 1))
 		return left < right
 	})
-	return bestName, best, nil
+	return bestName, attachChapterRoutes(best, allChapters), nil
 }
 
 // guipianPlayURL 把播放锚点归一成绝对 URL，并校验同源。
@@ -384,6 +413,7 @@ func guipianPlayURL(href string) string {
 	return parsed.String()
 }
 
+// fetchGuipianDetail 获取鬼片详情。
 func (d *Downloader) fetchGuipianDetail(ctx context.Context, sourceID string) (Drama, []Chapter, error) {
 	if !guipianNumericID(sourceID) {
 		return Drama{}, nil, errors.New("鬼片网视频 ID 无效")
@@ -451,18 +481,23 @@ func (d *Downloader) fetchGuipianDetail(ctx context.Context, sourceID string) (D
 	}
 	drama.Tags = tags
 
-	_, chapters, err := guipianPickPlaylist(body)
+	_, chapters, err := guipianPickPlaylist(body, sourceID)
 	if err != nil {
 		return Drama{}, nil, err
 	}
 	// 分集 ID 里带的是完整播放页 URL，回填 sourceID 前缀便于播放阶段校验归属。
 	for index := range chapters {
 		chapters[index].ID = providerChapterID(sourceGuipian, sourceID, chapters[index].PageURL)
+		for route := range chapters[index].Alternatives {
+			c := &chapters[index].Alternatives[route]
+			c.ID = providerChapterID(sourceGuipian, sourceID, c.PageURL)
+		}
 	}
 	drama.TotalEpisode, drama.EpisodeCount = len(chapters), len(chapters)
 	return drama, chapters, nil
 }
 
+// resolveGuipianMedia 解析鬼片媒体。
 func (d *Downloader) resolveGuipianMedia(ctx context.Context, task Task) (providerMedia, error) {
 	source, sourceID, valid := splitProviderDramaID(task.DramaID)
 	prefix := providerChapterID(sourceGuipian, sourceID, "")

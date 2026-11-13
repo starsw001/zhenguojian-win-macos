@@ -14,10 +14,14 @@ class RankingsScreen extends StatefulWidget {
     required this.repository,
     required this.store,
     required this.initialGroup,
+    this.embedded = false,
+    this.refreshToken = 0,
   });
   final AppRepository repository;
   final LocalStore store;
   final String initialGroup;
+  final bool embedded;
+  final int refreshToken;
 
   @override
   State<RankingsScreen> createState() => _RankingsScreenState();
@@ -36,18 +40,32 @@ class _RankingsScreenState extends State<RankingsScreen> {
   int _generation = 0;
   String? _error;
   String _updated = '';
+  String _sourceSignature = '';
 
   @override
   void initState() {
     super.initState();
     _scroll.addListener(_onScroll);
     widget.repository.catalogUpdates.addListener(_metadataChanged);
+    _sourceSignature = widget.store.visibleSources
+        .map((source) => source.id)
+        .join(',');
+    widget.store.addListener(_visibilityChanged);
     _initialize();
+  }
+
+  @override
+  void didUpdateWidget(covariant RankingsScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.refreshToken != oldWidget.refreshToken) {
+      _board == null ? _initialize() : _load(force: true);
+    }
   }
 
   @override
   void dispose() {
     widget.repository.catalogUpdates.removeListener(_metadataChanged);
+    widget.store.removeListener(_visibilityChanged);
     _generation++;
     _scroll.removeListener(_onScroll);
     _scroll.dispose();
@@ -55,7 +73,12 @@ class _RankingsScreenState extends State<RankingsScreen> {
   }
 
   void _onScroll() {
-    if (!mounted || !_hasMore || _loading || _more || !_scroll.hasClients) {
+    if (!mounted ||
+        !_hasMore ||
+        _loading ||
+        _more ||
+        _failedMore ||
+        !_scroll.hasClients) {
       return;
     }
     final position = _scroll.position;
@@ -69,15 +92,39 @@ class _RankingsScreenState extends State<RankingsScreen> {
     if (mounted) setState(() {});
   }
 
+  void _visibilityChanged() {
+    final signature = widget.store.visibleSources
+        .map((source) => source.id)
+        .join(',');
+    if (!mounted || signature == _sourceSignature) return;
+    _sourceSignature = signature;
+    setState(() {
+      _board = null;
+      _boards = [];
+      _items = [];
+      _hasMore = false;
+      _more = false;
+    });
+    _initialize();
+  }
+
   Future<void> _initialize() async {
     final generation = ++_generation;
     setState(() {
       _loading = true;
       _error = null;
     });
+    if (widget.store.visibleSources.isEmpty) {
+      setState(() => _loading = false);
+      return;
+    }
     try {
       final boards = (await widget.repository.rankingBoards())
-          .where((board) => widget.store.allowsSource(board.source))
+          .where(
+            (board) =>
+                widget.store.isSourceVisible(board.source) &&
+                (!widget.embedded || board.groupId == widget.initialGroup),
+          )
           .toList();
       if (!mounted || generation != _generation) return;
       setState(() {
@@ -102,7 +149,11 @@ class _RankingsScreenState extends State<RankingsScreen> {
 
   Future<void> _load({bool more = false, bool force = false}) async {
     final board = _board;
-    if (board == null || more && (_loading || _more || !_hasMore)) return;
+    if (board == null ||
+        !widget.store.isSourceVisible(board.source) ||
+        more && (_loading || _more || !_hasMore)) {
+      return;
+    }
     final generation = ++_generation;
     setState(() {
       _loading = !more;
@@ -174,12 +225,17 @@ class _RankingsScreenState extends State<RankingsScreen> {
         )
         .where(
           (item) =>
-              widget.store.allowsSource(item.drama.source) &&
+              widget.store.isSourceVisible(item.drama.source) &&
               !(item.drama.source == 'huangdou' &&
                   widget.store.hideVip &&
                   item.drama.vip),
         )
         .toList();
+    final content = SafeArea(
+      top: false,
+      child: Column(children: _content(boards, items)),
+    );
+    if (widget.embedded) return content;
     return Scaffold(
       appBar: AppBar(
         title: PopupMenuButton<SourceGroup>(
@@ -211,214 +267,206 @@ class _RankingsScreenState extends State<RankingsScreen> {
           ),
         ],
       ),
-      body: SafeArea(
-        top: false,
-        child: Column(
+      body: content,
+    );
+  }
+
+  List<Widget> _content(List<RankingBoard> boards, List<RankingItem> items) => [
+    if (boards.isNotEmpty)
+      CatalogFilters(
+        key: ValueKey('ranking-boards-${_board!.groupId}'),
+        categories: [
+          for (final board in boards) CatalogCategory(board.id, board.name),
+        ],
+        category: _board!.id,
+        onCategory: (id) =>
+            _select(boards.firstWhere((board) => board.id == id)),
+        onRetry: () => _load(force: true),
+        trailing: widget.embedded
+            ? RefreshAction(
+                loading: _loading || _more,
+                tooltip: '更新榜单',
+                onPressed: () => _load(force: true),
+              )
+            : null,
+      ),
+    if (_board != null)
+      Padding(
+        padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+        child: Align(
+          alignment: Alignment.centerLeft,
+          child: Text(
+            [_board!.description, if (_updated.isNotEmpty) _updated].join(' '),
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+        ),
+      ),
+    if (_loading && items.isNotEmpty)
+      const LinearProgressIndicator(minHeight: 2),
+    if (_error != null && items.isNotEmpty)
+      Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        child: Row(
           children: [
-            if (boards.isNotEmpty)
-              CatalogFilters(
-                key: ValueKey('ranking-boards-${_board!.groupId}'),
-                categories: [
-                  for (final board in boards)
-                    CatalogCategory(board.id, board.name),
-                ],
-                category: _board!.id,
-                onCategory: (id) =>
-                    _select(boards.firstWhere((board) => board.id == id)),
-                onRetry: () => _load(force: true),
-              ),
-            if (_board != null)
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-                child: Align(
-                  alignment: Alignment.centerLeft,
-                  child: Text(
-                    [
-                      _board!.description,
-                      if (_updated.isNotEmpty) _updated,
-                    ].join(' '),
-                    style: Theme.of(context).textTheme.bodySmall,
-                  ),
-                ),
-              ),
-            if (_loading && items.isNotEmpty)
-              const LinearProgressIndicator(minHeight: 2),
-            if (_error != null && items.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: Text(
-                        _error!,
-                        style: TextStyle(
-                          color: Theme.of(context).colorScheme.error,
-                        ),
-                      ),
-                    ),
-                    TextButton(
-                      onPressed: _loading || _more
-                          ? null
-                          : () => _load(more: _failedMore, force: true),
-                      child: const Text('重试'),
-                    ),
-                  ],
-                ),
-              ),
             Expanded(
-              child: _loading && items.isEmpty
-                  ? Center(
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          const CircularProgressIndicator(),
-                          if (_board?.source == 'hongguo') ...[
-                            const SizedBox(height: 16),
-                            const Text('正在获取榜单，数据未完整返回时会自动重试'),
-                          ],
-                        ],
-                      ),
-                    )
-                  : items.isEmpty
-                  ? StatusPanel(
-                      title: _error == null ? '暂无榜单内容' : '榜单暂时无法加载',
-                      message: _error ?? '当前站源暂无可显示的榜单。',
-                      onRetry: _board == null
-                          ? _initialize
-                          : () => _load(force: true),
-                    )
-                  : RefreshIndicator(
-                      onRefresh: () => _load(force: true),
-                      child: ListView.builder(
-                        key: ValueKey('ranking-${_board!.id}'),
-                        controller: _scroll,
-                        physics: const AlwaysScrollableScrollPhysics(),
-                        padding: const EdgeInsets.fromLTRB(12, 0, 12, 24),
-                        itemCount: items.length + 1,
-                        itemBuilder: (context, index) {
-                          if (index == items.length) {
-                            return Center(
-                              child: _more
-                                  ? const Padding(
-                                      padding: EdgeInsets.all(16),
-                                      child: CircularProgressIndicator(),
-                                    )
-                                  : _hasMore
-                                  ? OutlinedButton(
-                                      onPressed: () => _load(more: true),
-                                      child: const Text('加载更多'),
-                                    )
-                                  : const Padding(
-                                      padding: EdgeInsets.all(16),
-                                      child: Text('已显示全部榜单'),
-                                    ),
-                            );
-                          }
-                          final item = items[index];
-                          return Card(
-                            child: InkWell(
-                              key: ValueKey(
-                                'rank-${item.rank}-${item.drama.id}',
-                              ),
-                              borderRadius: BorderRadius.circular(12),
-                              onFocusChange: (focused) {
-                                if (focused) {
-                                  Scrollable.ensureVisible(
-                                    context,
-                                    alignment: .4,
-                                  );
-                                }
-                              },
-                              onTap: () => Navigator.push<void>(
-                                context,
-                                MaterialPageRoute(
-                                  builder: (_) => DetailScreen(
-                                    drama: item.drama,
-                                    repository: widget.repository,
-                                    store: widget.store,
-                                  ),
-                                ),
-                              ),
-                              child: Padding(
-                                padding: const EdgeInsets.all(12),
-                                child: Row(
-                                  children: [
-                                    SizedBox(
-                                      width: 36,
-                                      child: Text(
-                                        '${item.rank}',
-                                        style: TextStyle(
-                                          fontSize: 24,
-                                          fontWeight: FontWeight.w800,
-                                          color: item.rank <= 3
-                                              ? Theme.of(
-                                                  context,
-                                                ).colorScheme.primary
-                                              : Theme.of(
-                                                  context,
-                                                ).colorScheme.onSurfaceVariant,
-                                        ),
-                                      ),
-                                    ),
-                                    SizedBox(
-                                      width: 72,
-                                      height: 108,
-                                      child: DramaCover(
-                                        drama: item.drama,
-                                        repository: widget.repository,
-                                        radius: 8,
-                                      ),
-                                    ),
-                                    const SizedBox(width: 14),
-                                    Expanded(
-                                      child: Column(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.start,
-                                        children: [
-                                          Text(
-                                            item.drama.title,
-                                            maxLines: 2,
-                                            overflow: TextOverflow.ellipsis,
-                                            style: Theme.of(
-                                              context,
-                                            ).textTheme.titleMedium,
-                                          ),
-                                          if (item.drama.category.isNotEmpty)
-                                            Text(
-                                              item.drama.category,
-                                              maxLines: 1,
-                                              overflow: TextOverflow.ellipsis,
-                                            ),
-                                          if (item.metric.isNotEmpty)
-                                            Padding(
-                                              padding: const EdgeInsets.only(
-                                                top: 8,
-                                              ),
-                                              child: Text(
-                                                item.metric,
-                                                style: TextStyle(
-                                                  color: Theme.of(
-                                                    context,
-                                                  ).colorScheme.primary,
-                                                ),
-                                              ),
-                                            ),
-                                        ],
-                                      ),
-                                    ),
-                                    const Icon(Icons.chevron_right_rounded),
-                                  ],
-                                ),
-                              ),
-                            ),
-                          );
-                        },
-                      ),
-                    ),
+              child: Text(
+                _error!,
+                style: TextStyle(color: Theme.of(context).colorScheme.error),
+              ),
+            ),
+            TextButton(
+              onPressed: _loading || _more
+                  ? null
+                  : () => _load(more: _failedMore, force: true),
+              child: const Text('重试'),
             ),
           ],
         ),
       ),
-    );
-  }
+    Expanded(
+      child: _loading && items.isEmpty
+          ? Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const CircularProgressIndicator(),
+                  if (_board?.source == 'hongguo') ...[
+                    const SizedBox(height: 16),
+                    const Text('正在获取榜单，数据未完整返回时会自动重试'),
+                  ],
+                ],
+              ),
+            )
+          : items.isEmpty
+          ? StatusPanel(
+              title: _error == null ? '暂无榜单内容' : '榜单暂时无法加载',
+              message: _error ?? '当前站源暂无可显示的榜单。',
+              onRetry: _board == null ? _initialize : () => _load(force: true),
+            )
+          : RefreshIndicator(
+              onRefresh: () => _load(force: true),
+              child: ListView.builder(
+                key: ValueKey('ranking-${_board!.id}'),
+                controller: _scroll,
+                physics: const AlwaysScrollableScrollPhysics(),
+                padding: const EdgeInsets.fromLTRB(12, 0, 12, 24),
+                itemCount: items.length + 1,
+                itemBuilder: (context, index) {
+                  if (index == items.length) {
+                    return Center(
+                      child: _more
+                          ? const Padding(
+                              padding: EdgeInsets.all(16),
+                              child: CircularProgressIndicator(),
+                            )
+                          : _hasMore
+                          ? OutlinedButton(
+                              onPressed: () => _load(more: true),
+                              child: const Text('加载更多'),
+                            )
+                          : const Padding(
+                              padding: EdgeInsets.all(16),
+                              child: Text('已显示全部榜单'),
+                            ),
+                    );
+                  }
+                  final item = items[index];
+                  return Card(
+                    child: InkWell(
+                      key: ValueKey('rank-${item.rank}-${item.drama.id}'),
+                      borderRadius: BorderRadius.circular(12),
+                      onFocusChange: (focused) {
+                        if (focused) {
+                          Scrollable.ensureVisible(context, alignment: .4);
+                        }
+                      },
+                      onTap: () => Navigator.push<void>(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => DetailScreen(
+                            drama: item.drama,
+                            repository: widget.repository,
+                            store: widget.store,
+                          ),
+                        ),
+                      ),
+                      child: Padding(
+                        padding: const EdgeInsets.all(12),
+                        child: Row(
+                          children: [
+                            SizedBox(
+                              width: 36,
+                              child: Text(
+                                '${item.rank}',
+                                style: TextStyle(
+                                  fontSize: 24,
+                                  fontWeight: FontWeight.w800,
+                                  color: item.rank <= 3
+                                      ? Theme.of(context).colorScheme.primary
+                                      : Theme.of(
+                                          context,
+                                        ).colorScheme.onSurfaceVariant,
+                                ),
+                              ),
+                            ),
+                            SizedBox(
+                              width: 72,
+                              height: 108,
+                              child: DramaCover(
+                                drama: item.drama,
+                                repository: widget.repository,
+                                radius: 8,
+                              ),
+                            ),
+                            const SizedBox(width: 14),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    item.drama.title,
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: Theme.of(
+                                      context,
+                                    ).textTheme.titleMedium,
+                                  ),
+                                  if (item.drama.category.isNotEmpty ||
+                                      item.drama.episodes > 0)
+                                    Text(
+                                      [
+                                        if (item.drama.category.isNotEmpty)
+                                          item.drama.category,
+                                        if (item.drama.episodes > 0)
+                                          item.drama.episodeCountLabel,
+                                      ].join(' · '),
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  if (item.metric.isNotEmpty)
+                                    Padding(
+                                      padding: const EdgeInsets.only(top: 8),
+                                      child: Text(
+                                        item.metric,
+                                        style: TextStyle(
+                                          color: Theme.of(
+                                            context,
+                                          ).colorScheme.primary,
+                                        ),
+                                      ),
+                                    ),
+                                ],
+                              ),
+                            ),
+                            const Icon(Icons.chevron_right_rounded),
+                          ],
+                        ),
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
+    ),
+  ];
 }

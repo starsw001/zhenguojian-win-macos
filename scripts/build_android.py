@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 from build_mirrors import china_mirror_environment, mirrored_pub_lockfile
-from app_build import BuildVariant, add_variant_argument
+from app_build import BuildVariant, add_variant_argument, write_app_version
 
 root = Path(__file__).resolve().parents[1]
 parser = argparse.ArgumentParser()
@@ -27,6 +27,7 @@ if not flutter:
     raise SystemExit('请先将 Flutter SDK 的 bin 目录加入 PATH。')
 abi_args = [item for abi in options.abi or [] for item in ['--abi', abi]]
 with china_mirror_environment(environment, options.cn_mirrors) as env, mirrored_pub_lockfile(root, env):
+    write_app_version(root)
     if options.cn_mirrors:
         print('本次构建启用国内依赖镜像，保留官方 Maven 仓库备用。', flush=True)
     subprocess.run([sys.executable, str(root / 'scripts' / 'build_native.py'), '--platform', 'android', *abi_args, *variant.arguments],

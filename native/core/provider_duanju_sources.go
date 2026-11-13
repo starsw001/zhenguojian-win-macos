@@ -12,6 +12,7 @@ import (
 	"strings"
 )
 
+// fanguoDramaFromNode 将发果响应节点转换为统一作品模型。
 func fanguoDramaFromNode(node map[string]any, base string) Drama {
 	id := duanjuFindString(node, "duanjuId", "duanju_id", "id")
 	if id == "" {
@@ -39,6 +40,7 @@ func fanguoDramaFromNode(node map[string]any, base string) Drama {
 
 const fanguoDefaultKeyword = "都市"
 
+// fetchFanguoCatalogPage 获取发果目录页。
 func (d *Downloader) fetchFanguoCatalogPage(ctx context.Context, page int, category string) ([]Drama, bool, error) {
 	if page > 1 {
 		return nil, false, nil
@@ -82,11 +84,18 @@ func (d *Downloader) fetchFanguoCatalogPage(ctx context.Context, page int, categ
 	return items, false, nil
 }
 
+// fetchFanguoDetail 获取发果详情。
 func (d *Downloader) fetchFanguoDetail(ctx context.Context, sourceID string) (Drama, []Chapter, error) {
 	base := d.duanjuBaseURL(sourceFanguo)
 	duanjuID, source := sourceID, ""
 	if id, rest, found := strings.Cut(sourceID, "#"); found {
 		duanjuID, source = id, rest
+	} else if id, encoded, found := strings.Cut(sourceID, "~"); found {
+		decoded, decodeErr := base64.RawURLEncoding.Strict().DecodeString(encoded)
+		if decodeErr != nil || len(decoded) == 0 || len(decoded) > 128 || !webProviderNumericID.MatchString(id) {
+			return Drama{}, nil, errors.New("饭果旧剧集标识无效，请刷新目录")
+		}
+		duanjuID, source = id, string(decoded)
 	}
 	address := base + "/xifan/drama/getDuanjuInfo?" + url.Values{
 		"duanjuId": {duanjuID},
@@ -99,6 +108,12 @@ func (d *Downloader) fetchFanguoDetail(ctx context.Context, sourceID string) (Dr
 	data := duanjuFindMap(response, "result")
 	if data == nil {
 		return Drama{}, nil, errors.New("饭果未返回剧集资料")
+	}
+	if returned := duanjuFindString(data, "duanjuId", "duanju_id"); returned != "" && returned != duanjuID {
+		return Drama{}, nil, errors.New("饭果返回了其他作品的详情，已停止加载")
+	}
+	if returned := duanjuFindString(data, "source"); returned != "" && source != "" && returned != source {
+		return Drama{}, nil, errors.New("饭果返回了其他平台的详情，已停止加载")
 	}
 	drama := Drama{
 		ID:          providerDramaID(sourceFanguo, sourceID),
@@ -139,6 +154,7 @@ func (d *Downloader) fetchFanguoDetail(ctx context.Context, sourceID string) (Dr
 	return drama, chapters, nil
 }
 
+// searchFanguo 搜索发果。
 func (d *Downloader) searchFanguo(ctx context.Context, query string) ([]Drama, error) {
 	base := d.duanjuBaseURL(sourceFanguo)
 	address := base + "/xifan/search/getSearchList?" + url.Values{
@@ -150,6 +166,9 @@ func (d *Downloader) searchFanguo(ctx context.Context, query string) ([]Drama, e
 	}.Encode()
 	response, err := d.duanjuJSON(ctx, duanjuRequest{Source: sourceFanguo, Address: address, Referer: base + "/"})
 	if err != nil {
+		return nil, err
+	}
+	if err := sourceSearchEnvelope(response, sourceFanguo); err != nil {
 		return nil, err
 	}
 	var items []Drama
@@ -181,6 +200,7 @@ const (
 	xingguoToken     = "202509271001001446030204698626"
 )
 
+// xingguoQuery 构造星果请求使用的查询参数。
 func xingguoQuery(resourceID, page, size string) url.Values {
 	return url.Values{
 		"productId":  {xingguoProductID},
@@ -195,6 +215,7 @@ func xingguoQuery(resourceID, page, size string) url.Values {
 	}
 }
 
+// xingguoDramaFromNode 将星果响应节点转换为统一作品模型。
 func xingguoDramaFromNode(node map[string]any, base string) Drama {
 	id := duanjuFindString(node, "id", "bookId")
 	if id == "" {
@@ -223,6 +244,7 @@ func xingguoDramaFromNode(node map[string]any, base string) Drama {
 	}
 }
 
+// fetchXingguoCatalogPage 获取星果目录页。
 func (d *Downloader) fetchXingguoCatalogPage(ctx context.Context, page int, category string) ([]Drama, bool, error) {
 	base := d.duanjuBaseURL(sourceXingguo)
 	resourceID := strings.TrimSpace(category)
@@ -251,6 +273,7 @@ func (d *Downloader) fetchXingguoCatalogPage(ctx context.Context, page int, cate
 	return items, len(items) >= 10, nil
 }
 
+// searchXingguo 搜索星果。
 func (d *Downloader) searchXingguo(ctx context.Context, query string) ([]Drama, error) {
 	keyword := strings.TrimSpace(query)
 	if keyword == "" {
@@ -271,6 +294,9 @@ func (d *Downloader) searchXingguo(ctx context.Context, query string) ([]Drama, 
 	address := base + "/novel-api/basedata/book/searchBook?" + values.Encode()
 	response, err := d.duanjuJSON(ctx, duanjuRequest{Source: sourceXingguo, Address: address, Referer: base + "/"})
 	if err != nil {
+		return nil, err
+	}
+	if err := sourceSearchEnvelope(response, sourceXingguo); err != nil {
 		return nil, err
 	}
 	data := duanjuFindMap(response, "data")
@@ -294,6 +320,7 @@ func (d *Downloader) searchXingguo(ctx context.Context, query string) ([]Drama, 
 	return items, nil
 }
 
+// fetchXingguoDetail 获取星果详情。
 func (d *Downloader) fetchXingguoDetail(ctx context.Context, sourceID string) (Drama, []Chapter, error) {
 	base := d.duanjuBaseURL(sourceXingguo)
 	bookID, intro, _ := strings.Cut(sourceID, "@")
@@ -341,6 +368,7 @@ func (d *Downloader) fetchXingguoDetail(ctx context.Context, sourceID string) (D
 	return drama, chapters, nil
 }
 
+// xingguoEpisodeURL 返回星果分集URL。
 func xingguoEpisodeURL(node map[string]any) string {
 	if direct := duanjuFindString(node, "shortPlayUrl", "playUrl", "url"); direct != "" {
 		return direct
@@ -359,6 +387,7 @@ func xingguoEpisodeURL(node map[string]any) string {
 	return ""
 }
 
+// niuguoDramaFromNode 将牛果响应节点转换为统一作品模型。
 func niuguoDramaFromNode(node map[string]any, base string) Drama {
 	id := duanjuFindString(node, "vod_id", "vodId", "id")
 	if id == "" {
@@ -383,6 +412,7 @@ func niuguoDramaFromNode(node map[string]any, base string) Drama {
 	}
 }
 
+// fetchNiuguoCatalogPage 获取牛果目录页。
 func (d *Downloader) fetchNiuguoCatalogPage(ctx context.Context, page int, category string) ([]Drama, bool, error) {
 	base := d.duanjuBaseURL(sourceNiuguo)
 	query := url.Values{
@@ -403,6 +433,7 @@ func (d *Downloader) fetchNiuguoCatalogPage(ctx context.Context, page int, categ
 	return items, len(items) > 0, nil
 }
 
+// niuguoCatalogItems 返回牛果目录条目列表。
 func niuguoCatalogItems(response map[string]any, base string) []Drama {
 	rows := duanjuFindList(response, "list", "data")
 	if rows == nil {
@@ -421,6 +452,7 @@ func niuguoCatalogItems(response map[string]any, base string) []Drama {
 	return items
 }
 
+// fetchNiuguoDetail 获取牛果详情。
 func (d *Downloader) fetchNiuguoDetail(ctx context.Context, sourceID string) (Drama, []Chapter, error) {
 	base := d.duanjuBaseURL(sourceNiuguo)
 	response, err := d.fetchNiuguoJSON(ctx, "/detail", url.Values{"vod_id": {sourceID}})
@@ -481,6 +513,7 @@ func (d *Downloader) fetchNiuguoDetail(ctx context.Context, sourceID string) (Dr
 	return drama, chapters, nil
 }
 
+// searchNiuguo 搜索牛果。
 func (d *Downloader) searchNiuguo(ctx context.Context, query string) ([]Drama, error) {
 	base := d.duanjuBaseURL(sourceNiuguo)
 	response, err := d.fetchNiuguoJSON(ctx, "/list", url.Values{
@@ -494,6 +527,9 @@ func (d *Downloader) searchNiuguo(ctx context.Context, query string) ([]Drama, e
 		"page":    {"1"},
 	})
 	if err != nil {
+		return nil, err
+	}
+	if err := sourceSearchEnvelope(response, sourceNiuguo); err != nil {
 		return nil, err
 	}
 	return niuguoCatalogItems(response, base), nil
@@ -535,6 +571,7 @@ func (d *Downloader) resolveNiuguoMedia(ctx context.Context, task Task) (provide
 	return providerMedia{}, lastErr
 }
 
+// duanjuFormatCount 格式化短剧数量。
 func duanjuFormatCount(value int) string {
 	if value <= 0 {
 		return ""
@@ -550,6 +587,7 @@ func niuguoDecryptKey(requestURI string) []byte {
 	return padded
 }
 
+// niuguoRequestURI 请求牛果URI。
 func niuguoRequestURI(address string) string {
 	parsed, err := url.Parse(address)
 	if err != nil {
@@ -562,6 +600,7 @@ func niuguoRequestURI(address string) string {
 	return uri
 }
 
+// niuguoDecryptResponse 解密牛果响应。
 func niuguoDecryptResponse(payload []byte, key []byte) (map[string]any, error) {
 	encoded := strings.TrimSpace(string(payload))
 	if encoded == "" {
@@ -598,6 +637,7 @@ func niuguoDecryptResponse(payload []byte, key []byte) (map[string]any, error) {
 	return decoded, nil
 }
 
+// fetchNiuguoJSON 获取牛果JSON。
 func (d *Downloader) fetchNiuguoJSON(ctx context.Context, path string, query url.Values) (map[string]any, error) {
 	base := d.duanjuBaseURL(sourceNiuguo)
 	address := base + path

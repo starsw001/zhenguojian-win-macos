@@ -13,6 +13,7 @@ import (
 
 var yeguoFilterFields = []string{"theme", "setting", "background", "time", "recommend"}
 
+// validYeguoCategory 判断是否有效：椰果分类。
 func validYeguoCategory(category string) bool {
 	field, value, valid := strings.Cut(category, ":")
 	if !valid || !webProviderNumericID.MatchString(value) {
@@ -26,6 +27,7 @@ func validYeguoCategory(category string) bool {
 	return false
 }
 
+// yeguoFlag 解析椰果接口返回的布尔标志及其有效性。
 func yeguoFlag(value any) (bool, bool) {
 	if flag, valid := value.(bool); valid {
 		return flag, true
@@ -39,6 +41,7 @@ func yeguoFlag(value any) (bool, bool) {
 	return false, false
 }
 
+// firstPresent 按候选键顺序取得首个实际存在的值。
 func firstPresent(values map[string]any, keys ...string) any {
 	for _, key := range keys {
 		if value, ok := values[key]; ok && value != nil && nativeText(value) != "" {
@@ -48,6 +51,7 @@ func firstPresent(values map[string]any, keys ...string) any {
 	return nil
 }
 
+// fetchYeguoCategories 获取椰果分类列表。
 func (d *Downloader) fetchYeguoCategories(ctx context.Context) ([]nativeCategory, error) {
 	data, err := d.yeguoClient().call(ctx, "/api/home/contentOptions", nil)
 	if err != nil {
@@ -62,7 +66,7 @@ func (d *Downloader) fetchYeguoCategories(ctx context.Context) ([]nativeCategory
 	for _, field := range yeguoFilterFields {
 		filter, _ := filters[field].(map[string]any)
 		options, _ := filter["list"].([]any)
-		if len(options) > 300 {
+		if len(options) > nativeCategoryMaxEntries || len(categories)+len(options) > nativeCategoryMaxEntries {
 			return nil, errors.New("野果分类条目过多")
 		}
 		for _, option := range options {
@@ -85,6 +89,7 @@ func (d *Downloader) fetchYeguoCategories(ctx context.Context) ([]nativeCategory
 	return categories, nil
 }
 
+// yeguoDramaFromMap 将椰果响应节点转换为统一作品模型。
 func yeguoDramaFromMap(row map[string]any, site string) (Drama, error) {
 	id, title := mapString(row, "video_id", "id"), mapString(row, "title")
 	if !webProviderNumericID.MatchString(id) || title == "" {
@@ -129,6 +134,7 @@ func yeguoDramaFromMap(row map[string]any, site string) (Drama, error) {
 	return drama, nil
 }
 
+// fetchYeguoCatalogPage 获取椰果目录页。
 func (d *Downloader) fetchYeguoCatalogPage(ctx context.Context, page int, category, query string) ([]Drama, bool, error) {
 	if page < 1 || page > 1000000 || len(query) > 1024 || category != "" && !validYeguoCategory(category) {
 		return nil, false, errors.New("野果目录查询参数无效")
@@ -193,6 +199,7 @@ func (d *Downloader) fetchYeguoCatalogPage(ctx context.Context, page int, catego
 	return items, hasMore, nil
 }
 
+// yeguoEpisodePage 返回椰果分集页面。
 func yeguoEpisodePage(site, id string, episode int) string {
 	address := site + "/drama/video/" + id + "/"
 	if episode > 1 {
@@ -201,6 +208,7 @@ func yeguoEpisodePage(site, id string, episode int) string {
 	return address
 }
 
+// fetchYeguoDetail 获取椰果详情。
 func (d *Downloader) fetchYeguoDetail(ctx context.Context, sourceID string) (Drama, []Chapter, error) {
 	if !webProviderNumericID.MatchString(sourceID) {
 		return Drama{}, nil, errors.New("野果剧集 ID 无效")
@@ -249,6 +257,7 @@ func (d *Downloader) fetchYeguoDetail(ctx context.Context, sourceID string) (Dra
 	return drama, chapters, nil
 }
 
+// yeguoMediaQuality 从椰果媒体信息中取得清晰度。
 func yeguoMediaQuality(resolution string) int {
 	parts := strings.Split(strings.ToLower(resolution), "x")
 	if len(parts) != 2 {
@@ -262,6 +271,7 @@ func yeguoMediaQuality(resolution string) int {
 	return min(width, height)
 }
 
+// resolveYeguoMedia 解析椰果媒体。
 func (d *Downloader) resolveYeguoMedia(ctx context.Context, task Task) (providerMedia, error) {
 	source, sourceID, valid := splitProviderDramaID(task.DramaID)
 	prefix := providerChapterID(sourceYeguo, sourceID, "")

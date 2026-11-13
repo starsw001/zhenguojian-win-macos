@@ -24,6 +24,7 @@ type Tab struct {
 
 type legacyTabList []Tab
 
+// UnmarshalJSON 将 JSON 数据解码为旧接口Tab列表，并处理对应字段转换。
 func (tabs *legacyTabList) UnmarshalJSON(raw []byte) error {
 	raw = bytes.TrimSpace(raw)
 	if len(raw) > 0 && raw[0] == '[' {
@@ -46,6 +47,7 @@ type apiEnvelope struct {
 	Data json.RawMessage `json:"data"`
 }
 
+// apiHashEnabled 判断API摘要Enabled是否满足当前规则。
 func apiHashEnabled(raw json.RawMessage) bool {
 	if len(raw) == 0 || string(raw) == "null" {
 		return false
@@ -73,6 +75,7 @@ type detailResponse struct {
 	Chapters []Chapter `json:"chapters"`
 }
 
+// UnmarshalJSON 将 JSON 数据解码为详情响应，并处理对应字段转换。
 func (detail *detailResponse) UnmarshalJSON(body []byte) error {
 	var core struct {
 		Title    string    `json:"title"`
@@ -114,11 +117,13 @@ func (detail *detailResponse) UnmarshalJSON(body []byte) error {
 	return nil
 }
 
+// pkcs7Pad 按分组长度为数据添加 PKCS#7 填充。
 func pkcs7Pad(src []byte, blockSize int) []byte {
 	pad := blockSize - len(src)%blockSize
 	return append(src, bytes.Repeat([]byte{byte(pad)}, pad)...)
 }
 
+// pkcs7Unpad 校验并去除 PKCS#7 填充。
 func pkcs7Unpad(src []byte, blockSize int) ([]byte, error) {
 	if len(src) == 0 || len(src)%blockSize != 0 {
 		return nil, errors.New("invalid pkcs7 length")
@@ -135,6 +140,7 @@ func pkcs7Unpad(src []byte, blockSize int) ([]byte, error) {
 	return src[:len(src)-pad], nil
 }
 
+// encryptParam 加密Param。
 func encryptParam(obj any, key, iv []byte) (string, error) {
 	plain, err := json.Marshal(obj)
 	if err != nil {
@@ -150,11 +156,13 @@ func encryptParam(obj any, key, iv []byte) (string, error) {
 	return base64.StdEncoding.EncodeToString(out), nil
 }
 
+// sha256Bytes 计算输入字节的 SHA-256 摘要。
 func sha256Bytes(b []byte) []byte {
 	h := sha256.Sum256(b)
 	return h[:]
 }
 
+// decryptResponse 解密响应。
 func decryptResponse(dataStr string, interfaceKey []byte) ([]byte, error) {
 	o, err := base64.StdEncoding.DecodeString(strings.TrimSpace(dataStr))
 	if err != nil {
@@ -186,6 +194,7 @@ func decryptResponse(dataStr string, interfaceKey []byte) ([]byte, error) {
 	return pkcs7Unpad(plain, block.BlockSize())
 }
 
+// fetchAPI 按旧接口协议发送请求，并将响应解码到目标对象。
 func (d *Downloader) fetchAPI(ctx context.Context, apiPath string, params any, out any) error {
 	for attempt := 0; attempt < 2; attempt++ {
 		access, err := d.legacyCredentials(ctx)
@@ -208,10 +217,12 @@ func (d *Downloader) fetchAPI(ctx context.Context, apiPath string, params any, o
 
 type legacyAPIError struct{ code, message string }
 
+// Error 返回当前错误的可显示文本。
 func (err *legacyAPIError) Error() string {
 	return fmt.Sprintf("黄果 API 错误 %s: %s", err.code, err.message)
 }
 
+// legacyRequest 请求旧接口。
 func (d *Downloader) legacyRequest(ctx context.Context, method, apiPath string, params any, access legacyAccess) ([]byte, error) {
 	var lastErr error
 	attempts := d.cfg.Retries

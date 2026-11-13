@@ -11,6 +11,7 @@ import (
 
 var coverMetaTag = regexp.MustCompile(`(?is)<meta\b[^>]*>`)
 
+// nativeCoverAddress 取得当前作品海报的来源地址。
 func (d *Downloader) nativeCoverAddress(ctx context.Context, drama nativeDrama) (string, error) {
 	source, id, valid := splitProviderDramaID(drama.ID)
 	if !valid {
@@ -109,6 +110,7 @@ func (d *Downloader) nativeCoverAddress(ctx context.Context, drama nativeDrama) 
 	return "", errors.New("该站源暂无封面补齐接口")
 }
 
+// providerCoverAddress 按站源规则取得作品海报地址。
 func providerCoverAddress(value any, pageURL string) string {
 	switch item := value.(type) {
 	case []any:
@@ -141,6 +143,7 @@ func providerCoverAddress(value any, pageURL string) string {
 	return ""
 }
 
+// hongguoCoverAddress 取得红果作品的海报地址。
 func hongguoCoverAddress(values ...string) string {
 	for _, value := range values {
 		value = strings.TrimSpace(value)

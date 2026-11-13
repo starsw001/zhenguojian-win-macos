@@ -9,6 +9,7 @@ import (
 	"time"
 )
 
+// TestProbeSessionPaging 验证「Probe Session Paging」回归场景。
 func TestProbeSessionPaging(t *testing.T) {
 	if os.Getenv("HG_PROBE") == "" {
 		t.Skip("probe disabled")
@@ -65,6 +66,7 @@ func TestProbeSessionPaging(t *testing.T) {
 	_ = s2
 }
 
+// first 提取首个探测会话页面test。
 func first(ids []string) string {
 	if len(ids) == 0 {
 		return "-"
@@ -72,6 +74,7 @@ func first(ids []string) string {
 	return ids[0]
 }
 
+// same 判断same是否满足当前规则。
 func same(a, b []string) bool {
 	if len(a) == 0 || len(b) == 0 {
 		return false

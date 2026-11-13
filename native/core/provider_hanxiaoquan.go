@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"golang.org/x/net/html"
 )
 
 // 韩小圈（hanxiaoquan）原生站源：MacCMS 苹果 CMS 标准模板站点，韩剧/韩国电影/韩国综艺/韩国动漫。
@@ -58,6 +60,7 @@ var (
 	reHanxiaoquanLeadNum  = regexp.MustCompile(`(\d+)`)
 )
 
+// validHanxiaoquanCategory 判断是否有效：韩小圈分类。
 func validHanxiaoquanCategory(category string) bool {
 	if category == "" {
 		return true
@@ -73,6 +76,7 @@ func validHanxiaoquanCategory(category string) bool {
 	return false
 }
 
+// hanxiaoquanNumericID 判断韩小圈数字标识是否满足当前规则。
 func hanxiaoquanNumericID(value string) bool {
 	value = strings.TrimSpace(value)
 	if value == "" || len(value) > 12 {
@@ -93,6 +97,7 @@ func hanxiaoquanClean(text string) string {
 	return strings.Join(strings.Fields(text), " ")
 }
 
+// hanxiaoquanFixURL 修正韩小圈来源返回的地址格式。
 func hanxiaoquanFixURL(raw string) string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -110,10 +115,12 @@ func hanxiaoquanFixURL(raw string) string {
 	return parsed.String()
 }
 
+// fetchHanxiaoquanCategories 获取韩小圈分类列表。
 func (d *Downloader) fetchHanxiaoquanCategories() []nativeCategory {
 	return append([]nativeCategory(nil), hanxiaoquanCategories...)
 }
 
+// hanxiaoquanGet 读取韩小圈站源的页面或接口响应。
 func (d *Downloader) hanxiaoquanGet(ctx context.Context, path string) (string, error) {
 	site := d.providerBaseURL(sourceHanxiaoquan)
 	address := path
@@ -172,7 +179,73 @@ func parseHanxiaoquanCards(body string) []Drama {
 }
 
 // hanxiaoquanPageCount 从分页链接推断末页；拿不到时按当前页是否满页保守判断。
+func hanxiaoquanPagerVisible(node, container *html.Node) bool {
+	for current := node; current != nil; current = current.Parent {
+		style := strings.ToLower(strings.Join(strings.Fields(providerHTMLAttr(current, "style")), ""))
+		if strings.Contains(style, "display:none") || strings.Contains(style, "visibility:hidden") ||
+			providerHTMLAttr(current, "aria-hidden") == "true" || providerHTMLAttr(current, "aria-disabled") == "true" ||
+			providerHTMLClass(current, "disabled") || providerHTMLClass(current, "hidden") || providerHTMLClass(current, "hide") {
+			return false
+		}
+		for _, attribute := range current.Attr {
+			if attribute.Key == "hidden" {
+				return false
+			}
+		}
+		if current == container {
+			break
+		}
+	}
+	return true
+}
+
+// hanxiaoquanPageRange 从韩小圈分页信息中提取页码范围。
+func hanxiaoquanPageRange(body, category string) (int, int) {
+	document, err := html.Parse(strings.NewReader(body))
+	if err != nil {
+		return 0, 0
+	}
+	pattern := regexp.MustCompile(`^/hxq/` + regexp.QuoteMeta(category) + `(?:-([0-9]+))?\.html$`)
+	current, last := 0, 0
+	for _, pager := range providerHTMLNodes(document, func(node *html.Node) bool { return providerHTMLAttr(node, "id") == "page" }) {
+		for _, node := range providerHTMLNodes(pager, func(node *html.Node) bool { return node.Type == html.ElementNode }) {
+			if !hanxiaoquanPagerVisible(node, pager) {
+				continue
+			}
+			if providerHTMLClass(node, "page-current") {
+				if number, err := strconv.Atoi(strings.TrimSpace(providerHTMLText(node))); err == nil && number > 0 && number <= 100000 {
+					current = number
+					last = max(last, number)
+				}
+			}
+			if node.Data != "a" {
+				continue
+			}
+			address, err := url.Parse(providerHTMLAttr(node, "href"))
+			if err != nil {
+				continue
+			}
+			match := pattern.FindStringSubmatch(address.Path)
+			if len(match) != 2 {
+				continue
+			}
+			number := 1
+			if match[1] != "" {
+				number, _ = strconv.Atoi(match[1])
+			}
+			if number > 0 && number <= 100000 {
+				last = max(last, number)
+			}
+		}
+	}
+	return current, last
+}
+
+// hanxiaoquanPageCount 从韩小圈分页信息中提取页数。
 func hanxiaoquanPageCount(body, category string, page, count int) int {
+	if current, last := hanxiaoquanPageRange(body, category); current > 0 && last >= current {
+		return last
+	}
 	pattern := regexp.MustCompile(fmt.Sprintf(`(?is)/hxq/%s-(\d+)\.html`, regexp.QuoteMeta(category)))
 	maxPage := page
 	for _, match := range pattern.FindAllStringSubmatch(body, -1) {
@@ -189,6 +262,7 @@ func hanxiaoquanPageCount(body, category string, page, count int) int {
 	return page
 }
 
+// fetchHanxiaoquanCatalogPage 获取韩小圈目录页。
 func (d *Downloader) fetchHanxiaoquanCatalogPage(ctx context.Context, page int, category, query string) ([]Drama, bool, error) {
 	if page < 1 || page > 100000 {
 		return nil, false, errors.New("韩小圈目录页码无效")
@@ -209,6 +283,9 @@ func (d *Downloader) fetchHanxiaoquanCatalogPage(ctx context.Context, page int, 
 	body, err := d.hanxiaoquanGet(ctx, path)
 	if err != nil {
 		return nil, false, err
+	}
+	if current, _ := hanxiaoquanPageRange(body, category); current > 0 && current != page {
+		return nil, false, fmt.Errorf("韩小圈请求第%d页，但站点返回第%d页；已阻止重复页混入目录", page, current)
 	}
 	items := parseHanxiaoquanCards(body)
 	if len(items) == 0 {
@@ -248,6 +325,7 @@ func hanxiaoquanPickPlaylist(body string) (string, []Chapter, error) {
 	}
 	bestName := ""
 	var best []Chapter
+	var allChapters []Chapter
 	for _, lineID := range lineIDs {
 		segment := body
 		if lineID != "" {
@@ -293,6 +371,7 @@ func hanxiaoquanPickPlaylist(body string) (string, []Chapter, error) {
 				Referer:        hanxiaoquanSiteBaseURL + "/",
 			})
 		}
+		allChapters = append(allChapters, chapters...)
 		if len(chapters) > len(best) {
 			best = chapters
 			bestName = lineNames[lineID]
@@ -306,7 +385,7 @@ func hanxiaoquanPickPlaylist(body string) (string, []Chapter, error) {
 		right, _ := strconv.Atoi(best[j].EpisodeString(j + 1))
 		return left < right
 	})
-	return bestName, best, nil
+	return bestName, attachChapterRoutes(best, allChapters), nil
 }
 
 // hanxiaoquanPlayURL 归一化播放锚点并校验同源。
@@ -332,6 +411,7 @@ func hanxiaoquanPlayURL(href string) string {
 	return parsed.String()
 }
 
+// fetchHanxiaoquanDetail 获取韩小圈详情。
 func (d *Downloader) fetchHanxiaoquanDetail(ctx context.Context, sourceID string) (Drama, []Chapter, error) {
 	if !hanxiaoquanNumericID(sourceID) {
 		return Drama{}, nil, errors.New("韩小圈视频 ID 无效")
@@ -398,11 +478,16 @@ func (d *Downloader) fetchHanxiaoquanDetail(ctx context.Context, sourceID string
 	}
 	for index := range chapters {
 		chapters[index].ID = providerChapterID(sourceHanxiaoquan, sourceID, chapters[index].PageURL)
+		for route := range chapters[index].Alternatives {
+			c := &chapters[index].Alternatives[route]
+			c.ID = providerChapterID(sourceHanxiaoquan, sourceID, c.PageURL)
+		}
 	}
 	drama.TotalEpisode, drama.EpisodeCount = len(chapters), len(chapters)
 	return drama, chapters, nil
 }
 
+// resolveHanxiaoquanMedia 解析韩小圈媒体。
 func (d *Downloader) resolveHanxiaoquanMedia(ctx context.Context, task Task) (providerMedia, error) {
 	source, sourceID, valid := splitProviderDramaID(task.DramaID)
 	prefix := providerChapterID(sourceHanxiaoquan, sourceID, "")
@@ -461,5 +546,9 @@ func (d *Downloader) searchHanxiaoquan(ctx context.Context, page int, query stri
 	if err != nil {
 		return nil, false, err
 	}
-	return parseHanxiaoquanCards(body), false, nil
+	items := parseHanxiaoquanCards(body)
+	if len(items) == 0 && !sourceExplicitEmpty(body) {
+		return nil, false, errors.New("韩小圈搜索页没有可识别结果或明确空结果，不能确认无结果")
+	}
+	return items, false, nil
 }

@@ -23,6 +23,7 @@ type requestBackoff struct {
 	reason string
 }
 
+// Error 返回当前错误的可显示文本。
 func (backoff *requestBackoff) Error() string {
 	reason := ""
 	if backoff.reason != "" {
@@ -32,6 +33,7 @@ func (backoff *requestBackoff) Error() string {
 	return fmt.Sprintf("%s HTTP %d%s，请在 %d 秒后重试", backoff.host, backoff.status, reason, seconds)
 }
 
+// catalogResponseBlockReason 提取目录响应中需要停止请求的访问限制原因。
 func catalogResponseBlockReason(response *http.Response, body []byte) string {
 	if len(body) > 64*1024 {
 		body = body[:64*1024]
@@ -46,6 +48,7 @@ func catalogResponseBlockReason(response *http.Response, body []byte) string {
 	return reason
 }
 
+// catalogResponseError 根据目录响应状态构造请求错误。
 func (d *Downloader) catalogResponseError(request *http.Request, response *http.Response, body []byte) error {
 	reason := catalogResponseBlockReason(response, body)
 	if d.limiter != nil && reason != "" && response.StatusCode >= 200 && response.StatusCode < 300 {
@@ -70,8 +73,8 @@ func (d *Downloader) catalogResponseError(request *http.Request, response *http.
 		}
 		d.limiter.mu.Unlock()
 	}
-	if reason != "" {
-		return fmt.Errorf("%s HTTP %d：%s", host, response.StatusCode, reason)
+	if nativeMediaAccessStopsSwitch(response, body) || response.Header.Get("Retry-After") != "" {
+		return fmt.Errorf("%w：%s HTTP %d %s", errNativeMediaAccessStop, host, response.StatusCode, reason)
 	}
 	return fmt.Errorf("%s HTTP %d", host, response.StatusCode)
 }
@@ -91,6 +94,7 @@ type requestLimiter struct {
 
 type backgroundCatalogKey struct{}
 
+// newRequestLimiter 创建请求Limiter。
 func newRequestLimiter(concurrency int, interval time.Duration) *requestLimiter {
 	if concurrency < 1 {
 		concurrency = 1
@@ -98,11 +102,13 @@ func newRequestLimiter(concurrency int, interval time.Duration) *requestLimiter 
 	return &requestLimiter{concurrency: concurrency, interval: interval, gates: map[string]*requestGate{}, backoffs: map[string]*requestBackoff{}, backgroundBackoffs: map[string]*requestBackoff{}, changed: make(chan struct{})}
 }
 
+// notifyLocked 处理请求Limiter的notify操作，供内部持锁路径调用。
 func (limiter *requestLimiter) notifyLocked() {
 	close(limiter.changed)
 	limiter.changed = make(chan struct{})
 }
 
+// acquire 等待站源请求配额，并返回请求结束时的释放函数。
 func (limiter *requestLimiter) acquire(ctx context.Context, request *http.Request) (func(), error) {
 	background, _ := ctx.Value(backgroundCatalogKey{}).(bool)
 	host := strings.ToLower(request.URL.Hostname())
@@ -189,6 +195,7 @@ func (limiter *requestLimiter) acquire(ctx context.Context, request *http.Reques
 	}, nil
 }
 
+// observe 记录请求Limiter。
 func (limiter *requestLimiter) observe(request *http.Request, response *http.Response) {
 	if response.StatusCode != http.StatusForbidden && response.StatusCode != http.StatusTooManyRequests && !strings.EqualFold(response.Header.Get("Cf-Mitigated"), "challenge") {
 		return
@@ -196,6 +203,7 @@ func (limiter *requestLimiter) observe(request *http.Request, response *http.Res
 	limiter.observeBlock(request, response)
 }
 
+// observeBlock 记录块。
 func (limiter *requestLimiter) observeBlock(request *http.Request, response *http.Response) {
 	delay := time.Minute
 	if seconds, err := strconv.Atoi(response.Header.Get("Retry-After")); err == nil && seconds > 0 {
@@ -223,16 +231,21 @@ type limitedResponseBody struct {
 	release func()
 }
 
+// Close 关闭limited响应正文并释放其持有的资源。
 func (body *limitedResponseBody) Close() error {
 	err := body.ReadCloser.Close()
 	body.release()
 	return err
 }
 
+// doCatalogRequestWithTimeout 执行目录请求包含超时。
 func (d *Downloader) doCatalogRequestWithTimeout(request *http.Request, timeout time.Duration) (*http.Response, error) {
 	return d.doPreparedCatalogRequest(request, timeout, nil)
 }
 
+type nativeNoRedirectKey struct{}
+
+// doPreparedCatalogRequest 执行Prepared目录请求。
 func (d *Downloader) doPreparedCatalogRequest(request *http.Request, timeout time.Duration, prepare func(*http.Request)) (*http.Response, error) {
 	if background, _ := request.Context().Value(backgroundCatalogKey{}).(bool); background && (timeout <= 0 || timeout > 8*time.Second) {
 		timeout = 8 * time.Second
@@ -250,7 +263,17 @@ func (d *Downloader) doPreparedCatalogRequest(request *http.Request, timeout tim
 	if prepare != nil {
 		prepare(request)
 	}
-	response, err := d.client.Do(request)
+	if fresh, _ := request.Context().Value(providerTextNoCacheKey{}).(bool); fresh {
+		request.Header.Set("Cache-Control", "no-cache")
+		request.Header.Set("Pragma", "no-cache")
+	}
+	client := d.client
+	if blocked, _ := request.Context().Value(nativeNoRedirectKey{}).(bool); blocked {
+		guarded := *client
+		guarded.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+		client = &guarded
+	}
+	response, err := client.Do(request)
 	if err != nil {
 		cancel()
 		release()

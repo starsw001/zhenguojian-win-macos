@@ -5,10 +5,16 @@ import 'package:duanju_app/media_pipeline.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 class CoverExecutor implements MediaExecutor {
-  CoverExecutor(this.onStart, this.onEnd, {this.fail = false});
+  CoverExecutor(
+    this.onStart,
+    this.onEnd, {
+    this.fail = false,
+    this.onArguments,
+  });
   final void Function() onStart;
   final void Function() onEnd;
   final bool fail;
+  final void Function(List<String>)? onArguments;
 
   @override
   Future<void> run(
@@ -17,6 +23,7 @@ class CoverExecutor implements MediaExecutor {
     void Function(double)? progress,
   }) async {
     onStart();
+    onArguments?.call(arguments);
     try {
       await Future<void>.delayed(const Duration(milliseconds: 10));
       if (fail) throw StateError('synthetic decoder failure');
@@ -35,6 +42,40 @@ class CoverExecutor implements MediaExecutor {
 }
 
 void main() {
+  test(
+    'AVIF compatibility conversion keeps container input and original bytes',
+    () async {
+      final directory = await Directory.systemTemp.createTemp(
+        'synthetic-avif-',
+      );
+      addTearDown(() => directory.delete(recursive: true));
+      final original = File('${directory.path}/original.img');
+      await original.writeAsBytes([0, 0, 0, 24, 102, 116, 121, 112]);
+      final before = await original.readAsBytes();
+      String? decodedInput;
+      final decoder = CoverDecoder(
+        createExecutor: () =>
+            throw StateError('AVIF must use the bundled software decoder'),
+        convertAvif: (input, target) async {
+          decodedInput = input;
+          await target.writeAsBytes(
+            await File('test/fixtures/cover.jpg').readAsBytes(),
+          );
+        },
+      );
+      final output = await decoder.convert(
+        original.path,
+        () async => {'avif': true, 'heic': false, 'input': original.path},
+      );
+      expect(decodedInput, original.path);
+      expect(
+        await File(output).readAsBytes(),
+        await File('test/fixtures/cover.jpg').readAsBytes(),
+      );
+      expect(await original.readAsBytes(), before);
+    },
+  );
+
   test(
     'HEIC conversion serializes work, shares duplicates and reuses JPEG cache',
     () async {

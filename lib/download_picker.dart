@@ -28,7 +28,22 @@ class DownloadPicker extends StatefulWidget {
 }
 
 class _DownloadPickerState extends State<DownloadPicker> {
-  late final _selected = widget.detail.episodes
+  late List<Episode> _episodes = distinctEpisodeIndices(
+    widget.detail.episodes,
+  ).map((index) => widget.detail.episodes[index]).toList(growable: false);
+
+  @override
+  void didUpdateWidget(DownloadPicker oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!identical(oldWidget.detail.episodes, widget.detail.episodes)) {
+      _episodes = distinctEpisodeIndices(
+        widget.detail.episodes,
+      ).map((index) => widget.detail.episodes[index]).toList(growable: false);
+      _selected.retainAll(_episodes.map((episode) => episode.number));
+    }
+  }
+
+  late final _selected = _episodes
       .where((episode) => widget.preferences.includeVip || !episode.vip)
       .take(500)
       .map((episode) => episode.number)
@@ -64,9 +79,7 @@ class _DownloadPickerState extends State<DownloadPicker> {
   Future<void> _submit() async {
     if (_selected.isEmpty || _submitting) return;
     final selection = DownloadSelection(
-      widget.detail.episodes
-          .where((episode) => _selected.contains(episode.number))
-          .toList(),
+      _episodes.where((episode) => _selected.contains(episode.number)).toList(),
       _quality,
     );
     if (widget.onSubmit == null) {
@@ -90,7 +103,7 @@ class _DownloadPickerState extends State<DownloadPicker> {
 
   @override
   Widget build(BuildContext context) {
-    final episodes = widget.detail.episodes;
+    final episodes = _episodes;
     final hasVip = episodes.any(
       (episode) => episode.vip && _selected.contains(episode.number),
     );
@@ -188,7 +201,7 @@ class _DownloadPickerState extends State<DownloadPicker> {
                   horizontal: widget.embedded ? 10 : 18,
                 ),
                 child: Text(
-                  '保存源站原始视频；指定画质不可用时自动使用可用版本。',
+                  '按集保存独立 MP4，已有同集自动跳过；指定画质不可用时使用可用版本。',
                   style: TextStyle(
                     color: Theme.of(context).colorScheme.onSurfaceVariant,
                     fontSize: 12,

@@ -15,8 +15,18 @@ Future<void> main() async {
     responseDataCallback: (data) async {
       final report = Map<String, dynamic>.from(data ?? {})
         ..remove('screenshots');
+      final windows = report['windowsFlow'];
+      final real = report['windowsRealSources'];
+      final downloads = report['windowsRealDownloads'];
+      final name = downloads is Map
+          ? 'windows-real-downloads'
+          : real is Map
+          ? 'windows-real-sources-${real['networkMode']}'
+          : windows is Map
+          ? 'windows-${windows['allSources'] == true ? 'zhenguoshang' : 'hongguoshang'}'
+          : 'playback';
       await File(
-        '${output.path}/playback.json',
+        '${output.path}/$name.json',
       ).writeAsString(const JsonEncoder.withIndent('  ').convert(report));
     },
   );

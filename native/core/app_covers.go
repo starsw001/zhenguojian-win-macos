@@ -21,8 +21,8 @@ import (
 )
 
 const nativeCoverMaxBytes = 20 << 20
-const nativeCoverCacheBytes = 256 << 20
-const nativeCoverCacheEntries = 2000
+const nativeCoverCacheBytes = 512 << 20
+const nativeCoverCacheEntries = 4000
 const nativeCoverTTL = 30 * 24 * time.Hour
 
 type nativeCoverEntry struct {
@@ -48,13 +48,15 @@ type nativeCoverCache struct {
 	repairs     map[string]*nativeCoverRepair
 	size        int64
 	limit       int64
+	entryLimit  int
 }
 
+// newNativeCoverCache 创建原生海报缓存。
 func newNativeCoverCache(directory string, downloader *Downloader) *nativeCoverCache {
 	cache := &nativeCoverCache{
 		directory: filepath.Join(directory, "covers-v1"), downloader: downloader,
 		entries: map[string]nativeCoverEntry{}, pending: map[string]*nativeCoverCall{},
-		slots: make(chan struct{}, 4), limit: nativeCoverCacheBytes,
+		slots: make(chan struct{}, 4), limit: int64(downloader.cacheBytes("coverMiB")), entryLimit: downloader.cacheLimit("coverEntries"),
 		repairSlots: make(chan struct{}, 1), repairs: map[string]*nativeCoverRepair{},
 	}
 	files, _ := os.ReadDir(cache.directory)
@@ -82,6 +84,7 @@ func newNativeCoverCache(directory string, downloader *Downloader) *nativeCoverC
 	return cache
 }
 
+// nativeCoverReferer 返回原生海报引用页。
 func nativeCoverReferer(downloader *Downloader, source, address string) string {
 	if source == sourceCloudFront {
 		if parsed, err := url.Parse(address); err == nil && (strings.HasSuffix(strings.ToLower(parsed.Hostname()), ".zdmhyg.cn") || strings.EqualFold(parsed.Hostname(), "pic.tuafjz.cn")) {
@@ -103,10 +106,12 @@ func nativeCoverReferer(downloader *Downloader, source, address string) string {
 	return downloader.providerBaseURL(source) + "/"
 }
 
+// validNativeCoverURL 判断是否有效：原生海报URL。
 func validNativeCoverURL(address *url.URL) bool {
 	return address != nil && (address.Scheme == "https" || address.Scheme == "http") && address.Hostname() != "" && address.User == nil
 }
 
+// loadAddress 根据海报元数据加载并缓存对应图片文件。
 func (cache *nativeCoverCache) loadAddress(ctx context.Context, drama nativeDrama, force bool) (string, error) {
 	drama.Cover = repairLegacyCoverURL(drama)
 	address, err := url.Parse(drama.Cover)
@@ -159,6 +164,7 @@ func (cache *nativeCoverCache) loadAddress(ctx context.Context, drama nativeDram
 	}
 }
 
+// fetch 取得海报数据并完成当前合并请求的缓存写入与通知。
 func (cache *nativeCoverCache) fetch(key string, drama nativeDrama, referer, fallback string, call *nativeCoverCall) {
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 	defer cancel()
@@ -198,6 +204,7 @@ func (cache *nativeCoverCache) fetch(key string, drama nativeDrama, referer, fal
 	}
 }
 
+// download 按海报地址与引用页读取图片数据。
 func (cache *nativeCoverCache) download(ctx context.Context, address, referer string) ([]byte, error) {
 	request, err := http.NewRequestWithContext(context.WithValue(ctx, nativeCoverNetworkKey{}, true), http.MethodGet, address, nil)
 	if err != nil {
@@ -241,6 +248,7 @@ func (cache *nativeCoverCache) download(ctx context.Context, address, referer st
 	return data, nil
 }
 
+// nativeDecodeCover 解码原生海报。
 func nativeDecodeCover(data []byte) []byte {
 	if nativeIsCoverImage(data) {
 		return data
@@ -275,8 +283,9 @@ func nativeDecodeCover(data []byte) []byte {
 	return data
 }
 
+// nativeIsCoverImage 判断是否为原生海报图片。
 func nativeIsCoverImage(data []byte) bool {
-	if isHEICImage(data) {
+	if isHEICImage(data) || isAVIFImage(data) {
 		return true
 	}
 	if bytes.HasPrefix(data, []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}) ||
@@ -295,8 +304,13 @@ func nativeIsCoverImage(data []byte) bool {
 	return false
 }
 
+// prune 淘汰超出预算的海报缓存，同时保留当前使用项。
 func (cache *nativeCoverCache) prune(keep string) {
-	if cache.size <= cache.limit && len(cache.entries) <= nativeCoverCacheEntries {
+	entryLimit := cache.entryLimit
+	if entryLimit <= 0 {
+		entryLimit = nativeCoverCacheEntries
+	}
+	if cache.size <= cache.limit && len(cache.entries) <= entryLimit {
 		return
 	}
 	keys := make([]string, 0, len(cache.entries))
@@ -307,7 +321,7 @@ func (cache *nativeCoverCache) prune(keep string) {
 	}
 	sort.Slice(keys, func(i, j int) bool { return cache.entries[keys[i]].usedAt.Before(cache.entries[keys[j]].usedAt) })
 	for _, key := range keys {
-		if cache.size <= cache.limit && len(cache.entries) <= nativeCoverCacheEntries {
+		if cache.size <= cache.limit && len(cache.entries) <= entryLimit {
 			break
 		}
 		if err := os.Remove(filepath.Join(cache.directory, key+".img")); err == nil || errors.Is(err, os.ErrNotExist) {

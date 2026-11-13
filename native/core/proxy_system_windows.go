@@ -6,6 +6,7 @@ import (
 	"golang.org/x/sys/windows/registry"
 )
 
+// platformSystemProxy 读取当前平台为目标请求提供的系统代理。
 func platformSystemProxy() nativeSystemProxy {
 	var result nativeSystemProxy
 	key, err := registry.OpenKey(registry.CURRENT_USER, `Software\Microsoft\Windows\CurrentVersion\Internet Settings`, registry.QUERY_VALUE)

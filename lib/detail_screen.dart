@@ -18,6 +18,9 @@ import 'sources_screen.dart';
 import 'episode_browser.dart';
 import 'follow_state.dart';
 import 'hongguo_series.dart';
+import 'ordinary_catalog.dart';
+import 'ordinary_site_selector.dart';
+import 'playback_launch_screen.dart';
 
 class DetailScreen extends StatefulWidget {
   const DetailScreen({
@@ -38,6 +41,7 @@ class DetailScreen extends StatefulWidget {
 }
 
 class _DetailScreenState extends State<DetailScreen> {
+  late Drama _selected;
   DramaDetail? _detail;
   String? _error;
   bool _loading = true;
@@ -53,13 +57,14 @@ class _DetailScreenState extends State<DetailScreen> {
       ? SourceDiagnosticsButton(
           repository: widget.repository,
           store: widget.store,
-          drama: widget.drama,
+          drama: _selected,
         )
       : null;
 
   @override
   void initState() {
     super.initState();
+    _selected = widget.drama;
     _profileEpoch = widget.store.profileEpoch;
     widget.store.addListener(_onStoreChanged);
     _load();
@@ -88,21 +93,49 @@ class _DetailScreenState extends State<DetailScreen> {
     }
   }
 
-  Future<void> _load() async {
+  List<Drama> get _sites =>
+      visibleOrdinarySites(widget.drama, widget.repository, widget.store);
+  Widget? get _selector => _sites.length < 2
+      ? null
+      : OrdinarySiteSelector(
+          sites: _sites,
+          selected: _selected,
+          onSelected: (site) {
+            if (site.siteIdentity == _selected.siteIdentity) return;
+            _initialActionHandled = true;
+            _episodePage = 0;
+            unawaited(_load(site: site));
+          },
+        );
+  Widget _withSites(Widget child) {
+    final selector = _selector;
+    return selector == null
+        ? child
+        : Column(
+            children: [
+              selector,
+              Expanded(child: child),
+            ],
+          );
+  }
+
+  Future<void> _load({Drama? site}) async {
     final generation = ++_generation;
     setState(() {
+      if (site != null) _selected = site;
+      _detail = null;
       _loading = true;
       _error = null;
     });
     try {
-      final detail = await widget.repository.detail(widget.drama);
+      final detail = await loadIsolatedSiteDetail(widget.repository, _selected);
       if (!mounted ||
           generation != _generation ||
           _profileEpoch != widget.store.profileEpoch) {
         return;
       }
       final merged = widget.repository.catalogUpdates
-          .current(widget.drama)
+          .current(_selected)
           .merge(detail.drama);
       setState(() {
         _detail = DramaDetail(merged, detail.episodes, warning: detail.warning);
@@ -146,7 +179,7 @@ class _DetailScreenState extends State<DetailScreen> {
         _loading = false;
       });
       widget.repository.catalogUpdates.publish(
-        widget.repository.catalogUpdates.current(widget.drama),
+        widget.repository.catalogUpdates.current(_selected),
         retryCover: true,
       );
     }
@@ -161,7 +194,20 @@ class _DetailScreenState extends State<DetailScreen> {
           _detail == null) {
         return;
       }
-      final updated = _detail!.drama.merge(fresh);
+      final current = _detail!.drama;
+      if (SourceSite.ordinaryIds.contains(current.source) &&
+          (current.siteIdentity != fresh.siteIdentity ||
+              !ordinaryTitlesCompatible(current, fresh))) {
+        return;
+      }
+      var updated = current.merge(fresh);
+      if (SourceSite.ordinaryIds.contains(current.source)) {
+        updated = Drama.fromJson({
+          ...updated.toJson(),
+          'episodes': _detail!.episodes.length,
+          'episodeCountVerified': current.episodeCountVerified,
+        }, sites: current.sites);
+      }
       setState(() {
         _detail = DramaDetail(
           updated,
@@ -274,13 +320,22 @@ class _DetailScreenState extends State<DetailScreen> {
     }
     await Navigator.of(context).push(
       MaterialPageRoute<void>(
-        builder: (_) => PlayerScreen(
-          detail: detail,
-          initialIndex: index,
-          initialPosition: position,
-          repository: widget.repository,
-          store: widget.store,
-        ),
+        builder: (_) => SourceSite.ordinaryIds.contains(detail.drama.source)
+            ? PlaybackLaunchScreen(
+                drama: detail.drama.withSites(_sites),
+                initialDetail: detail,
+                initialEpisode: detail.episodes[index].number,
+                initialPosition: position,
+                repository: widget.repository,
+                store: widget.store,
+              )
+            : PlayerScreen(
+                detail: detail,
+                initialIndex: index,
+                initialPosition: position,
+                repository: widget.repository,
+                store: widget.store,
+              ),
       ),
     );
     if (mounted) {
@@ -290,10 +345,10 @@ class _DetailScreenState extends State<DetailScreen> {
 
   Future<void> _openSeriesDrama(Drama drama) async {
     if (_profileEpoch != widget.store.profileEpoch ||
-        drama.id == (_detail?.drama.id ?? widget.drama.id)) {
+        drama.id == (_detail?.drama.id ?? _selected.id)) {
       return;
     }
-    final anchor = _detail?.drama ?? widget.drama;
+    final anchor = _detail?.drama ?? _selected;
     if (widget.store.following(anchor.id)?.seriesSeasons[drama.id]?.read ==
         false) {
       await saveUserChange(
@@ -315,7 +370,7 @@ class _DetailScreenState extends State<DetailScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final drama = _detail?.drama ?? widget.drama;
+    final drama = _detail?.drama ?? _selected;
     final watched = widget.store.watched(drama.id);
     final episodes = _detail?.episodes ?? <Episode>[];
     final resumeIndex = resumeEpisodeIndex(episodes, watched);
@@ -342,133 +397,136 @@ class _DetailScreenState extends State<DetailScreen> {
             ),
           ],
         ),
-        body: SafeArea(
-          top: false,
-          bottom: false,
-          child: Center(
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 1200),
-              child: LayoutBuilder(
-                builder: (context, constraints) {
-                  if (!allowed) {
-                    return const StatusPanel(
-                      title: '当前用户无权访问',
-                      message: '请返回剧库后重新选择。',
-                    );
-                  }
-                  if (television || constraints.maxWidth >= 960) {
-                    return Row(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        SizedBox(
-                          width: (constraints.maxWidth * .34).clamp(
-                            250.0,
-                            360.0,
+        body: _withSites(
+          SafeArea(
+            top: false,
+            bottom: false,
+            child: Center(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 1200),
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    if (!allowed) {
+                      return const StatusPanel(
+                        title: '当前用户无权访问',
+                        message: '请返回剧库后重新选择。',
+                      );
+                    }
+                    if (television || constraints.maxWidth >= 960) {
+                      return Row(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          SizedBox(
+                            width: (constraints.maxWidth * .34).clamp(
+                              250.0,
+                              360.0,
+                            ),
+                            child: SingleChildScrollView(
+                              padding: const EdgeInsets.all(20),
+                              child: _overview(drama),
+                            ),
                           ),
-                          child: SingleChildScrollView(
-                            padding: const EdgeInsets.all(20),
+                          const VerticalDivider(width: 1),
+                          Expanded(
+                            child:
+                                _loading || _error != null || episodes.isEmpty
+                                ? _episodeStatus()
+                                : Column(
+                                    children: [
+                                      _seriesSelector(drama),
+                                      Expanded(
+                                        child: EpisodeBrowser(
+                                          episodes: episodes,
+                                          currentNumber: watched?.episode,
+                                          onSelected: (index) => _play(index),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                          ),
+                        ],
+                      );
+                    }
+                    final start = _episodePage * episodePageSize;
+                    final visible = episodes
+                        .skip(start)
+                        .take(episodePageSize)
+                        .toList();
+                    final showEpisodes = _episodesExpanded;
+                    return CustomScrollView(
+                      controller: _detailScroll,
+                      slivers: [
+                        SliverToBoxAdapter(
+                          child: Padding(
+                            padding: const EdgeInsets.fromLTRB(20, 12, 20, 8),
                             child: _overview(drama),
                           ),
                         ),
-                        const VerticalDivider(width: 1),
-                        Expanded(
-                          child: _loading || _error != null || episodes.isEmpty
-                              ? _episodeStatus()
-                              : Column(
-                                  children: [
-                                    _seriesSelector(drama),
-                                    Expanded(
-                                      child: EpisodeBrowser(
-                                        episodes: episodes,
-                                        currentNumber: watched?.episode,
-                                        onSelected: (index) => _play(index),
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                        ),
-                      ],
-                    );
-                  }
-                  final start = _episodePage * episodePageSize;
-                  final visible = episodes
-                      .skip(start)
-                      .take(episodePageSize)
-                      .toList();
-                  final showEpisodes = _episodesExpanded;
-                  return CustomScrollView(
-                    controller: _detailScroll,
-                    slivers: [
-                      SliverToBoxAdapter(
-                        child: Padding(
-                          padding: const EdgeInsets.fromLTRB(20, 12, 20, 8),
-                          child: _overview(drama),
-                        ),
-                      ),
-                      if (_loading || _error != null || episodes.isEmpty)
-                        SliverFillRemaining(
-                          hasScrollBody: false,
-                          child: _episodeStatus(),
-                        )
-                      else ...[
-                        SliverToBoxAdapter(child: _seriesSelector(drama)),
-                        SliverToBoxAdapter(
-                          child: _episodeSummary(
-                            episodes,
-                            currentNumber: watched?.episode,
-                            expanded: showEpisodes,
-                          ),
-                        ),
-                        if (showEpisodes) ...[
+                        if (_loading || _error != null || episodes.isEmpty)
+                          SliverFillRemaining(
+                            hasScrollBody: false,
+                            child: _episodeStatus(),
+                          )
+                        else ...[
+                          SliverToBoxAdapter(child: _seriesSelector(drama)),
                           SliverToBoxAdapter(
-                            child: EpisodeRangeBar(
-                              key: _episodeAnchor,
-                              episodes: episodes,
-                              page: _episodePage,
-                              title: '分组',
+                            child: _episodeSummary(
+                              episodes,
                               currentNumber: watched?.episode,
-                              onLocate: _locateEpisode,
+                              expanded: showEpisodes,
                             ),
                           ),
-                          SliverPadding(
-                            padding: const EdgeInsets.fromLTRB(20, 4, 20, 24),
-                            sliver: SliverGrid(
-                              gridDelegate:
-                                  SliverGridDelegateWithFixedCrossAxisCount(
-                                    crossAxisCount: _episodeColumns(
-                                      constraints.maxWidth,
-                                      episodes,
-                                    ),
-                                    mainAxisExtent: math.max(
-                                      54,
-                                      MediaQuery.textScalerOf(
-                                            context,
-                                          ).scale(20) +
-                                          30,
-                                    ),
-                                    crossAxisSpacing: 10,
-                                    mainAxisSpacing: 10,
-                                  ),
-                              delegate: SliverChildBuilderDelegate((
-                                context,
-                                index,
-                              ) {
-                                final episode = visible[index];
-                                return RemoteEpisodeButton(
-                                  key: ValueKey('episode-${episode.number}'),
-                                  number: episode.number,
-                                  vip: episode.vip,
-                                  current: episode.number == watched?.episode,
-                                  onPressed: () => _play(start + index),
-                                );
-                              }, childCount: visible.length),
+                          if (showEpisodes) ...[
+                            SliverToBoxAdapter(
+                              child: EpisodeRangeBar(
+                                key: _episodeAnchor,
+                                episodes: episodes,
+                                page: _episodePage,
+                                title: '分组',
+                                currentNumber: watched?.episode,
+                                onLocate: _locateEpisode,
+                              ),
                             ),
-                          ),
+                            SliverPadding(
+                              padding: const EdgeInsets.fromLTRB(20, 4, 20, 24),
+                              sliver: SliverGrid(
+                                gridDelegate:
+                                    SliverGridDelegateWithFixedCrossAxisCount(
+                                      crossAxisCount: _episodeColumns(
+                                        constraints.maxWidth,
+                                        episodes,
+                                      ),
+                                      mainAxisExtent: math.max(
+                                        54,
+                                        MediaQuery.textScalerOf(
+                                              context,
+                                            ).scale(20) +
+                                            30,
+                                      ),
+                                      crossAxisSpacing: 10,
+                                      mainAxisSpacing: 10,
+                                    ),
+                                delegate: SliverChildBuilderDelegate((
+                                  context,
+                                  index,
+                                ) {
+                                  final episode = visible[index];
+                                  return RemoteEpisodeButton(
+                                    key: ValueKey('episode-${episode.number}'),
+                                    number: episode.number,
+                                    vip: episode.vip,
+                                    current: episode.number == watched?.episode,
+                                    onPressed: () => _play(start + index),
+                                  );
+                                }, childCount: visible.length),
+                              ),
+                            ),
+                          ],
                         ],
                       ],
-                    ],
-                  );
-                },
+                    );
+                  },
+                ),
               ),
             ),
           ),
@@ -643,7 +701,7 @@ class _DetailScreenState extends State<DetailScreen> {
     final colors = Theme.of(context).colorScheme;
     final meta = [
       SourceSite.byId(drama.source).name,
-      if (drama.episodes > 0) '共 ${drama.episodes} 集',
+      if (drama.episodes > 0) drama.episodeCountLabel,
       if (drama.releaseStatus.isNotEmpty && drama.releaseStatus != 'unknown')
         drama.releaseLabel,
     ];

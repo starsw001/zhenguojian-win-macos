@@ -19,6 +19,7 @@ import (
 
 var fixtureLegacyProtocol = legacyProtocol{InterfaceKey: "fixture-interface", ParamKey: "0123456789abcdef", ParamIV: "fedcba9876543210"}
 
+// legacyFixtureDownloader 返回旧接口FixtureDownloader。
 func legacyFixtureDownloader(t *testing.T, transport sourceFixtureTransport) *Downloader {
 	t.Helper()
 	d := sourceFixtureDownloader(t, transport)
@@ -27,11 +28,13 @@ func legacyFixtureDownloader(t *testing.T, transport sourceFixtureTransport) *Do
 	return d
 }
 
+// legacyFixtureResponse 返回旧接口Fixture响应。
 func legacyFixtureResponse(request *http.Request, payload any) *http.Response {
 	body, _ := json.Marshal(map[string]any{"code": 200, "hash": false, "data": payload})
 	return sourceFixtureResponse(request, 200, string(body))
 }
 
+// legacyFixtureLogin 处理站源旧接口test的旧接口FixtureLogin操作。
 func legacyFixtureLogin(t *testing.T, request *http.Request) {
 	t.Helper()
 	var body struct {
@@ -60,6 +63,7 @@ func legacyFixtureLogin(t *testing.T, request *http.Request) {
 	}
 }
 
+// TestLegacyAnonymousCatalogAndSessionReuse 验证「Legacy Anonymous Catalog And Session Reuse」回归场景。
 func TestLegacyAnonymousCatalogAndSessionReuse(t *testing.T) {
 	var loginCalls, scriptCalls atomic.Int32
 	transport := sourceFixtureTransport(func(request *http.Request) (*http.Response, error) {
@@ -114,6 +118,7 @@ func TestLegacyAnonymousCatalogAndSessionReuse(t *testing.T) {
 	}
 }
 
+// TestLegacyLoginWaiterCancellationAndSingleFlight 验证「Legacy Login Waiter Cancellation And Single Flight」回归场景。
 func TestLegacyLoginWaiterCancellationAndSingleFlight(t *testing.T) {
 	started, release := make(chan struct{}), make(chan struct{})
 	var logins atomic.Int32
@@ -158,6 +163,7 @@ func TestLegacyLoginWaiterCancellationAndSingleFlight(t *testing.T) {
 	}
 }
 
+// TestLegacyExpiredAnonymousSessionRefreshesOnce 验证「Legacy Expired Anonymous Session Refreshes Once」回归场景。
 func TestLegacyExpiredAnonymousSessionRefreshesOnce(t *testing.T) {
 	var logins atomic.Int32
 	d := legacyFixtureDownloader(t, func(request *http.Request) (*http.Response, error) {
@@ -183,6 +189,7 @@ func TestLegacyExpiredAnonymousSessionRefreshesOnce(t *testing.T) {
 	}
 }
 
+// TestLegacyExplicitTokenIsPreservedWithoutMediaKey 验证「Legacy Explicit Token Is Preserved Without Media Key」回归场景。
 func TestLegacyExplicitTokenIsPreservedWithoutMediaKey(t *testing.T) {
 	var calls atomic.Int32
 	d := legacyFixtureDownloader(t, func(request *http.Request) (*http.Response, error) {
@@ -203,6 +210,7 @@ func TestLegacyExplicitTokenIsPreservedWithoutMediaKey(t *testing.T) {
 	}
 }
 
+// TestLegacyPublicProtocolValidation 验证「Legacy Public Protocol Validation」回归场景。
 func TestLegacyPublicProtocolValidation(t *testing.T) {
 	for _, script := range []string{"", `t(F,"parameterKey","short")`, `t(F,"interfaceKey","fixture");t(F,"parameterKey","short");t(F,"parameterIv","fedcba9876543210")`} {
 		if _, err := parseLegacyProtocol(script); err == nil {

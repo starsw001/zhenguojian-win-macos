@@ -2,17 +2,140 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:media_kit/media_kit.dart';
+import 'package:media_kit_video/media_kit_video.dart';
 
 import 'core_bridge.dart';
 import 'local_store.dart';
 import 'models.dart';
 import 'source_status.dart';
+import 'source_intervention.dart';
+import 'source_playback_check.dart';
 
 String sourceTimestamp(DateTime? value) {
   if (value == null) return '尚无记录';
   final local = value.toLocal();
   String two(int number) => number.toString().padLeft(2, '0');
   return '${local.month}/${local.day} ${two(local.hour)}:${two(local.minute)}';
+}
+
+class HuangguoMirrorsPanel extends StatelessWidget {
+  const HuangguoMirrorsPanel({super.key, required this.status});
+
+  final SourceStatus status;
+
+  @override
+  Widget build(BuildContext context) {
+    final ready = status.mirrors.where((item) => item.usable).length;
+    final unique = status.mirrors
+        .where((item) => item.duplicateOf.isEmpty)
+        .toList();
+    final aliases = <String, List<SourceMirror>>{};
+    for (final item in status.mirrors.where(
+      (item) => item.duplicateOf.isNotEmpty,
+    )) {
+      aliases.putIfAbsent(item.duplicateOf, () => []).add(item);
+    }
+    return ExpansionTile(
+      key: PageStorageKey('huangguo-mirrors-${status.source}'),
+      tilePadding: EdgeInsets.zero,
+      title: Text('备用线路（${unique.length}）'),
+      subtitle: Text(
+        '$ready 条四项通过；已合并 ${status.mirrors.length - unique.length} 个重复地址，失败原因保留',
+      ),
+      children: [
+        for (final item in unique)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 8),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _HuangguoMirrorEntry(item: item, source: status.source),
+                  if (aliases[item.origin]?.isNotEmpty == true)
+                    ExpansionTile(
+                      key: PageStorageKey(
+                        'mirror-aliases-${status.source}-${item.origin}',
+                      ),
+                      title: Text('已合并的重复地址（${aliases[item.origin]!.length}）'),
+                      children: [
+                        for (final alias in aliases[item.origin]!)
+                          Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 8),
+                            child: _HuangguoMirrorEntry(
+                              item: alias,
+                              source: status.source,
+                            ),
+                          ),
+                      ],
+                    ),
+                ],
+              ),
+            ),
+          ),
+        if (status.mirrorPublications.isNotEmpty) const Divider(),
+        for (final publication in status.mirrorPublications)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 6),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  SelectableText(
+                    publication.url,
+                    key: PageStorageKey(
+                      'mirror-publication-${status.source}-${publication.url}',
+                    ),
+                  ),
+                  Text(publication.kindLabel),
+                  Text(publication.message),
+                  Text('读取：${sourceTimestamp(publication.checkedAt)}'),
+                ],
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+class _HuangguoMirrorEntry extends StatelessWidget {
+  const _HuangguoMirrorEntry({required this.item, required this.source});
+  final SourceMirror item;
+  final String source;
+
+  @override
+  Widget build(BuildContext context) => Align(
+    alignment: Alignment.centerLeft,
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SelectableText(
+          item.origin,
+          key: PageStorageKey('mirror-address-$source-${item.origin}'),
+        ),
+        Text('${item.kindLabel} · ${item.label}'),
+        Text('加入日期：${item.addedOn} · ${item.addedFrom}'),
+        Text(
+          '海报：${item.poster ? "通过" : "未通过"} · '
+          '浏览：${item.browse ? "通过" : "未通过"} · '
+          '选集：${item.selection ? "通过" : "未通过"} · '
+          '实播：${item.playback ? "通过" : "未通过"}',
+        ),
+        if (item.posterMessage.isNotEmpty) Text(item.posterMessage),
+        if (item.effectiveOrigin.isNotEmpty &&
+            item.effectiveOrigin != item.origin)
+          Text('实际落点：${item.effectiveOrigin}'),
+        Text(item.message),
+        if (item.catalogMessage.isNotEmpty) Text('目录检查：${item.catalogMessage}'),
+        if (item.lastError.isNotEmpty && item.lastError != item.message)
+          Text('上次失败：${item.lastError}'),
+        Text('检查：${sourceTimestamp(item.checkedAt)}'),
+      ],
+    ),
+  );
 }
 
 class SourcesScreen extends StatefulWidget {
@@ -42,6 +165,17 @@ class _SourcesScreenState extends State<SourcesScreen> {
   Timer? _timer;
   bool _polling = false;
   int _ticks = 0;
+  SourcePlaybackCheck? _playbackCheck;
+  VideoController? _checkVideo;
+  String _checkingSource = '', _checkStage = '';
+  bool _interventionOpen = false;
+  final _interventionsShown = <String>{};
+  final _openedAt = DateTime.now();
+
+  List<SourceSite> get _managementSources =>
+      !widget.store.locked && widget.store.profile.admin
+      ? SourceSite.values.toList()
+      : widget.store.sources;
 
   @override
   void initState() {
@@ -63,6 +197,7 @@ class _SourcesScreenState extends State<SourcesScreen> {
   @override
   void dispose() {
     _timer?.cancel();
+    unawaited(_playbackCheck?.cancel());
     super.dispose();
   }
 
@@ -72,7 +207,7 @@ class _SourcesScreenState extends State<SourcesScreen> {
     final epoch = widget.store.profileEpoch;
     try {
       await Future.wait([
-        for (final source in widget.store.sources)
+        for (final source in _managementSources)
           (() async {
             final revision = _revisions[source.id] ?? 0;
             try {
@@ -86,6 +221,17 @@ class _SourcesScreenState extends State<SourcesScreen> {
                 _statuses[source.id] = status;
                 _errors.remove(source.id);
               });
+              if (SourceIntervention(status).required &&
+                  status.finishedAt?.isAfter(_openedAt) == true &&
+                  widget.store.allowsSource(source.id)) {
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  if (mounted) {
+                    unawaited(
+                      _handleIntervention(source, status, automatic: true),
+                    );
+                  }
+                });
+              }
             } catch (error) {
               if (mounted &&
                   epoch == widget.store.profileEpoch &&
@@ -100,7 +246,63 @@ class _SourcesScreenState extends State<SourcesScreen> {
     }
   }
 
+  Future<void> _handleIntervention(
+    SourceSite source,
+    SourceStatus status, {
+    bool automatic = false,
+  }) async {
+    final fingerprint = '${source.id}|${status.finishedAt}|${status.error}';
+    if (_interventionOpen ||
+        !mounted ||
+        ModalRoute.of(context)?.isCurrent == false ||
+        automatic && _interventionsShown.contains(fingerprint)) {
+      return;
+    }
+    _interventionOpen = true;
+    _interventionsShown.add(fingerprint);
+    try {
+      final resume = await showSourceIntervention(
+        context,
+        name: source.name,
+        status: status,
+      );
+      if (!resume || !mounted) return;
+      final operation = switch (status.operation) {
+        'more' || 'metadata' || 'vipMetadata' => status.operation,
+        'check' || 'checkCatalog' => 'checkCatalog',
+        _ => 'refreshAll',
+      };
+      await _run(source, operation);
+    } finally {
+      _interventionOpen = false;
+    }
+  }
+
   Future<void> _run(SourceSite source, String operation) async {
+    if (operation == 'visibility') {
+      final hidden = !widget.store.isSourceHidden(source.id);
+      try {
+        await widget.store.setSourceHidden(source.id, hidden);
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                hidden
+                    ? '已隐藏${source.name}，可在站源管理中取消隐藏'
+                    : '已取消隐藏${source.name}',
+              ),
+            ),
+          );
+        }
+      } catch (error) {
+        if (mounted) {
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text('未能保存隐藏设置：$error')));
+        }
+      }
+      return;
+    }
     if (_pending.contains(source.id)) return;
     final epoch = widget.store.profileEpoch;
     setState(() {
@@ -112,6 +314,29 @@ class _SourcesScreenState extends State<SourcesScreen> {
       }
     });
     try {
+      if (operation == 'check' &&
+          source.id == 'huangguoai' &&
+          widget.repository.supportsRealSourcePlayback) {
+        if (_playbackCheck != null) throw AppFailure('请等待当前站源实播检查完成');
+        MediaKit.ensureInitialized();
+        _checkingSource = source.id;
+        final checker = SourcePlaybackCheck(
+          widget.repository,
+          onVideo: (controller) {
+            if (mounted) setState(() => _checkVideo = controller);
+          },
+          onStage: (stage) {
+            if (mounted) setState(() => _checkStage = stage);
+          },
+        );
+        _playbackCheck = checker;
+        await checker.run(source);
+        if (mounted && epoch == widget.store.profileEpoch) {
+          final status = await widget.repository.sourceStatus(source.id);
+          if (mounted) setState(() => _statuses[source.id] = status);
+        }
+        return;
+      }
       final status = operation == 'cancel'
           ? await widget.repository.cancelSourceJob(source.id)
           : await widget.repository.startSourceJob(
@@ -127,6 +352,11 @@ class _SourcesScreenState extends State<SourcesScreen> {
         setState(() => _errors[source.id] = error.toString());
       }
     } finally {
+      if (_checkingSource == source.id) {
+        _playbackCheck = null;
+        _checkingSource = '';
+        _checkStage = '';
+      }
       if (mounted) setState(() => _pending.remove(source.id));
     }
   }
@@ -139,6 +369,9 @@ class _SourcesScreenState extends State<SourcesScreen> {
     final health = status.health;
     if (health != null) {
       text.writeln('${health.label} · ${sourceTimestamp(health.checkedAt)}');
+      if (health.networkMode.isNotEmpty) {
+        text.writeln('检测网络模式：${health.networkMode}');
+      }
       if (health.sample.isNotEmpty) text.writeln('检测剧集：${health.sample}');
       for (final step in health.steps) {
         text.writeln('${step.name}：${step.message}');
@@ -147,6 +380,27 @@ class _SourcesScreenState extends State<SourcesScreen> {
         );
         if (step.cfRay.isNotEmpty) text.writeln('CF Ray: ${step.cfRay}');
       }
+    }
+    if (health?.downloadCheck != null) {
+      text.writeln(
+        '${health!.downloadCheck!.name}：${health.downloadCheck!.message}',
+      );
+    }
+    for (final mirror in status.mirrors) {
+      text.writeln('${mirror.origin} · ${mirror.kindLabel} · ${mirror.label}');
+      text.writeln('加入：${mirror.addedOn} · ${mirror.addedFrom}');
+      text.writeln('海报：${mirror.posterMessage}');
+      if (mirror.duplicateOf.isNotEmpty) {
+        text.writeln('已合并到：${mirror.duplicateOf}');
+      }
+      text.writeln(mirror.message);
+      if (mirror.effectiveOrigin.isNotEmpty) {
+        text.writeln('实际落点：${mirror.effectiveOrigin}');
+      }
+      if (mirror.lastError.isNotEmpty) text.writeln('上次失败：${mirror.lastError}');
+    }
+    for (final publication in status.mirrorPublications) {
+      text.writeln('${publication.url}：${publication.message}');
     }
     if (status.error.isNotEmpty) text.writeln(status.error);
     if (status.storageError.isNotEmpty) text.writeln(status.storageError);
@@ -162,7 +416,7 @@ class _SourcesScreenState extends State<SourcesScreen> {
   Widget build(BuildContext context) => AnimatedBuilder(
     animation: widget.store,
     builder: (context, _) {
-      final sources = widget.store.sources.toList()
+      final sources = _managementSources
         ..sort((a, b) {
           final aFirst = a.id == widget.initialSource ? 0 : 1;
           final bFirst = b.id == widget.initialSource ? 0 : 1;
@@ -181,12 +435,13 @@ class _SourcesScreenState extends State<SourcesScreen> {
             child: RefreshIndicator(
               onRefresh: _refresh,
               child: ListView(
+                key: const ValueKey('source-manager-list'),
                 padding: EdgeInsets.fromLTRB(16, 16, 16, 16 + bottomInset),
                 children: [
                   const Padding(
                     padding: EdgeInsets.only(bottom: 16),
                     child: Text(
-                      '各站源可分别更新和检测。更新会查找新剧、继续加载一页历史内容，并分批补齐资料；离开此页后任务继续。',
+                      '保留全部站源及失败记录；更多操作可隐藏或取消隐藏，按当前用户保存，不删除数据或改变权限。未解锁站源仍需授权。Windows 检测会联网读取目录、搜索、选集并短暂实播，不写观看历史；离开此页停止实播。',
                     ),
                   ),
                   if (sources.isEmpty)
@@ -194,29 +449,7 @@ class _SourcesScreenState extends State<SourcesScreen> {
                       padding: EdgeInsets.all(24),
                       child: Text('当前用户没有可用站源'),
                     ),
-                  for (final group in SourceGroup.fromSources(sources))
-                    if (group.id == 'huangguo')
-                      Card(
-                        clipBehavior: Clip.antiAlias,
-                        child: ExpansionTile(
-                          key: const PageStorageKey('source-group-huangguo'),
-                          initiallyExpanded: group.sources.any(
-                            (source) => source.id == widget.initialSource,
-                          ),
-                          leading: const Icon(Icons.hub_outlined),
-                          title: const Text('黄果'),
-                          subtitle: Text(
-                            '${group.sources.length} 个入口 · ${group.sources.fold<int>(0, (count, source) => count + (_statuses[source.id]?.count ?? 0))} 部',
-                          ),
-                          childrenPadding: const EdgeInsets.all(8),
-                          children: [
-                            for (final source in group.sources)
-                              _sourceCard(source),
-                          ],
-                        ),
-                      )
-                    else
-                      for (final source in group.sources) _sourceCard(source),
+                  for (final source in sources) _sourceCard(source),
                 ],
               ),
             ),
@@ -232,8 +465,12 @@ class _SourcesScreenState extends State<SourcesScreen> {
     final busy = pending || status?.running == true;
     final seconds = status?.retrySeconds ?? 0;
     final enabled =
-        !busy && seconds == 0 && widget.repository.supportsSourceManagement;
-    final error = _errors[source.id] ?? status?.error ?? '';
+        !busy &&
+        seconds == 0 &&
+        widget.repository.supportsSourceManagement &&
+        widget.store.allowsSource(source.id) &&
+        _playbackCheck == null;
+    final error = sourceProgressText(_errors[source.id] ?? status?.error ?? '');
     final health = status?.health;
     final healthExpanded = _expandedHealth.contains(source.id);
     final colors = Theme.of(context).colorScheme;
@@ -259,11 +496,25 @@ class _SourcesScreenState extends State<SourcesScreen> {
               ],
             ),
             const SizedBox(height: 8),
+            if (widget.store.isSourceHidden(source.id))
+              const Text('已隐藏 · 前端不展示，可在更多操作中取消隐藏'),
+            if (!widget.store.allowsSource(source.id))
+              const Text('未解锁 · 站源和检测记录保留，解锁后才能更新、搜索与播放'),
             Text('最近更新：${sourceTimestamp(status?.updatedAt)}'),
             if (status != null && status.count > 0)
               Text(
                 '已加载至第 ${status.page} 页${status.hasMore ? ' · 可继续加载' : ' · 当前分页已加载完'}',
               ),
+            if (status != null && status.catalogRule.isNotEmpty)
+              Text(
+                '采集规则：${status.catalogRule} · 本次 ${status.catalogPages} 页 / ${status.catalogFetched} 部',
+              ),
+            if (status != null && status.catalogOrigin.isNotEmpty) ...[
+              SelectableText('当前目录地址：${status.catalogOrigin}'),
+              Text('最近完整同步：${sourceTimestamp(status.catalogFullAt)}'),
+            ],
+            if (source.id != 'huangguoai')
+              const Text('本地无匹配后再查线上；线路只检测连接，实播请手动确认'),
             const SizedBox(height: 12),
             Wrap(
               spacing: 10,
@@ -274,44 +525,98 @@ class _SourcesScreenState extends State<SourcesScreen> {
                   key: ValueKey('update-${source.id}'),
                   onPressed: enabled ? () => _run(source, 'update') : null,
                   icon: const Icon(Icons.sync_rounded),
-                  label: const Text('更新'),
+                  label: Text(source.id == 'huangguoai' ? '更新' : '按规则重新采集'),
                 ),
                 OutlinedButton.icon(
                   key: ValueKey('check-${source.id}'),
                   onPressed: enabled ? () => _run(source, 'check') : null,
                   icon: const Icon(Icons.network_check),
-                  label: const Text('检测连接与播放'),
+                  label: Text(
+                    source.id == 'huangguoai' &&
+                            widget.repository.supportsRealSourcePlayback
+                        ? '检测真实浏览、搜索与播放'
+                        : '检测浏览、搜索与线路连接',
+                  ),
                 ),
+                if (_checkingSource == source.id)
+                  TextButton(
+                    onPressed: () => _playbackCheck?.cancel(),
+                    child: const Text('停止实播检查'),
+                  ),
                 if (status?.running == true)
                   TextButton(
                     onPressed: pending ? null : () => _run(source, 'cancel'),
                     child: const Text('停止'),
                   ),
+                if (status != null && SourceIntervention(status).required)
+                  OutlinedButton.icon(
+                    key: ValueKey('source-human-${source.id}'),
+                    onPressed: !busy && widget.store.allowsSource(source.id)
+                        ? () => _handleIntervention(source, status)
+                        : null,
+                    icon: const Icon(Icons.verified_user_outlined),
+                    label: Text(
+                      SourceIntervention(status).rateLimited
+                          ? '限流等待与继续'
+                          : '人工验证后继续',
+                    ),
+                  ),
                 PopupMenuButton<String>(
+                  key: ValueKey('source-more-${source.id}'),
                   tooltip: '${source.name}更多操作',
-                  enabled: enabled,
+                  enabled: !widget.store.locked,
                   onSelected: (operation) => _run(source, operation),
                   itemBuilder: (_) => [
                     PopupMenuItem(
+                      value: 'visibility',
+                      enabled:
+                          widget.store.profile.admin ||
+                          widget.store.allowsSource(source.id),
+                      child: Text(
+                        widget.store.isSourceHidden(source.id) ? '取消隐藏' : '隐藏',
+                      ),
+                    ),
+                    PopupMenuItem(
                       value: 'more',
-                      enabled: status?.hasMore ?? true,
+                      enabled: enabled && (status?.hasMore ?? true),
                       child: const Text('继续加载一页'),
                     ),
-                    const PopupMenuItem(value: 'metadata', child: Text('补齐资料')),
+                    PopupMenuItem(
+                      value: 'metadata',
+                      enabled: enabled,
+                      child: const Text('补齐资料'),
+                    ),
                     if (source.id == 'huangdou')
                       PopupMenuItem(
                         value: 'vipMetadata',
-                        enabled: (status?.unknownVip ?? 0) > 0,
+                        enabled: enabled && (status?.unknownVip ?? 0) > 0,
                         child: Text('补齐 VIP 资料（${status?.unknownVip ?? 0} 部）'),
                       ),
-                    const PopupMenuItem(
+                    PopupMenuItem(
                       value: 'checkCatalog',
-                      child: Text('仅检测目录'),
+                      enabled: enabled,
+                      child: const Text('仅检测目录'),
                     ),
+                    if (source.id == 'huangguoai' ||
+                        source.id == 'huangguo-video')
+                      PopupMenuItem(
+                        value: 'checkMirrors',
+                        enabled: enabled,
+                        child: const Text('检测黄果备用地址'),
+                      ),
                   ],
                 ),
               ],
             ),
+            if (_checkingSource == source.id && _checkVideo != null)
+              SizedBox(
+                height: 180,
+                child: Video(
+                  controller: _checkVideo!,
+                  controls: NoVideoControls,
+                ),
+              ),
+            if (_checkingSource == source.id) Text(_checkStage),
             if (busy) ...[
               const SizedBox(height: 12),
               LinearProgressIndicator(
@@ -321,12 +626,12 @@ class _SourcesScreenState extends State<SourcesScreen> {
               ),
               const SizedBox(height: 8),
               Text(
-                '${status?.stage ?? '准备中'}${(status?.total ?? 0) > 0 ? ' · ${status!.completed}/${status.total}' : ''}',
+                '${status?.displayStage ?? '准备中'}${(status?.total ?? 0) > 0 ? ' · ${status!.completed}/${status.total}' : ''}',
               ),
             ] else if (status != null && status.stage.isNotEmpty) ...[
               const SizedBox(height: 12),
               Text(
-                '${status.stage}${status.added > 0 ? ' · 新增 ${status.added} 部' : ''}',
+                '上次目录任务：${status.displayStage}${status.added > 0 ? ' · 新增 ${status.added} 部' : ''}',
               ),
             ],
             if (seconds > 0)
@@ -367,8 +672,40 @@ class _SourcesScreenState extends State<SourcesScreen> {
                   ],
                 ),
               ),
+            if (status != null &&
+                (status.mirrors.isNotEmpty ||
+                    status.mirrorPublications.isNotEmpty))
+              HuangguoMirrorsPanel(status: status),
+            if (status != null && status.healthHistory.isNotEmpty)
+              ExpansionTile(
+                key: ValueKey('source-history-${source.id}'),
+                title: Text('历史检测（${status.healthHistory.length}）'),
+                subtitle: const Text('保留成功、失败及不同网络模式的结果'),
+                children: [
+                  for (final previous in status.healthHistory.reversed)
+                    ListTile(
+                      title: Text(
+                        '${sourceTimestamp(previous.checkedAt)} · ${previous.networkMode} · ${previous.label}',
+                      ),
+                      subtitle: Text(
+                        [
+                          for (final step in previous.steps)
+                            '${step.name} [${step.state}]：${step.message}',
+                          if (previous.downloadCheck != null)
+                            '${previous.downloadCheck!.name} [${previous.downloadCheck!.state}]：${previous.downloadCheck!.message}',
+                        ].join('\n'),
+                      ),
+                    ),
+                ],
+              ),
             if (health != null) ...[
               const Divider(height: 28),
+              if (health.downloadCheck != null)
+                SelectableText(
+                  '${health.downloadCheck!.name} [${health.downloadCheck!.state}]：${health.downloadCheck!.message}',
+                ),
+              if (health.networkMode.isNotEmpty)
+                Text('检测网络模式：${health.networkMode}'),
               Row(
                 children: [
                   Expanded(

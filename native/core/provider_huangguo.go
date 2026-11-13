@@ -2,8 +2,6 @@ package core
 
 import (
 	"context"
-	"crypto/sha256"
-
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -37,9 +35,38 @@ const (
 )
 
 var (
-	huangguoAIBaseURL     = "https://huangguoai.com"
-	huangguoAIBaseMirrors = []string{"https://huangguoai.com", "https://ttvoij.ediayikma.cc", "https://thu.ediayikma.cc", "https://pku.ediayikma.cc", "https://fdu.ediayikma.cc", "https://thu.agdkczeyx.cc"}
-	huangguoVideoBaseURL  = "https://huangguo.video"
+	// 2026-10-23：huangguoPendingBaseURLs 登记独立线路，只有真实海报、浏览、选集和实播全部通过者参与自动切换。
+	// 一行一个完整的 http(s) 站点根 URL，使用双引号并保留行末逗号；可继续添加几十行。
+	// 将下面的 URL 替换成实际地址，再删除该行开头的 //，不要填写账号、令牌或视频直链。
+	// 失败地址不删除，原因与新增日期保存到本机黄果备用记录，并在站源管理中显示。
+	huangguoPendingBaseURLs = []string{
+		// 2026-10-23：仅列去重后的独立线路；65个历史别名仍保存在实测快照与管理折叠记录中。
+		"https://6d2155.dmsbazvt.cc",
+		"https://8f0.dmsbazvt.cc",
+		//"https://huangguo.video",
+		//"https://huangguoai.fit",
+		// 2026-10-23：发布页，不是视频站；保留失败原因，不参与播放切换。
+		"https://hgai2.com",
+		"https://hgai3.com",
+		"https://hgai6.com",
+		"https://hgai8.com",
+		"https://hgai14.com/",
+	}
+	// 2026-10-23：失效时读取这三个发布页；只解析地址数据，不运行远程脚本或下载其推荐软件。
+	huangguoPublicationURLs = []string{
+		"https://huangguoai.pages.dev",
+		"https://huang-guo.pages.dev",
+	}
+	huangguoAIPermanentURLs = []string{
+		"https://huangguoai.com",
+		"https://huangguoai.ai",
+	}
+
+	// 黄果 AI 主地址，用于拼接 /detail/、/video/ 等页面路径；不要混填黄果视频站。
+	huangguoAIBaseURL = "https://huangguoai.com"
+
+	// 黄果视频站主地址，使用 /series/、/video/ 页面结构，与黄果 AI 分开维护。
+	huangguoVideoBaseURL = "https://huangguo.video"
 
 	huangguoAISlugs     = []string{"recommend", "newest", "ai-duanju", "ai-manju", "ai-huanlian", "ai-mogai", "ranks/hot"}
 	huangguoAITypeNames = map[string]string{"recommend": "精选推荐", "newest": "最近上新", "ai-duanju": "AI成人短剧", "ai-manju": "AI成人漫剧", "ai-huanlian": "AI换脸", "ai-mogai": "AI魔改", "ranks/hot": "排行榜"}
@@ -72,14 +99,17 @@ type providerEpisode struct {
 	HLS   string
 }
 
+// providerDramaID 组合站源与来源标识，构造统一作品 ID。
 func providerDramaID(source, sourceID string) string {
 	return source + ":" + strings.TrimSpace(sourceID)
 }
 
+// providerChapterID 组合来源字段，构造统一分集 ID。
 func providerChapterID(source, sourceID, chapterKey string) string {
 	return source + ":" + strings.TrimSpace(sourceID) + ":" + strings.TrimSpace(chapterKey)
 }
 
+// splitProviderDramaID 拆分站源作品标识。
 func splitProviderDramaID(id string) (source, sourceID string, ok bool) {
 	source, sourceID, ok = strings.Cut(strings.TrimSpace(id), ":")
 	source = canonicalProviderSource(source)
@@ -89,6 +119,7 @@ func splitProviderDramaID(id string) (source, sourceID string, ok bool) {
 	return source, strings.TrimSpace(sourceID), true
 }
 
+// isHuangguoProviderSource 判断是否为黄果站源站源。
 func isHuangguoProviderSource(source string) bool {
 	switch canonicalProviderSource(source) {
 	case sourceHuangguoAI, sourceHuangguoVideo, sourceHuangdou, sourceHongguo, sourceHuangju, sourceYeguo, sourceDSD, sourceCloudFront, sourceSorani, sourceGuipian, sourceHanxiaoquan:
@@ -98,6 +129,7 @@ func isHuangguoProviderSource(source string) bool {
 	}
 }
 
+// canonicalProviderSource 规整站源站源。
 func canonicalProviderSource(source string) string {
 	key := strings.ToLower(strings.TrimSpace(source))
 	switch key {
@@ -130,6 +162,7 @@ func canonicalProviderSource(source string) string {
 	return strings.TrimSpace(source)
 }
 
+// mergeDramaMetadata 合并作品元数据。
 func mergeDramaMetadata(base, extra Drama) Drama {
 	if base.VIP == nil && extra.VIP != nil {
 		value := *extra.VIP
@@ -207,6 +240,7 @@ func mergeDramaMetadata(base, extra Drama) Drama {
 	return base
 }
 
+// valueEmpty 判断通用字段值是否为空。
 func valueEmpty(v any) bool {
 	if v == nil {
 		return true
@@ -215,6 +249,7 @@ func valueEmpty(v any) bool {
 	return s == "" || s == "0" || s == "<nil>"
 }
 
+// GetHuangguoChapters 读取黄果分集列表。
 func (d *Downloader) GetHuangguoChapters(ctx context.Context, source, sourceID string) (string, []Chapter, error) {
 	switch canonicalProviderSource(source) {
 	case sourceHuangguoAI:
@@ -250,32 +285,52 @@ func (d *Downloader) GetHuangguoChapters(ctx context.Context, source, sourceID s
 	}
 }
 
+// fetchHuangguoAIChapters 获取黄果AI分集列表。
 func (d *Downloader) fetchHuangguoAIChapters(ctx context.Context, sourceID string) (string, []Chapter, error) {
 	drama, chapters, err := d.fetchHuangguoAIDetail(ctx, sourceID)
 	return drama.DisplayTitle(), chapters, err
 }
 
+// fetchHuangguoAIDetail 获取黄果AI详情。
 func (d *Downloader) fetchHuangguoAIDetail(ctx context.Context, sourceID string) (Drama, []Chapter, error) {
-	sourceID = strings.Trim(strings.TrimSpace(sourceID), "/")
-	sourceID = strings.TrimPrefix(sourceID, "detail/")
-	if sourceID == "" {
-		return Drama{}, nil, fmt.Errorf("empty huangguoai sourceID")
+	identity := strings.TrimSpace(sourceID)
+	base := d.providerBaseURL(sourceHuangguoAI)
+	if origin := huangguoWorkOrigin(identity); origin != "" {
+		base = origin
+	} else {
+		d.providerMu.Lock()
+		if d.huangguoCatalogOrigin != "" {
+			base = d.huangguoCatalogOrigin
+		}
+		d.providerMu.Unlock()
 	}
-	detailURL := strings.TrimRight(huangguoAIBaseURL, "/") + "/detail/" + url.PathEscape(sourceID) + "/"
-	body, err := d.fetchProviderText(ctx, detailURL, huangguoAIBaseURL+"/")
+	detailURL, owner, err := huangguoWorkAddress(base, "", identity)
 	if err != nil {
 		return Drama{}, nil, err
 	}
-	drama := huangguoDetailMetadata(body, detailURL, sourceHuangguoAI, sourceID)
-	title := drama.DisplayTitle()
-	episodes := parseHuangguoAIEpisodes(body, detailURL, sourceID)
-	if len(episodes) == 0 {
-		if media := parseAIVideoURL(body, detailURL); media != "" {
-			episodes = []providerEpisode{{Key: "1", Title: title, URL: detailURL, Index: 1, HLS: media}}
-		}
+	qualified := huangguoWorkOrigin(identity) != ""
+	if qualified {
+		identity = detailURL
 	}
+	ctx = context.WithValue(ctx, providerTextNoCacheKey{}, true)
+	body, actual, err := d.fetchHuangguoDirectText(ctx, detailURL, base+"/")
+	if err != nil {
+		return Drama{}, nil, err
+	}
+	_, actualOwner, valid := huangguoWorkRoute(actual)
+	if !valid || actualOwner != owner || huangguoWorkOrigin(actual) != huangguoWorkOrigin(detailURL) {
+		return Drama{}, nil, fmt.Errorf("详情重定向到其他域名或作品，已停止使用")
+	}
+	drama := huangguoDetailMetadata(body, actual, sourceHuangguoAI, owner)
+	drama.ID, drama.SourceID = providerDramaID(sourceHuangguoAI, identity), identity
+	episodes := parseHuangguoAIEpisodes(body, actual, owner)
 	if len(episodes) == 0 {
-		return drama, nil, nil
+		return drama, nil, fmt.Errorf("未识别当前作品的独立分集，未采用推荐链接或猜测单集")
+	}
+	for index, episode := range episodes {
+		if episode.Index != index+1 {
+			return drama, nil, fmt.Errorf("当前作品的分集列表缺少第%d集，未将后续分集重新编号或伪造链接", index+1)
+		}
 	}
 	var chapters []Chapter
 	for _, ep := range episodes {
@@ -292,17 +347,19 @@ func (d *Downloader) fetchHuangguoAIDetail(ctx context.Context, sourceID string)
 		if key == "" {
 			key = strconv.Itoa(idx)
 		}
-		chapters = append(chapters, Chapter{ID: providerChapterID(sourceHuangguoAI, sourceID, key), Source: sourceHuangguoAI, Title: chapterTitle, VideoURL: mediaURL, PageURL: ep.URL, CurrentEpisode: rawEpisode(idx)})
+		chapters = append(chapters, Chapter{ID: providerChapterID(sourceHuangguoAI, identity, key), Source: sourceHuangguoAI, Title: chapterTitle, VideoURL: mediaURL, PageURL: ep.URL, Referer: base + "/", CurrentEpisode: rawEpisode(idx)})
 	}
 	sortProviderChapters(chapters)
 	return drama, uniqueChapters(chapters), nil
 }
 
+// fetchHuangguoVideoChapters 获取黄果视频分集列表。
 func (d *Downloader) fetchHuangguoVideoChapters(ctx context.Context, sourceID string) (string, []Chapter, error) {
 	drama, chapters, err := d.fetchHuangguoVideoDetail(ctx, sourceID)
 	return drama.DisplayTitle(), chapters, err
 }
 
+// fetchHuangguoVideoDetail 获取黄果视频详情。
 func (d *Downloader) fetchHuangguoVideoDetail(ctx context.Context, sourceID string) (Drama, []Chapter, error) {
 	sourceID = strings.Trim(strings.TrimSpace(sourceID), "/")
 	if sourceID == "" {
@@ -312,8 +369,9 @@ func (d *Downloader) fetchHuangguoVideoDetail(ctx context.Context, sourceID stri
 	if !strings.HasPrefix(detailPath, "series/") && !strings.HasPrefix(detailPath, "video/") {
 		detailPath = "series/" + detailPath
 	}
-	detailURL := strings.TrimRight(huangguoVideoBaseURL, "/") + "/" + detailPath
-	body, err := d.fetchProviderText(ctx, detailURL, huangguoVideoBaseURL+"/")
+	base := d.providerBaseURL(sourceHuangguoVideo)
+	detailURL := base + "/" + detailPath
+	body, err := d.fetchProviderText(ctx, detailURL, base+"/")
 	if err != nil {
 		return Drama{}, nil, err
 	}
@@ -353,7 +411,15 @@ func (d *Downloader) fetchHuangguoVideoDetail(ctx context.Context, sourceID stri
 	return drama, uniqueChapters(chapters), nil
 }
 
+// fetchProviderText 获取站源文本。
 func (d *Downloader) fetchProviderText(ctx context.Context, rawURL, referer string) (string, error) {
+	if origin, _ := ctx.Value(huangguoProbeOriginKey{}).(string); origin != "" {
+		body, _, err := d.fetchHuangguoDirectText(ctx, rawURL, referer)
+		return body, err
+	}
+	if source := d.providerSourceForURL(rawURL); huangguoSource(source) {
+		return d.fetchHuangguoWithMirrors(ctx, source, rawURL, referer)
+	}
 	retries := d.cfg.Retries
 	if retries <= 0 {
 		retries = 3
@@ -451,34 +517,7 @@ func (d *Downloader) fetchProviderText(ctx context.Context, rawURL, referer stri
 	return "", lastErr
 }
 
-func providerURLCandidates(rawURL string) []string {
-	u, err := url.Parse(rawURL)
-	if err != nil || u.Hostname() != "huangguoai.com" {
-		return []string{rawURL}
-	}
-	out := make([]string, 0, len(huangguoAIBaseMirrors)+8)
-	seen := map[string]bool{}
-	add := func(candidate string) {
-		if candidate == "" || seen[candidate] {
-			return
-		}
-		seen[candidate] = true
-		out = append(out, candidate)
-	}
-	for i, mirror := range huangguoAIBaseMirrors {
-		if i == 1 {
-			for _, generated := range generatedHuangguoAIMirrors(rawURL, 8) {
-				add(rehostProviderURL(u, generated))
-			}
-		}
-		add(rehostProviderURL(u, mirror))
-	}
-	if len(out) == 0 {
-		return []string{rawURL}
-	}
-	return out
-}
-
+// rehostProviderURL 按给定来源重新定位站源 URL。
 func rehostProviderURL(u *url.URL, mirror string) string {
 	mu, err := url.Parse(mirror)
 	if err != nil || mu.Host == "" {
@@ -490,31 +529,7 @@ func rehostProviderURL(u *url.URL, mirror string) string {
 	return copyURL.String()
 }
 
-func generatedHuangguoAIMirrors(seed string, n int) []string {
-	if n <= 0 {
-		return nil
-	}
-	out := make([]string, 0, n)
-	seen := map[string]bool{}
-	for i := 0; len(out) < n && i < n*4; i++ {
-		sum := sha256.Sum256([]byte(fmt.Sprintf("%s:%d", seed, i)))
-		hexText := fmt.Sprintf("%x", sum[:])
-		sub := strings.TrimLeft(hexText[:6], "0123456789")
-		if len(sub) < 4 {
-			sub = hexText[6:12]
-		}
-		if len(sub) > 6 {
-			sub = sub[:6]
-		}
-		if len(sub) < 3 || seen[sub] {
-			continue
-		}
-		seen[sub] = true
-		out = append(out, "https://"+sub+".ediayikma.cc")
-	}
-	return out
-}
-
+// providerRefererForURL 确定目标地址应使用的引用页地址。
 func providerRefererForURL(candidate, fallback string) string {
 	target, err := url.Parse(candidate)
 	previous, previousErr := url.Parse(fallback)
@@ -528,10 +543,16 @@ func providerRefererForURL(candidate, fallback string) string {
 	return previous.String()
 }
 
+// parseHuangguoAIDramaCards 解析黄果AI作品卡片列表。
 func parseHuangguoAIDramaCards(rawHTML, pageURL, category string) []Drama {
 	positions := map[string]int{}
 	var out []Drama
-	add := func(dr Drama) {
+	add := func(dr Drama, reference string) {
+		var err error
+		dr, err = bindHuangguoWork(dr, pageURL, reference)
+		if err != nil {
+			return
+		}
 		if dr.ID == "" || dr.SourceID == "" {
 			return
 		}
@@ -576,7 +597,7 @@ func parseHuangguoAIDramaCards(rawHTML, pageURL, category string) []Drama {
 			dr.TotalEpisode = n
 			dr.EpisodeCount = n
 		}
-		add(dr)
+		add(dr, extractAttr(block, "href"))
 	}
 	for _, m := range reDetailHref.FindAllStringSubmatchIndex(markup, -1) {
 		if len(m) < 6 || m[4] < 0 || m[5] < 0 {
@@ -589,14 +610,15 @@ func parseHuangguoAIDramaCards(rawHTML, pageURL, category string) []Drama {
 			continue
 		}
 		cover := resolveProviderURL(pageURL, extractAttr(block, "data-src", "data-original", "src"))
-		add(Drama{ID: providerDramaID(sourceHuangguoAI, sourceID), Source: sourceHuangguoAI, SourceID: sourceID, Title: title, Name: title, Cover: cover, CoverURL: cover, CategoryName: category, ChannelName: "huangguoai.com"})
+		add(Drama{ID: providerDramaID(sourceHuangguoAI, sourceID), Source: sourceHuangguoAI, SourceID: sourceID, Title: title, Name: title, Cover: cover, CoverURL: cover, CategoryName: category, ChannelName: "huangguoai.com"}, extractAttr(block, "href"))
 	}
 	for _, dr := range parseHuangguoAIJSONLDDramas(rawHTML, category) {
-		add(dr)
+		add(dr, dr.SourceID)
 	}
 	return out
 }
 
+// splitHuangguoAICardBlocks 拆分黄果AI卡片块列表。
 func splitHuangguoAICardBlocks(raw string) []string {
 	starts := reDramaCardStart.FindAllStringIndex(raw, -1)
 	blocks := make([]string, 0, len(starts))
@@ -610,6 +632,7 @@ func splitHuangguoAICardBlocks(raw string) []string {
 	return blocks
 }
 
+// parseHuangguoAIJSONLDDramas 解析黄果AIJSONLD作品列表。
 func parseHuangguoAIJSONLDDramas(raw, category string) []Drama {
 	var out []Drama
 	seen := map[string]bool{}
@@ -631,11 +654,14 @@ func parseHuangguoAIJSONLDDramas(raw, category string) []Drama {
 			case map[string]any:
 				name, _ := x["name"].(string)
 				itemURL, _ := x["url"].(string)
-				id := detailIDFromString(itemURL)
+				_, id, _ := huangguoWorkRoute(itemURL)
 				if id != "" && !huangguoTitleNeedsRepair(name, id) && !seen[id] {
 					seen[id] = true
 					title := cleanText(name)
-					out = append(out, Drama{ID: providerDramaID(sourceHuangguoAI, id), Source: sourceHuangguoAI, SourceID: id, Title: title, Name: title, CategoryName: category, ChannelName: "huangguoai.com"})
+					item := Drama{ID: providerDramaID(sourceHuangguoAI, id), Source: sourceHuangguoAI, SourceID: id, Title: title, Name: title, CategoryName: category, ChannelName: "huangguoai.com"}
+					if bound, err := bindHuangguoWork(item, itemURL, itemURL); err == nil {
+						out = append(out, bound)
+					}
 				}
 				for _, child := range x {
 					walk(child)
@@ -647,6 +673,7 @@ func parseHuangguoAIJSONLDDramas(raw, category string) []Drama {
 	return out
 }
 
+// parseHuangguoAIJSONCards 解析黄果AIJSON卡片列表。
 func parseHuangguoAIJSONCards(raw []byte, pageURL, category string) []Drama {
 	var decoded any
 	if err := json.Unmarshal(raw, &decoded); err != nil {
@@ -678,6 +705,7 @@ func parseHuangguoAIJSONCards(raw []byte, pageURL, category string) []Drama {
 	return out
 }
 
+// dramaFromAIMap 返回作品来源AI映射。
 func dramaFromAIMap(m map[string]any, pageURL, category string) (Drama, bool) {
 	sourceID := firstNonEmpty(mapString(m, "id"), mapString(m, "videoId"), mapString(m, "video_id"), mapString(m, "vid"), mapString(m, "slug"))
 	if sourceID == "" {
@@ -690,8 +718,12 @@ func dramaFromAIMap(m map[string]any, pageURL, category string) (Drama, bool) {
 			}
 		}
 	}
-	if detailID := detailIDFromString(sourceID); detailID != "" {
-		sourceID = detailID
+	sourceReference := ""
+	if huangguoWorkOrigin(sourceID) != "" {
+		sourceReference = sourceID
+	}
+	if _, workID, valid := huangguoWorkRoute(sourceID); valid {
+		sourceID = workID
 	}
 	sourceID = cleanID(sourceID)
 	if sourceID == "" {
@@ -719,9 +751,16 @@ func dramaFromAIMap(m map[string]any, pageURL, category string) (Drama, bool) {
 	views := normalizeViews(firstNonEmpty(mapString(m, "views"), mapString(m, "view_count"), mapString(m, "viewCount"), mapString(m, "view_num"), mapString(m, "viewNum"), mapString(m, "views_text"), mapString(m, "view_count_text"), mapString(m, "play_count"), mapString(m, "playCount"), mapString(m, "play_num"), mapString(m, "playNum"), mapString(m, "play_count_text"), mapString(m, "hits"), mapString(m, "hit_count"), mapString(m, "plays"), mapString(m, "play")))
 	online := providerReleaseDate(firstNonEmpty(mapString(m, "onlineDate"), mapString(m, "online_date"), mapString(m, "online_time"), mapString(m, "onlineTime"), mapString(m, "publish_date"), mapString(m, "publishDate"), mapString(m, "publish_time"), mapString(m, "publishTime"), mapString(m, "release_date"), mapString(m, "releaseDate")))
 	tags := mapStringSlice(m, "tags", "tag", "categories", "category")
-	return Drama{ID: providerDramaID(sourceHuangguoAI, sourceID), Source: sourceHuangguoAI, SourceID: sourceID, Title: title, Name: title, Desc: desc, Intro: desc, Cover: cover, CoverURL: cover, TotalEpisode: eps, EpisodeCount: eps, CategoryName: category, ChannelName: "huangguoai.com", Remark: remark, Score: score, Views: views, OnlineDate: online, Tags: tags}, true
+	item := Drama{ID: providerDramaID(sourceHuangguoAI, sourceID), Source: sourceHuangguoAI, SourceID: sourceID, Title: title, Name: title, Desc: desc, Intro: desc, Cover: cover, CoverURL: cover, TotalEpisode: eps, EpisodeCount: eps, CategoryName: category, ChannelName: "huangguoai.com", Remark: remark, Score: score, Views: views, OnlineDate: online, Tags: tags}
+	reference := firstNonEmpty(mapString(m, "detailUrl", "detail_url", "url", "href", "link"), sourceReference)
+	if _, _, valid := huangguoWorkRoute(reference); !valid {
+		reference = ""
+	}
+	bound, err := bindHuangguoWork(item, pageURL, reference)
+	return bound, err == nil
 }
 
+// parseHuangguoVideoCards 解析黄果视频卡片列表。
 func parseHuangguoVideoCards(rawHTML, pageURL string) []Drama {
 	blocks := reVideoCard.FindAllString(rawHTML, -1)
 	if len(blocks) == 0 {
@@ -755,6 +794,7 @@ func parseHuangguoVideoCards(rawHTML, pageURL string) []Drama {
 	return out
 }
 
+// parseHuangguoAIEpisodes 解析黄果AI分集列表。
 func parseHuangguoAIEpisodes(rawHTML, pageURL, sourceID string) []providerEpisode {
 	matches := reAIEpisodeLink.FindAllStringSubmatchIndex(rawHTML, -1)
 	seen := map[string]bool{}
@@ -766,22 +806,47 @@ func parseHuangguoAIEpisodes(rawHTML, pageURL, sourceID string) []providerEpisod
 		}
 		href := rawHTML[m[2]:m[3]]
 		fullURL := resolveProviderURL(pageURL, href)
-		linkHTML := rawHTML[m[0]:m[1]]
-		title := firstNonEmpty(extractAttr(linkHTML, "title", "aria-label"), cleanText(linkHTML))
-		key := aiEpisodeKey(href, sourceID)
-		if key == "" {
-			key = fmt.Sprintf("auto-%d", len(episodes)+1)
+		_, owner, valid := huangguoWorkRoute(fullURL)
+		if !valid || owner != sourceID || huangguoWorkOrigin(fullURL) != huangguoWorkOrigin(pageURL) {
+			continue
 		}
+		parsed, parseErr := url.Parse(fullURL)
+		if parseErr != nil {
+			continue
+		}
+		linkHTML := rawHTML[m[0]:m[1]]
+		label := cleanText(linkHTML)
+		attribute := extractAttr(linkHTML, "title", "aria-label")
+		title := firstNonEmpty(attribute, label)
+		declared := huangguoEpisodeLabelIndex(label)
+		attributeIndex := huangguoEpisodeLabelIndex(attribute)
+		if declared > 0 && attributeIndex > 0 && declared != attributeIndex {
+			return nil
+		}
+		if declared == 0 {
+			declared = attributeIndex
+		}
+		idx := 0
+		pathNumber := huangguoEpisodePath.FindStringSubmatch(parsed.Path)
+		if len(pathNumber) == 3 {
+			idx, _ = strconv.Atoi(pathNumber[2])
+		} else if strings.TrimRight(parsed.Path, "/") == "/video/"+sourceID && declared == 1 {
+			idx = 1
+		} else {
+			continue
+		}
+		if idx < 1 || idx > 100000 || declared > 0 && declared != idx {
+			return nil
+		}
+		key := "ep-" + strconv.Itoa(idx)
 		if seen[key] || seen[fullURL] {
 			continue
 		}
 		seen[key] = true
 		seen[fullURL] = true
-		idx := episodeIndex(title, 0)
-		if idx <= 0 {
-			idx = len(episodes) + 1
+		if usedIndex[idx] {
+			return nil
 		}
-		idx = nextUnusedEpisodeIndex(idx, usedIndex)
 		usedIndex[idx] = true
 		episodes = append(episodes, providerEpisode{Key: key, Title: title, URL: fullURL, Index: idx})
 	}
@@ -789,6 +854,7 @@ func parseHuangguoAIEpisodes(rawHTML, pageURL, sourceID string) []providerEpisod
 	return episodes
 }
 
+// parseHuangguoVideoEpisodes 解析黄果视频分集列表。
 func parseHuangguoVideoEpisodes(rawHTML, pageURL string) []providerEpisode {
 	blocks := reVideoCard.FindAllString(rawHTML, -1)
 	if len(blocks) == 0 {
@@ -834,6 +900,7 @@ func parseHuangguoVideoEpisodes(rawHTML, pageURL string) []providerEpisode {
 	return result
 }
 
+// parseAIVideoURL 解析AI视频URL。
 func parseAIVideoURL(rawHTML, pageURL string) string {
 	if media := parseAIVideoInitialData(rawHTML, pageURL); media != "" {
 		return media
@@ -853,6 +920,7 @@ func parseAIVideoURL(rawHTML, pageURL string) string {
 	return ""
 }
 
+// parseAIVideoInitialData 解析AI视频初始数据。
 func parseAIVideoInitialData(rawHTML, pageURL string) string {
 	re := regexp.MustCompile(`(?is)<script\b[^>]*id=["']videoInitialData["'][^>]*>(.*?)</script>`)
 	m := re.FindStringSubmatch(rawHTML)
@@ -892,6 +960,7 @@ func parseAIVideoInitialData(rawHTML, pageURL string) string {
 	return ""
 }
 
+// parseDataHLS 解析HLS 数据。
 func parseDataHLS(rawHTML, pageURL string) string {
 	if m := reDataHLS.FindStringSubmatch(rawHTML); len(m) > 1 {
 		return normalizeProviderMediaURL(pageURL, m[1])
@@ -899,6 +968,7 @@ func parseDataHLS(rawHTML, pageURL string) string {
 	return ""
 }
 
+// sortProviderEpisodes 排序站源分集列表。
 func sortProviderEpisodes(episodes []providerEpisode) {
 	sort.SliceStable(episodes, func(i, j int) bool {
 		if episodes[i].Index != episodes[j].Index {
@@ -908,6 +978,7 @@ func sortProviderEpisodes(episodes []providerEpisode) {
 	})
 }
 
+// sortProviderChapters 排序站源分集列表。
 func sortProviderChapters(chapters []Chapter) {
 	sort.SliceStable(chapters, func(i, j int) bool {
 		ei := chapterEpisodeNumber(chapters[i], i+1)
@@ -919,6 +990,7 @@ func sortProviderChapters(chapters []Chapter) {
 	})
 }
 
+// chapterEpisodeNumber 从分集记录中读取用于排序和匹配的集号。
 func chapterEpisodeNumber(ch Chapter, fallback int) int {
 	if len(ch.CurrentEpisode) > 0 && string(ch.CurrentEpisode) != "null" {
 		var n int
@@ -933,6 +1005,7 @@ func chapterEpisodeNumber(ch Chapter, fallback int) int {
 	return episodeIndex(ch.Title, fallback)
 }
 
+// rawEpisode 将集号编码为分集记录使用的 JSON 值。
 func rawEpisode(n int) json.RawMessage {
 	if n <= 0 {
 		n = 1
@@ -940,6 +1013,7 @@ func rawEpisode(n int) json.RawMessage {
 	return json.RawMessage(strconv.Itoa(n))
 }
 
+// episodeIndex 从文本中取得分集索引，无法识别时使用回退值。
 func episodeIndex(s string, fallback int) int {
 	if m := reEpisodeNumber.FindStringSubmatch(s); len(m) > 1 {
 		for _, group := range m[1:] {
@@ -954,6 +1028,7 @@ func episodeIndex(s string, fallback int) int {
 	return fallback
 }
 
+// nextUnusedEpisodeIndex 查找尚未使用的后续分集索引。
 func nextUnusedEpisodeIndex(preferred int, used map[int]bool) int {
 	if preferred <= 0 {
 		preferred = 1
@@ -968,6 +1043,7 @@ func nextUnusedEpisodeIndex(preferred int, used map[int]bool) int {
 	}
 }
 
+// aiEpisodeKey 根据来源地址与标识构造分集匹配键。
 func aiEpisodeKey(href, sourceID string) string {
 	u, err := url.Parse(html.UnescapeString(href))
 	path := href
@@ -985,6 +1061,7 @@ func aiEpisodeKey(href, sourceID string) string {
 	return cleanID(strings.Join(parts, "-"))
 }
 
+// huangguoVideoSourceID 从视频来源地址中提取来源标识。
 func huangguoVideoSourceID(href string) (path, sourceID string) {
 	u, err := url.Parse(html.UnescapeString(href))
 	if err == nil {
@@ -1005,6 +1082,7 @@ func huangguoVideoSourceID(href string) (path, sourceID string) {
 	return "", ""
 }
 
+// detailIDFromString 从文本或链接中识别详情标识。
 func detailIDFromString(s string) string {
 	u, err := url.Parse(html.UnescapeString(s))
 	path := s
@@ -1020,6 +1098,7 @@ func detailIDFromString(s string) string {
 	return ""
 }
 
+// cleanID 清理并规整来源标识。
 func cleanID(s string) string {
 	s = strings.TrimSpace(html.UnescapeString(s))
 	s = strings.Trim(s, " /\t\r\n\"'")
@@ -1029,6 +1108,7 @@ func cleanID(s string) string {
 	return s
 }
 
+// extractPageTitle 提取页面标题。
 func extractPageTitle(rawHTML string) string {
 	if m := reH1Tag.FindStringSubmatch(rawHTML); len(m) > 1 {
 		if t := cleanText(m[1]); t != "" {
@@ -1046,6 +1126,7 @@ func extractPageTitle(rawHTML string) string {
 	return ""
 }
 
+// extractDescription 提取简介。
 func extractDescription(rawHTML string) string {
 	if m := reDescMeta.FindStringSubmatch(rawHTML); len(m) > 1 {
 		return strings.TrimSpace(html.UnescapeString(m[1]))
@@ -1053,6 +1134,7 @@ func extractDescription(rawHTML string) string {
 	return ""
 }
 
+// extractAttr 提取属性。
 func extractAttr(block string, names ...string) string {
 	for _, name := range names {
 		re := regexp.MustCompile(`(?is)\b` + regexp.QuoteMeta(name) + `\s*=\s*["']([^"']+)["']`)
@@ -1063,6 +1145,7 @@ func extractAttr(block string, names ...string) string {
 	return ""
 }
 
+// extractByClassText 提取By类名对应文本。
 func extractByClassText(raw, className string) string {
 	if className == "" {
 		return ""
@@ -1074,6 +1157,7 @@ func extractByClassText(raw, className string) string {
 	return ""
 }
 
+// firstMatchText 提取首个Match文本。
 func firstMatchText(re *regexp.Regexp, raw string) string {
 	if m := re.FindString(raw); m != "" {
 		return strings.TrimSpace(m)
@@ -1081,6 +1165,7 @@ func firstMatchText(re *regexp.Regexp, raw string) string {
 	return ""
 }
 
+// extractTags 提取标签列表。
 func extractTags(raw string) []string {
 	re := regexp.MustCompile(`(?is)<[^>]+class=["'][^"']*hg-tag[^"']*["'][^>]*>(.*?)</[^>]+>`)
 	seen := map[string]bool{}
@@ -1098,6 +1183,7 @@ func extractTags(raw string) []string {
 	return out
 }
 
+// normalizeDate 规整日期。
 func normalizeDate(s string) string {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -1119,6 +1205,7 @@ func normalizeDate(s string) string {
 	return ""
 }
 
+// normalizeViews 规整观看数。
 func normalizeViews(s string) string {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -1137,6 +1224,7 @@ func normalizeViews(s string) string {
 	return strconv.FormatFloat(n, 'f', -1, 64) + "次播放"
 }
 
+// cleanText 清理标记、转义和多余空白，取得显示用文本。
 func cleanText(s string) string {
 	s = regexp.MustCompile(`(?is)<script\b.*?</script>`).ReplaceAllString(s, " ")
 	s = regexp.MustCompile(`(?is)<style\b.*?</style>`).ReplaceAllString(s, " ")
@@ -1146,6 +1234,7 @@ func cleanText(s string) string {
 	return strings.TrimSpace(s)
 }
 
+// contextBlock 按指定范围和边距截取文本上下文。
 func contextBlock(s string, start, end, padding int) string {
 	if start < 0 {
 		start = 0
@@ -1164,6 +1253,7 @@ func contextBlock(s string, start, end, padding int) string {
 	return s[lo:hi]
 }
 
+// firstNonEmpty 按参数顺序返回第一个非空字符串。
 func firstNonEmpty(values ...string) string {
 	for _, v := range values {
 		if strings.TrimSpace(v) != "" {
@@ -1173,6 +1263,7 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
+// nonEmptyStrings 提取并保留非空字符串。
 func nonEmptyStrings(values ...string) []string {
 	var out []string
 	for _, v := range values {
@@ -1183,6 +1274,7 @@ func nonEmptyStrings(values ...string) []string {
 	return out
 }
 
+// mapString 按候选字段顺序从映射中取得字符串。
 func mapString(m map[string]any, keys ...string) string {
 	for _, key := range keys {
 		if v, ok := m[key]; ok {
@@ -1208,6 +1300,7 @@ func mapString(m map[string]any, keys ...string) string {
 	return ""
 }
 
+// mapStringSlice 从映射字段中提取字符串列表。
 func mapStringSlice(m map[string]any, keys ...string) []string {
 	seen := map[string]bool{}
 	var out []string
@@ -1245,6 +1338,7 @@ func mapStringSlice(m map[string]any, keys ...string) []string {
 	return out
 }
 
+// extractClosestAttr 提取Closest属性。
 func extractClosestAttr(raw string, start, end int, names ...string) string {
 	if start < 0 {
 		start = 0
@@ -1266,6 +1360,7 @@ func extractClosestAttr(raw string, start, end int, names ...string) string {
 	return ""
 }
 
+// titleNearDetail 从详情链接周围提取可用的作品标题。
 func titleNearDetail(raw, sourceID string) string {
 	needle := "/detail/" + sourceID
 	idx := strings.Index(raw, needle)
@@ -1275,6 +1370,7 @@ func titleNearDetail(raw, sourceID string) string {
 	return extractByClassText(contextBlock(raw, idx, idx+len(needle), 1800), "hg-drama-card__title")
 }
 
+// resolveProviderURL 解析站源URL。
 func resolveProviderURL(baseURL, ref string) string {
 	ref = strings.TrimSpace(html.UnescapeString(ref))
 	if ref == "" {
@@ -1305,6 +1401,7 @@ func resolveProviderURL(baseURL, ref string) string {
 	return resolved.String()
 }
 
+// normalizeProviderMediaURL 规整站源媒体URL。
 func normalizeProviderMediaURL(pageURL, raw string) string {
 	raw = strings.TrimSpace(html.UnescapeString(raw))
 	raw = strings.Trim(raw, " \t\r\n\"'")
@@ -1322,6 +1419,7 @@ func normalizeProviderMediaURL(pageURL, raw string) string {
 	return resolved
 }
 
+// isProviderHTTPMediaURL 判断地址是否为允许的 HTTP 或 HTTPS 媒体 URL。
 func isProviderHTTPMediaURL(raw string) bool {
 	parsed, err := url.Parse(strings.TrimSpace(raw))
 	return err == nil && (parsed.Scheme == "http" || parsed.Scheme == "https") && parsed.Hostname() != "" && parsed.User == nil

@@ -16,6 +16,7 @@ import (
 	"time"
 )
 
+// providerParityDownloader 返回站源ParityDownloader。
 func providerParityDownloader(t *testing.T, transport func(*http.Request, url.Values) (*http.Response, error)) *Downloader {
 	t.Helper()
 	d := sourceFixtureDownloader(t, func(request *http.Request) (*http.Response, error) {
@@ -39,6 +40,7 @@ func providerParityDownloader(t *testing.T, transport func(*http.Request, url.Va
 	return d
 }
 
+// TestProviderSourceParsesTextFixturesAndRejectsMismatchedIdentity 验证「Provider Source Parses Text Fixtures And Rejects Mismatched Identity」回归场景。
 func TestProviderSourceParsesTextFixturesAndRejectsMismatchedIdentity(t *testing.T) {
 	huangjuRow := map[string]any{"id": "77", "slug": "sample-drama", "title": "剧果样本", "totalEpisodes": json.Number("2"), "status": "completed", "categories": []any{"热播"}, "year": "2026", "score": "8.5"}
 	drama, err := huangjuDramaFromMap(huangjuRow, huangjuBaseURL, "")
@@ -66,6 +68,7 @@ func TestProviderSourceParsesTextFixturesAndRejectsMismatchedIdentity(t *testing
 	}
 }
 
+// TestYeguoDomainAliasesAndDefaultEndpoint 验证「Yeguo Domain Aliases And Default Endpoint」回归场景。
 func TestYeguoDomainAliasesAndDefaultEndpoint(t *testing.T) {
 	if got := (&Downloader{cfg: defaultConfig()}).providerBaseURL(sourceYeguo); got != "https://analyze.buxefaex.cc" {
 		t.Fatalf("unexpected default yeguo endpoint: %s", got)
@@ -94,6 +97,7 @@ func TestYeguoDomainAliasesAndDefaultEndpoint(t *testing.T) {
 	}
 }
 
+// TestYeguoTransitPageDiscoversCurrentLineDomains 验证「Yeguo Transit Page Discovers Current Line Domains」回归场景。
 func TestYeguoTransitPageDiscoversCurrentLineDomains(t *testing.T) {
 	encoded := base64.StdEncoding.EncodeToString([]byte(`<script>
 words = 'abandon,ability,analyze,chair'.split(',');
@@ -113,6 +117,7 @@ backupLine = Vx.map(Vx.range(1, 3), function () { return location.protocol + '//
 	}
 }
 
+// TestProviderCatalogUpdateDefaultsToFiftyYeguoPostPages 验证「Provider Catalog Update Defaults To Fifty Yeguo Post Pages」回归场景。
 func TestProviderCatalogUpdateDefaultsToFiftyYeguoPostPages(t *testing.T) {
 	var pages []string
 	engine := sourceFixtureEngine(t, func(request *http.Request) (*http.Response, error) {
@@ -144,6 +149,7 @@ func TestProviderCatalogUpdateDefaultsToFiftyYeguoPostPages(t *testing.T) {
 	}
 }
 
+// TestProviderCatalogUpdateKeepsSinglePageContinuation 验证「Provider Catalog Update Keeps Single Page Continuation」回归场景。
 func TestProviderCatalogUpdateKeepsSinglePageContinuation(t *testing.T) {
 	var pages []string
 	engine := sourceFixtureEngine(t, func(request *http.Request) (*http.Response, error) {
@@ -173,6 +179,7 @@ func TestProviderCatalogUpdateKeepsSinglePageContinuation(t *testing.T) {
 	}
 }
 
+// TestYeguoCatalogAcceptsSourcePageSize 验证「Yeguo Catalog Accepts Source Page Size」回归场景。
 func TestYeguoCatalogAcceptsSourcePageSize(t *testing.T) {
 	d := providerParityDownloader(t, func(request *http.Request, form url.Values) (*http.Response, error) {
 		if request.URL.Host != "api.yeguo.test" || request.URL.Path != "/api/theater/exploreList" {
@@ -196,6 +203,7 @@ func TestYeguoCatalogAcceptsSourcePageSize(t *testing.T) {
 	}
 }
 
+// TestProviderCatalogRankingsUseProviderCatalogPages 验证「Provider Catalog Rankings Use Provider Catalog Pages」回归场景。
 func TestProviderCatalogRankingsUseProviderCatalogPages(t *testing.T) {
 	t.Run("huangju", func(t *testing.T) {
 		d := providerParityDownloader(t, func(request *http.Request, form url.Values) (*http.Response, error) {
@@ -247,6 +255,7 @@ func TestProviderCatalogRankingsUseProviderCatalogPages(t *testing.T) {
 	})
 }
 
+// TestHuangjuPlaybackUsesSignedCookiesForPlaylist 验证「Huangju Playback Uses Signed Cookies For Playlist」回归场景。
 func TestHuangjuPlaybackUsesSignedCookiesForPlaylist(t *testing.T) {
 	var sawCookie bool
 	var mediaURL string
@@ -283,6 +292,7 @@ func TestHuangjuPlaybackUsesSignedCookiesForPlaylist(t *testing.T) {
 	}
 }
 
+// TestProviderMediaCredentialsLimitOriginAndUseBackupAddresses 验证「Provider Media Credentials Limit Origin And Use Backup Addresses」回归场景。
 func TestProviderMediaCredentialsLimitOriginAndUseBackupAddresses(t *testing.T) {
 	primary := "https://media.example.test/main.mp4"
 	backup := "https://media.example.test/backup.mp4"
@@ -306,6 +316,7 @@ func TestProviderMediaCredentialsLimitOriginAndUseBackupAddresses(t *testing.T) 
 	}
 }
 
+// TestProviderDSDMediaSigningPropagatesFetchErrors 验证「Provider DSD Media Signing Propagates Fetch Errors」回归场景。
 func TestProviderDSDMediaSigningPropagatesFetchErrors(t *testing.T) {
 	d := rankingTestDownloader(t, func(request *http.Request) (*http.Response, error) {
 		if !strings.Contains(request.URL.Path, "/addons/vplayer/") {

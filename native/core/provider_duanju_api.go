@@ -26,11 +26,13 @@ var duanjuMaoguoCharMap = map[rune]rune{
 	'w': 'w', 'x': 'n', 'y': 'L', 'z': 'e',
 }
 
+// duanjuMD5 返回短剧MD5。
 func duanjuMD5(value string) string {
 	sum := md5.Sum([]byte(value))
 	return hex.EncodeToString(sum[:])
 }
 
+// duanjuMaoguoHeaders 返回短剧猫果请求头。
 func duanjuMaoguoHeaders() (map[string]string, error) {
 	session := strconv.FormatInt(time.Now().UnixMilli(), 10)
 	payload := map[string]any{
@@ -93,6 +95,7 @@ func duanjuMaoguoHeaders() (map[string]string, error) {
 	}, nil
 }
 
+// maoguoDramaFromNode 将猫果响应节点转换为统一作品模型。
 func maoguoDramaFromNode(node map[string]any, base string) Drama {
 	id := duanjuFindString(node, "playlet_id", "playletId", "id")
 	if id == "" {
@@ -117,40 +120,59 @@ func maoguoDramaFromNode(node map[string]any, base string) Drama {
 	}
 }
 
-func (d *Downloader) fetchMaoguoCatalogPage(ctx context.Context, page int, category string) ([]Drama, bool, error) {
+// maoguoCatalogResponse 返回猫果目录响应。
+func (d *Downloader) maoguoCatalogResponse(ctx context.Context, page int, category string) (map[string]any, error) {
 	headers, err := duanjuMaoguoHeaders()
 	if err != nil {
-		return nil, false, err
+		return nil, err
 	}
 	base := d.duanjuBaseURL(sourceMaoguo)
 	tagID := strings.TrimSpace(category)
-	if tagID != "" && !webProviderNumericID.MatchString(tagID) {
-		tagID = "0"
-	}
 	if tagID == "" {
 		tagID = "0"
 	}
-	if page > 1 {
-		signature := duanjuMD5("next_id=" + strconv.Itoa(page) + "operation=1playlet_privacy=1tag_id=" + tagID + duanjuMaoguoKey)
-		address := fmt.Sprintf("%s/api/v1/playlet/index?tag_id=%s&playlet_privacy=1&operation=1&next_id=%d&sign=%s",
-			base, tagID, page, signature)
-		response, err := d.duanjuJSON(ctx, duanjuRequest{Source: sourceMaoguo, Address: address, Referer: base + "/", Headers: headers})
-		if err != nil {
-			return nil, false, err
-		}
-		items := maoguoCatalogItems(duanjuFindMap(response, "data"), base)
-		return items, len(items) > 0, nil
+	if tagID != "0" && tagID != "-1" && !webProviderNumericID.MatchString(tagID) {
+		return nil, errors.New("猫果标签无效")
 	}
-	signature := duanjuMD5("operation=1playlet_privacy=1tag_id=" + tagID + duanjuMaoguoKey)
-	address := fmt.Sprintf("%s/api/v1/playlet/index?tag_id=%s&playlet_privacy=1&operation=1&sign=%s", base, tagID, signature)
-	response, err := d.duanjuJSON(ctx, duanjuRequest{Source: sourceMaoguo, Address: address, Referer: base + "/", Headers: headers})
+	values := url.Values{"tag_id": {tagID}, "playlet_privacy": {"1"}, "operation": {"1"}}
+	signed := "operation=1playlet_privacy=1tag_id=" + tagID
+	if page > 1 {
+		values.Set("next_id", strconv.Itoa(page))
+		signed = "next_id=" + strconv.Itoa(page) + signed
+	}
+	values.Set("sign", duanjuMD5(signed+duanjuMaoguoKey))
+	return d.duanjuJSON(ctx, duanjuRequest{Source: sourceMaoguo, Address: base + "/api/v1/playlet/index?" + values.Encode(), Referer: base + "/", Headers: headers})
+}
+
+// fetchMaoguoCatalogPage 获取猫果目录页。
+func (d *Downloader) fetchMaoguoCatalogPage(ctx context.Context, page int, category string) ([]Drama, bool, error) {
+	response, err := d.maoguoCatalogResponse(ctx, page, category)
 	if err != nil {
 		return nil, false, err
 	}
-	items := maoguoCatalogItems(duanjuFindMap(response, "data"), base)
-	return items, false, nil
+	data := duanjuFindMap(response, "data")
+	if _, ok := data["list"].([]any); !ok {
+		return nil, false, errors.New("猫果目录缺少有效列表，未将空对象当作末页")
+	}
+	items := maoguoCatalogItems(data, d.duanjuBaseURL(sourceMaoguo))
+	raw := duanjuFindString(data, "next_id")
+	next := 0
+	if raw != "" {
+		next, err = strconv.Atoi(raw)
+		if err != nil {
+			return items, false, errors.New("猫果续页游标格式已变化，请更新线路规则")
+		}
+	}
+	if next > 0 && next <= page {
+		return items, false, errors.New("猫果续页游标没有前进，旧目录保留")
+	}
+	if cursor, _ := ctx.Value(sourceCatalogCursorKey{}).(*sourceCatalogCursor); cursor != nil {
+		cursor.Next = next
+	}
+	return items, next > 0 && len(items) > 0, nil
 }
 
+// maoguoCatalogItems 返回猫果目录条目列表。
 func maoguoCatalogItems(data map[string]any, base string) []Drama {
 	var items []Drama
 	for _, entry := range duanjuFindList(data, "list") {
@@ -165,6 +187,7 @@ func maoguoCatalogItems(data map[string]any, base string) []Drama {
 	return items
 }
 
+// fetchMaoguoDetail 获取猫果详情。
 func (d *Downloader) fetchMaoguoDetail(ctx context.Context, sourceID string) (Drama, []Chapter, error) {
 	headers, err := duanjuMaoguoHeaders()
 	if err != nil {
@@ -180,6 +203,9 @@ func (d *Downloader) fetchMaoguoDetail(ctx context.Context, sourceID string) (Dr
 	data := duanjuFindMap(response, "data")
 	if data == nil {
 		return Drama{}, nil, errors.New("猫果未返回剧集资料")
+	}
+	if returned := duanjuFindString(data, "playlet_id", "id"); returned != "" && returned != sourceID {
+		return Drama{}, nil, errors.New("猫果返回了其他作品的详情，已停止加载")
 	}
 	drama := maoguoDramaFromNode(data, base)
 	drama.ID, drama.Source, drama.SourceID = providerDramaID(sourceMaoguo, sourceID), sourceMaoguo, sourceID
@@ -209,6 +235,7 @@ func (d *Downloader) fetchMaoguoDetail(ctx context.Context, sourceID string) (Dr
 
 const duanjuMaoguoTrackID = "ec1280db127955061754851657967"
 
+// searchMaoguo 搜索猫果。
 func (d *Downloader) searchMaoguo(ctx context.Context, query string) ([]Drama, error) {
 	headers, err := duanjuMaoguoHeaders()
 	if err != nil {
@@ -221,37 +248,40 @@ func (d *Downloader) searchMaoguo(ctx context.Context, query string) ([]Drama, e
 	if err != nil {
 		return nil, err
 	}
+	if err := sourceSearchEnvelope(response, sourceMaoguo); err != nil {
+		return nil, err
+	}
 	return maoguoCatalogItems(duanjuFindMap(response, "data"), base), nil
 }
 
+// fetchMaoguoCategories 获取猫果分类列表。
 func (d *Downloader) fetchMaoguoCategories(ctx context.Context) ([]nativeCategory, error) {
-	headers, err := duanjuMaoguoHeaders()
+	response, err := d.maoguoCatalogResponse(ctx, 1, "0")
 	if err != nil {
 		return nil, err
 	}
-	base := d.duanjuBaseURL(sourceMaoguo)
-	signature := duanjuMD5("operation=1" + duanjuMaoguoKey)
-	address := fmt.Sprintf("%s/api/v1/playlet/tag/list?operation=1&sign=%s", base, signature)
-	response, err := d.duanjuJSON(ctx, duanjuRequest{Source: sourceMaoguo, Address: address, Referer: base + "/", Headers: headers})
-	if err != nil {
-		return nil, err
-	}
+	data := duanjuFindMap(response, "data")
 	var categories []nativeCategory
-	for _, entry := range duanjuFindList(duanjuFindMap(response, "data"), "list") {
+	seen := map[string]bool{}
+	for _, entry := range duanjuFindList(data, "tag_items") {
 		node, ok := entry.(map[string]any)
 		if !ok {
 			continue
 		}
-		id := duanjuFindString(node, "tag_id", "id")
-		name := duanjuFindString(node, "tag_name", "name", "title")
-		if id == "" || name == "" || len([]rune(name)) > 24 {
+		id, name := duanjuFindString(node, "tag_id", "id"), duanjuFindString(node, "tag_name", "name", "title")
+		if !validNativeCategory(sourceMaoguo, id) || id == "" || name == "" || seen[id] {
 			continue
 		}
+		seen[id] = true
 		categories = append(categories, nativeCategory{ID: id, Name: name})
+	}
+	if len(categories) == 0 {
+		return nil, errors.New("猫果当前目录未返回有效标签，旧分类保留")
 	}
 	return categories, nil
 }
 
+// guanguoClientInfo 返回观果客户端Info。
 func guanguoClientInfo() string {
 	stamp := strconv.FormatInt(time.Now().UnixMilli(), 10)
 	if len(stamp) > 10 {
@@ -260,6 +290,7 @@ func guanguoClientInfo() string {
 	return duanjuMD5(stamp)
 }
 
+// guanguoQuery 构造观果请求使用的查询参数。
 func guanguoQuery(values url.Values) url.Values {
 	query := url.Values{
 		"version_code":       {"1500"},
@@ -281,6 +312,7 @@ func guanguoQuery(values url.Values) url.Values {
 	return query
 }
 
+// guanguoDramaFromNode 将观果响应节点转换为统一作品模型。
 func guanguoDramaFromNode(node map[string]any, base string) Drama {
 	id := duanjuFindString(node, "oneId", "one_id", "id")
 	if id == "" {
@@ -302,6 +334,7 @@ func guanguoDramaFromNode(node map[string]any, base string) Drama {
 	}
 }
 
+// duanjuViewsText 返回短剧观看数文本。
 func duanjuViewsText(count int) string {
 	if count <= 0 {
 		return ""
@@ -312,10 +345,8 @@ func duanjuViewsText(count int) string {
 	return strconv.Itoa(count) + "次播放"
 }
 
+// fetchGuanguoCatalogPage 获取观果目录页。
 func (d *Downloader) fetchGuanguoCatalogPage(ctx context.Context, page int, category string) ([]Drama, bool, error) {
-	if page > 500 {
-		return nil, false, nil
-	}
 	base := d.duanjuBaseURL(sourceGuanguo)
 	address := base + "/drama/home/search?" + guanguoQuery(nil).Encode()
 	payload, err := json.Marshal(map[string]any{
@@ -354,6 +385,7 @@ func (d *Downloader) fetchGuanguoCatalogPage(ctx context.Context, page int, cate
 	return items, len(items) >= 30, nil
 }
 
+// fetchGuanguoDetail 获取观果详情。
 func (d *Downloader) fetchGuanguoDetail(ctx context.Context, sourceID string) (Drama, []Chapter, error) {
 	base := d.duanjuBaseURL(sourceGuanguo)
 	query := guanguoQuery(url.Values{
@@ -418,6 +450,7 @@ func (d *Downloader) fetchGuanguoDetail(ctx context.Context, sourceID string) (D
 	return drama, chapters, nil
 }
 
+// guanguoEpisodeURL 返回观果分集URL。
 func guanguoEpisodeURL(node map[string]any) string {
 	if direct := duanjuFindString(node, "playUrl", "videoUrl", "play_url"); direct != "" {
 		return direct
@@ -442,6 +475,7 @@ func guanguoEpisodeURL(node map[string]any) string {
 	return best
 }
 
+// searchGuanguo 搜索观果。
 func (d *Downloader) searchGuanguo(ctx context.Context, query string) ([]Drama, error) {
 	base := d.duanjuBaseURL(sourceGuanguo)
 	address := base + "/drama/home/search?" + guanguoQuery(nil).Encode()
@@ -466,6 +500,9 @@ func (d *Downloader) searchGuanguo(ctx context.Context, query string) ([]Drama, 
 		Body:    payload,
 	})
 	if err != nil {
+		return nil, err
+	}
+	if err := sourceSearchEnvelope(response, sourceGuanguo); err != nil {
 		return nil, err
 	}
 	var items []Drama

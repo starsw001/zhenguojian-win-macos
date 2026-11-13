@@ -155,6 +155,8 @@ class EpisodeBrowser extends StatefulWidget {
     this.keyPrefix = 'episode',
     this.title = '选集',
     this.compact = false,
+    this.downloadSelection,
+    this.onDownloadToggle,
   });
   final List<Episode> episodes;
   final ValueChanged<int> onSelected;
@@ -163,37 +165,46 @@ class EpisodeBrowser extends StatefulWidget {
   final String keyPrefix;
   final String title;
   final bool compact;
+  final Set<int>? downloadSelection;
+  final ValueChanged<Episode>? onDownloadToggle;
   @override
   State<EpisodeBrowser> createState() => _EpisodeBrowserState();
 }
 
 class _EpisodeBrowserState extends State<EpisodeBrowser> {
+  late List<int> _sourceIndices = distinctEpisodeIndices(widget.episodes);
+  late List<Episode> _episodes = _sourceIndices
+      .map((index) => widget.episodes[index])
+      .toList(growable: false);
   final _scroll = ScrollController();
   String _layout = '';
   int get _pageSize => episodePageSize;
   late int _page =
-      max(
-        0,
-        widget.episodes.indexWhere((e) => e.number == widget.currentNumber),
-      ) ~/
+      max(0, _episodes.indexWhere((e) => e.number == widget.currentNumber)) ~/
       _pageSize;
   int? _located;
 
   @override
   void didUpdateWidget(EpisodeBrowser oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (!identical(oldWidget.episodes, widget.episodes)) {
+      _sourceIndices = distinctEpisodeIndices(widget.episodes);
+      _episodes = _sourceIndices
+          .map((index) => widget.episodes[index])
+          .toList(growable: false);
+    }
     if (oldWidget.currentNumber != widget.currentNumber) {
       _page =
           max(
             0,
-            widget.episodes.indexWhere(
+            _episodes.indexWhere(
               (episode) => episode.number == widget.currentNumber,
             ),
           ) ~/
           _pageSize;
       _located = null;
     }
-    _page = _page.clamp(0, max(0, (widget.episodes.length - 1) ~/ _pageSize));
+    _page = _page.clamp(0, max(0, (_episodes.length - 1) ~/ _pageSize));
   }
 
   @override
@@ -206,21 +217,21 @@ class _EpisodeBrowserState extends State<EpisodeBrowser> {
   Widget build(BuildContext context) {
     if (widget.compact) return _continuousGrid(context);
     final pageSize = _pageSize;
-    _page = _page.clamp(0, max(0, (widget.episodes.length - 1) ~/ pageSize));
+    _page = _page.clamp(0, max(0, (_episodes.length - 1) ~/ pageSize));
     final start = _page * pageSize;
-    final visible = widget.episodes.skip(start).take(pageSize).toList();
+    final visible = _episodes.skip(start).take(pageSize).toList();
     final television = AppLayout.isTelevision(context);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         EpisodeRangeBar(
-          episodes: widget.episodes,
+          episodes: _episodes,
           page: _page,
           title: widget.title,
           currentNumber: widget.currentNumber,
           onLocate: (index) => setState(() {
             _page = index ~/ episodePageSize;
-            _located = widget.episodes[index].number;
+            _located = _episodes[index].number;
           }),
         ),
         Expanded(
@@ -235,11 +246,12 @@ class _EpisodeBrowserState extends State<EpisodeBrowser> {
               final columns =
                   ((constraints.maxWidth - (widget.compact ? 8 : 36)) /
                           max(
-                            widget.compact
-                                ? 64
-                                : television
-                                ? 100
-                                : 82,
+                            (widget.onDownloadToggle != null ? 36 : 0) +
+                                (widget.compact
+                                    ? 64
+                                    : television
+                                    ? 100
+                                    : 82),
                             scale.scale(widget.compact ? 18 : 20) *
                                     digits *
                                     .65 +
@@ -292,17 +304,21 @@ class _EpisodeBrowserState extends State<EpisodeBrowser> {
                     : const EdgeInsets.fromLTRB(18, 2, 18, 18),
                 itemBuilder: (_, index, node, onFocus) {
                   final episode = visible[index];
-                  return RemoteEpisodeButton(
-                    key: ValueKey('${widget.keyPrefix}-${episode.number}'),
-                    number: episode.number,
-                    vip: episode.vip,
-                    compact: widget.compact,
-                    current:
-                        widget.selectedNumbers?.contains(episode.number) ??
-                        episode.number == widget.currentNumber,
-                    focusNode: node,
-                    onFocus: onFocus,
-                    onPressed: () => widget.onSelected(start + index),
+                  return _downloadCell(
+                    episode,
+                    RemoteEpisodeButton(
+                      key: ValueKey('${widget.keyPrefix}-${episode.number}'),
+                      number: episode.number,
+                      vip: episode.vip,
+                      compact: widget.compact,
+                      current:
+                          widget.selectedNumbers?.contains(episode.number) ??
+                          episode.number == widget.currentNumber,
+                      focusNode: node,
+                      onFocus: onFocus,
+                      onPressed: () =>
+                          widget.onSelected(_sourceIndices[start + index]),
+                    ),
                   );
                 },
               );
@@ -326,7 +342,7 @@ class _EpisodeBrowserState extends State<EpisodeBrowser> {
         separatorBuilder: (_, _) => const SizedBox(width: 6),
         itemBuilder: (context, page) {
           final start = page * episodePageSize;
-          final end = min(start + episodePageSize, widget.episodes.length) - 1;
+          final end = min(start + episodePageSize, _episodes.length) - 1;
           final selected = page == selectedPage;
           return OutlinedButton(
             style: OutlinedButton.styleFrom(
@@ -345,12 +361,10 @@ class _EpisodeBrowserState extends State<EpisodeBrowser> {
             ),
             onPressed: () {
               setState(() {
-                _located = widget.episodes[start].number;
+                _located = _episodes[start].number;
               });
             },
-            child: Text(
-              '${widget.episodes[start].number}-${widget.episodes[end].number}',
-            ),
+            child: Text('${_episodes[start].number}-${_episodes[end].number}'),
           );
         },
       ),
@@ -361,25 +375,27 @@ class _EpisodeBrowserState extends State<EpisodeBrowser> {
     builder: (context, constraints) {
       final television = AppLayout.isTelevision(context);
       final scale = MediaQuery.textScalerOf(context);
-      final digits = widget.episodes.fold<int>(
+      final digits = _episodes.fold<int>(
         1,
         (value, episode) => max(value, episode.number.toString().length),
       );
-      final minimum = max(40.0, scale.scale(14) * digits * .62 + 22);
+      final minimum =
+          max(40.0, scale.scale(14) * digits * .62 + 22) +
+          (widget.onDownloadToggle != null ? 36 : 0);
       final columns = ((constraints.maxWidth - 12) / minimum).floor().clamp(
-        5,
+        widget.onDownloadToggle != null ? 1 : 5,
         television ? 12 : 10,
       );
       final extent = max(34.0, scale.scale(14) + 18);
       final target = max(
         0,
-        widget.episodes.indexWhere(
+        _episodes.indexWhere(
           (episode) => episode.number == (_located ?? widget.currentNumber),
         ),
       );
-      final pageCount = (widget.episodes.length / episodePageSize).ceil();
+      final pageCount = (_episodes.length / episodePageSize).ceil();
       final layout =
-          'compact:${widget.episodes.length}:$_located:${widget.currentNumber}:$columns:$extent:${constraints.maxHeight}';
+          'compact:${_episodes.length}:$_located:${widget.currentNumber}:$columns:$extent:${constraints.maxHeight}';
       if (layout != _layout) {
         _layout = layout;
         WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -401,7 +417,7 @@ class _EpisodeBrowserState extends State<EpisodeBrowser> {
               controller: _scroll,
               autofocus: television && _located != null,
               initialIndex: target,
-              itemKeys: widget.episodes
+              itemKeys: _episodes
                   .map((episode) => '${episode.number}')
                   .toList(),
               columns: columns,
@@ -409,18 +425,21 @@ class _EpisodeBrowserState extends State<EpisodeBrowser> {
               spacing: 5,
               padding: const EdgeInsets.fromLTRB(4, 6, 4, 4),
               itemBuilder: (_, index, node, onFocus) {
-                final episode = widget.episodes[index];
-                return RemoteEpisodeButton(
-                  key: ValueKey('${widget.keyPrefix}-${episode.number}'),
-                  number: episode.number,
-                  vip: episode.vip,
-                  compact: true,
-                  current:
-                      widget.selectedNumbers?.contains(episode.number) ??
-                      episode.number == widget.currentNumber,
-                  focusNode: node,
-                  onFocus: onFocus,
-                  onPressed: () => widget.onSelected(index),
+                final episode = _episodes[index];
+                return _downloadCell(
+                  episode,
+                  RemoteEpisodeButton(
+                    key: ValueKey('${widget.keyPrefix}-${episode.number}'),
+                    number: episode.number,
+                    vip: episode.vip,
+                    compact: true,
+                    current:
+                        widget.selectedNumbers?.contains(episode.number) ??
+                        episode.number == widget.currentNumber,
+                    focusNode: node,
+                    onFocus: onFocus,
+                    onPressed: () => widget.onSelected(_sourceIndices[index]),
+                  ),
                 );
               },
             ),
@@ -429,4 +448,29 @@ class _EpisodeBrowserState extends State<EpisodeBrowser> {
       );
     },
   );
+
+  Widget _downloadCell(Episode episode, Widget button) {
+    if (widget.onDownloadToggle == null) return button;
+    return Row(
+      children: [
+        SizedBox(
+          width: 34,
+          child: Tooltip(
+            message: episode.vip ? '此集需要源站授权' : '选择下载第 ${episode.number} 集',
+            child: Checkbox(
+              key: ValueKey('${widget.keyPrefix}-download-${episode.number}'),
+              value:
+                  widget.downloadSelection?.contains(episode.number) ?? false,
+              semanticLabel: '选择下载第 ${episode.number} 集',
+              onChanged: episode.vip
+                  ? null
+                  : (_) => widget.onDownloadToggle!(episode),
+              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            ),
+          ),
+        ),
+        Expanded(child: button),
+      ],
+    );
+  }
 }

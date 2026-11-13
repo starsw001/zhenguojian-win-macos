@@ -5,6 +5,7 @@ import (
 	"strings"
 )
 
+// legacyCoverURL 规整旧接口响应中的海报地址。
 func legacyCoverURL(value any) string {
 	address := strings.TrimSpace(coverPathFromAny(value))
 	if address == "" {
@@ -33,6 +34,7 @@ func legacyCoverURL(value any) string {
 	return "https://zzzznnn.lkkwip.cn/" + address
 }
 
+// repairLegacyCoverURL 修复旧接口海报地址的已知格式问题。
 func repairLegacyCoverURL(drama nativeDrama) string {
 	if sourceFromDramaID(drama.ID) != sourceCloudFront && drama.Source != sourceCloudFront {
 		return drama.Cover

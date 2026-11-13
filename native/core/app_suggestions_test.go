@@ -11,10 +11,12 @@ import (
 
 type suggestionTransport func(*http.Request) (*http.Response, error)
 
+// RoundTrip 实现隔离测试使用的单次 HTTP 请求处理。
 func (transport suggestionTransport) RoundTrip(request *http.Request) (*http.Response, error) {
 	return transport(request)
 }
 
+// TestNativeSuggestionsOfficialContract 验证「Native Suggestions Official Contract」回归场景。
 func TestNativeSuggestionsOfficialContract(t *testing.T) {
 	engine := &nativeEngine{downloader: &Downloader{
 		limiter: newRequestLimiter(1, 0),
@@ -37,6 +39,7 @@ func TestNativeSuggestionsOfficialContract(t *testing.T) {
 	}
 }
 
+// TestNativeSuggestionsAcceptRootAndEmptyResults 验证「Native Suggestions Accept Root And Empty Results」回归场景。
 func TestNativeSuggestionsAcceptRootAndEmptyResults(t *testing.T) {
 	for _, body := range []string{`{"suggest_list":[]}`, `{"data":{"suggest_list":null}}`} {
 		items, err := nativeParseSuggestions([]byte(body))

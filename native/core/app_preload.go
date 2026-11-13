@@ -15,8 +15,9 @@ import (
 
 type nativePreloadKey struct{}
 
-const nativePreloadLimit = 4 << 20
+const nativePreloadLimit = 8 << 20
 
+// nativePreload 返回原生预加载。
 func (engine *nativeEngine) nativePreload(ctx context.Context, input nativeInput) (nativePlan, error) {
 	ctx = context.WithValue(ctx, backgroundCatalogKey{}, true)
 	ctx = context.WithValue(ctx, nativePreloadKey{}, true)
@@ -40,6 +41,7 @@ func (engine *nativeEngine) nativePreload(ctx context.Context, input nativeInput
 	return plan, nil
 }
 
+// nativePrefetch 返回原生预取。
 func (stream *nativeStreamServer) nativePrefetch(ctx context.Context, token, entry string, quality int) int64 {
 	stream.mu.Lock()
 	session := stream.sessions[token]
@@ -51,7 +53,8 @@ func (stream *nativeStreamServer) nativePrefetch(ctx context.Context, token, ent
 	defer cancel()
 	stop := context.AfterFunc(session.ctx, cancel)
 	defer stop()
-	remaining, requests := int64(nativePreloadLimit), 0
+	budget := int64(stream.downloader.cacheBytes("preloadMiB"))
+	remaining, requests := budget, 0
 	visited := map[string]bool{}
 	var warm func(string, int) bool
 	warm = func(local string, depth int) bool {
@@ -85,8 +88,15 @@ func (stream *nativeStreamServer) nativePrefetch(ctx context.Context, token, ent
 			if err != nil {
 				return false
 			}
+			if session.observeRouteAccess(response, nil) != nil {
+				response.Body.Close()
+				return false
+			}
 			body, readErr := io.ReadAll(io.LimitReader(response.Body, remaining+1))
 			response.Body.Close()
+			if session.observeRouteAccess(response, body) != nil {
+				return false
+			}
 			if readErr != nil || len(body) == 0 || int64(len(body)) > remaining ||
 				(response.StatusCode != http.StatusOK && response.StatusCode != http.StatusPartialContent) {
 				return false
@@ -158,11 +168,12 @@ func (stream *nativeStreamServer) nativePrefetch(ctx context.Context, token, ent
 		return true
 	}
 	warm(entry, 0)
-	return nativePreloadLimit - remaining
+	return budget - remaining
 }
 
 var nativeContentRangePattern = regexp.MustCompile(`^bytes ([0-9]+)-([0-9]+)/([0-9]+)$`)
 
+// nativeContentRange 解析 HTTP Content-Range 中的区间与总长度。
 func nativeContentRange(value string) (int64, int64, int64, bool) {
 	match := nativeContentRangePattern.FindStringSubmatch(value)
 	if match == nil {
@@ -174,6 +185,7 @@ func nativeContentRange(value string) (int64, int64, int64, bool) {
 	return start, end, total, first == nil && second == nil && third == nil && start >= 0 && end >= start && total > end
 }
 
+// nativeServePrefix 处理服务请求：原生前缀。
 func (stream *nativeStreamServer) nativeServePrefix(ctx context.Context, writer http.ResponseWriter, request *http.Request, session *nativeStreamSession, asset nativeStreamAsset) bool {
 	start, end := int64(0), asset.total-1
 	ranged := request.Header.Get("Range") != ""
@@ -220,6 +232,10 @@ func (stream *nativeStreamServer) nativeServePrefix(ctx context.Context, writer 
 			return false
 		}
 		defer response.Body.Close()
+		if err := session.observeRouteAccess(response, nil); err != nil {
+			http.Error(writer, err.Error(), http.StatusForbidden)
+			return true
+		}
 		a, b, total, valid := nativeContentRange(response.Header.Get("Content-Range"))
 		if response.StatusCode != http.StatusPartialContent || !valid || a != int64(len(asset.data)) || b != end || total != asset.total {
 			session.invalidate(asset.address)
@@ -254,6 +270,7 @@ func (stream *nativeStreamServer) nativeServePrefix(ctx context.Context, writer 
 	return true
 }
 
+// invalidate 使其失效：媒体转发会话。
 func (session *nativeStreamSession) invalidate(address string) {
 	session.mu.Lock()
 	defer session.mu.Unlock()

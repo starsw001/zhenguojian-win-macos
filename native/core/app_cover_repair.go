@@ -18,6 +18,7 @@ type nativeCoverRepair struct {
 	retryAt time.Time
 }
 
+// load 加载作品海报；原地址失败时尝试修复元数据后重新加载。
 func (cache *nativeCoverCache) load(ctx context.Context, drama nativeDrama, force bool) (string, error) {
 	cache.mu.Lock()
 	if repair := cache.repairs[drama.ID]; repair != nil && repair.address != "" {
@@ -36,6 +37,7 @@ func (cache *nativeCoverCache) load(ctx context.Context, drama nativeDrama, forc
 	return cache.loadAddress(ctx, drama, force)
 }
 
+// repair 合并并发的海报地址修复请求，并保存修复结果与冷却时间。
 func (cache *nativeCoverCache) repair(ctx context.Context, drama nativeDrama, force bool) (string, error) {
 	cache.mu.Lock()
 	if previous := cache.repairs[drama.ID]; previous != nil {
@@ -86,6 +88,7 @@ func (cache *nativeCoverCache) repair(ctx context.Context, drama nativeDrama, fo
 	return address, err
 }
 
+// loadCover 加载海报。
 func (engine *nativeEngine) loadCover(ctx context.Context, drama nativeDrama, force bool) (map[string]any, error) {
 	engine.mu.Lock()
 	for _, cached := range engine.catalogs[drama.Source] {
@@ -118,9 +121,10 @@ func (engine *nativeEngine) loadCover(ctx context.Context, drama nativeDrama, fo
 	if err != nil && err != io.EOF {
 		return nil, err
 	}
-	return map[string]any{"path": path, "heic": isHEICImage(header[:count])}, nil
+	return map[string]any{"path": path, "heic": isHEICImage(header[:count]), "avif": isAVIFImage(header[:count])}, nil
 }
 
+// saveCoverAddress 保存海报地址。
 func (engine *nativeEngine) saveCoverAddress(id, address string) {
 	engine.mu.Lock()
 	defer engine.mu.Unlock()
@@ -138,12 +142,16 @@ func (engine *nativeEngine) saveCoverAddress(id, address string) {
 	}
 }
 
+// prepareCover 准备海报。
 func (engine *nativeEngine) prepareCover(ctx context.Context, drama nativeDrama) (any, error) {
 	result, err := engine.loadCover(ctx, drama, false)
 	if err != nil {
 		return nil, err
 	}
 	if result["heic"] != true {
+		if result["avif"] == true {
+			result["input"] = result["path"]
+		}
 		return result, nil
 	}
 	file, err := os.Open(result["path"].(string))

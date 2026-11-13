@@ -19,7 +19,6 @@ import (
 	"math/big"
 	mrand "math/rand"
 	"net/http"
-	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -27,6 +26,8 @@ import (
 )
 
 const hongguoMultiVideoAPI = "https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/v1/"
+
+var errHongguoEmptyPrimaryPlayback = &hongguoPlaybackResponseError{"红果播放接口 HTTP 200，但正文为空；源站未返回本集数据，未自动轮换设备身份"}
 
 const hongguoMultiUserAgent = "com.phoenix.read/71332 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3; Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)"
 
@@ -44,6 +45,7 @@ var (
 	hongguoMultiNowUnix      = func() int64 { return time.Now().Unix() }
 )
 
+// hongguoMultiLocalID 生成多线路协议使用的本地请求标识。
 func hongguoMultiLocalID() string {
 	raw := make([]byte, 6)
 	_, _ = rand.Read(raw)
@@ -52,44 +54,50 @@ func hongguoMultiLocalID() string {
 	return value.String()
 }
 
+// rol32 对 32 位整数执行循环左移。
 func rol32(value uint32, count int) uint32 {
 	n := uint(count & 31)
 	return value<<n | value>>(32-n)
 }
 
+// ror32 对 32 位整数执行循环右移。
 func ror32(value uint32, count int) uint32 {
 	n := uint(count & 31)
 	return value>>n | value<<(32-n)
 }
 
+// ror64 对 64 位整数执行循环右移。
 func ror64(value uint64, count int) uint64 {
 	n := uint(count & 63)
 	return value>>n | value<<(64-n)
 }
 
+// hongguoLe32 按红果协议需要处理 32 位小端数据。
 func hongguoLe32(value uint32) []byte {
 	out := make([]byte, 4)
 	binary.LittleEndian.PutUint32(out, value)
 	return out
 }
 
+// hongguoBe32 按红果协议需要处理 32 位大端数据。
 func hongguoBe32(value uint32) []byte {
 	out := make([]byte, 4)
 	binary.BigEndian.PutUint32(out, value)
 	return out
 }
 
+// hongguoMultiSM3 计算多线路协议使用的 SM3 摘要。
 func hongguoMultiSM3(input []byte) []byte {
 	sum := hongguoSM3(input)
 	return sum[:]
 }
 
-
+// hongguoGetIv 构造红果协议使用的初始向量。
 func hongguoGetIv(iv uint32, data []byte) uint32 {
 	value := iv
 	for i := 0; i < len(data); i++ {
 		if i%2 == 0 {
-			value = (value>>4)^value^(value<<6)^uint32(data[i])
+			value = (value >> 4) ^ value ^ (value << 6) ^ uint32(data[i])
 		} else {
 			value = ^((value >> 7) ^ value ^ (uint32(data[i]) | (value << 12)))
 		}
@@ -97,6 +105,7 @@ func hongguoGetIv(iv uint32, data []byte) uint32 {
 	return value
 }
 
+// hongguoSumMd5 计算红果协议使用的 MD5 摘要。
 func hongguoSumMd5(data []byte) uint32 {
 	check := int32(0x20220420)
 	for i := 0; i < 12; i++ {
@@ -123,6 +132,7 @@ var hongguoBranch2SV = [64]uint32{0xa7aefe20, 0x7149f1d6, 0x47e4ca07, 0xe9b58f67
 
 var hongguoBranch2Orders, _ = hex.DecodeString("0f0704000908030a060b050d0e010c020f05080c0009020103070e060b0a0d04060500070c000a04080f010b0d09020e060b02050403080101070a000d0c090e0d070e0f0b0208030c0509010004060a0d0902060f0b0a040807000c0503010e0c090f07060f030e020d0405010b0a000c050a090e0802040407030f01060b000b0f0408020a0700090d06010e03050c0b060a0508020c03070f0e090d0001040906080f050800040a0b030d01020c0e090d0c0604070a03030f00080105020e01000d0f090a0b0e0402080703060c0501080a0c0f0905060b000304020e070d04080f000c0f0e0d0a01060207090503040205080d0b0a0606000e0f070c09030a08040f000b01060d0c0709030e05020a070b050f00020e0108030d0c0609040d070f08050f06040b0a0e0c090002030d0c020704010b0e0e08060f09050003")
 
+// hongguoMd5V3Step 执行红果摘要算法的一步状态更新。
 func hongguoMd5V3Step(kind int, a, b, c, d, m uint32, shift int, constant uint32) uint32 {
 	var f uint32
 	switch kind {
@@ -138,6 +148,7 @@ func hongguoMd5V3Step(kind int, a, b, c, d, m uint32, shift int, constant uint32
 	return b + rol32(a+f+m+constant, shift)
 }
 
+// hongguoMd5SumV3 计算红果协议使用的 V3 摘要。
 func hongguoMd5SumV3(message []byte, countV2 uint32, orders []byte, countV1 uint32) []byte {
 	sv := make([]uint32, 64)
 	for i, value := range hongguoBranch2SV {
@@ -194,8 +205,9 @@ func hongguoMd5SumV3(message []byte, countV2 uint32, orders []byte, countV1 uint
 	return append(ret, hongguoLe32(hongguoSumMd5(ret))...)
 }
 
+// hongguoBranch2F13 计算红果多线路签名分支使用的中间状态。
 func hongguoBranch2F13(iv uint32, querySm3, bodyMd5, tsBytes []byte, khronos uint32) []byte {
-	v := int(iv & 13) * 86
+	v := int(iv&13) * 86
 	ivV0 := ((v >> 15) & 255) + ((v >> 8) & 255)
 	n1 := [5]uint32{0x8980f29b, 0xeb549c7f, 0xb08726db, 0xd40cb5e6, 0xe8f559e4}[ivV0]
 	countV1 := (n1 + khronos + 1) & 255
@@ -216,6 +228,7 @@ func hongguoBranch2F13(iv uint32, querySm3, bodyMd5, tsBytes []byte, khronos uin
 	return hongguoMd5SumV3(input, countV2, hongguoBranch2Orders[ivV0<<6:(ivV0+1)<<6], countV1)
 }
 
+// hongguoHashF13 计算红果多线路签名分支使用的摘要。
 func hongguoHashF13(querySm3, bodyMd5, tsBytes []byte, khronos uint32) []byte {
 	iv := hongguoGetIv(hongguoGetIv(hongguoGetIv(0x20230928, querySm3), bodyMd5), tsBytes)
 	low := int(iv & 15)
@@ -296,6 +309,7 @@ func hongguoHashF13(querySm3, bodyMd5, tsBytes []byte, khronos uint32) []byte {
 	return append(ret[:16:16], hongguoLe32(hongguoSumMd5(ret[:16]))...)
 }
 
+// hongguoReverseBits 反转协议中指定字节的位顺序。
 func hongguoReverseBits(value byte) byte {
 	var result byte
 	for i := 0; i < 8; i++ {
@@ -304,6 +318,7 @@ func hongguoReverseBits(value byte) byte {
 	return result
 }
 
+// hongguoRC4Gorgon 执行 Gorgon 字段使用的 RC4 风格变换。
 func hongguoRC4Gorgon(data, key []byte) []byte {
 	s := make([]int, 256)
 	for i := range s {
@@ -327,6 +342,7 @@ func hongguoRC4Gorgon(data, key []byte) []byte {
 	return out
 }
 
+// hongguoXGorgon 计算红果请求的 X-Gorgon 字段。
 func hongguoXGorgon(query string, body []byte, timestamp uint32, random int) string {
 	sdk := make([]byte, 4)
 	binary.LittleEndian.PutUint32(sdk, 67503104)
@@ -351,7 +367,7 @@ func hongguoXGorgon(query string, body []byte, timestamp uint32, random int) str
 		} else {
 			next = out[0]
 		}
-		out[i] = ^(hongguoReverseBits((next ^ value) & 255) ^ 20) & 255
+		out[i] = ^(hongguoReverseBits((next^value)&255) ^ 20) & 255
 	}
 	prefix, _ := hex.DecodeString("8404")
 	full := append(prefix, byte(random&255), byte(random>>8)&255, 0x40, 0x01)
@@ -367,6 +383,7 @@ type hongguoProtoField struct {
 	float float32
 }
 
+// hongguoVarint 将整数编码为协议使用的变长整数。
 func hongguoVarint(value uint64) []byte {
 	var out []byte
 	for value > 127 {
@@ -376,6 +393,7 @@ func hongguoVarint(value uint64) []byte {
 	return append(out, byte(value))
 }
 
+// hongguoProtoFieldBytes 将字节字段编码为红果协议消息片段。
 func hongguoProtoFieldBytes(tag uint64, value []byte) []byte {
 	if value == nil {
 		return nil
@@ -385,6 +403,7 @@ func hongguoProtoFieldBytes(tag uint64, value []byte) []byte {
 	return append(append(key, length...), value...)
 }
 
+// hongguoProtoFieldString 将字符串字段编码为红果协议消息片段。
 func hongguoProtoFieldString(tag uint64, value string) []byte {
 	if value == "" {
 		return nil
@@ -392,6 +411,7 @@ func hongguoProtoFieldString(tag uint64, value string) []byte {
 	return hongguoProtoFieldBytes(tag, []byte(value))
 }
 
+// hongguoProtoFieldSint 将有符号整数字段编码为红果协议消息片段。
 func hongguoProtoFieldSint(tag uint64, value int64) []byte {
 	var zigzag uint64
 	if value < 0 {
@@ -402,10 +422,12 @@ func hongguoProtoFieldSint(tag uint64, value int64) []byte {
 	return append(hongguoVarint(tag<<3), hongguoVarint(zigzag)...)
 }
 
+// hongguoProtoFieldInt 将整数字段编码为红果协议消息片段。
 func hongguoProtoFieldInt(tag uint64, value uint64) []byte {
 	return append(hongguoVarint(tag<<3), hongguoVarint(value)...)
 }
 
+// hongguoProtoFieldFloat 将浮点数字段编码为红果协议消息片段。
 func hongguoProtoFieldFloat(tag uint64, value float32) []byte {
 	out := hongguoVarint(tag<<3 | 5)
 	raw := math.Float32bits(value)
@@ -414,6 +436,7 @@ func hongguoProtoFieldFloat(tag uint64, value float32) []byte {
 	return append(out, body...)
 }
 
+// hongguoProto 按字段定义编码红果协议消息。
 func hongguoProto(fields ...[]byte) []byte {
 	var out []byte
 	for _, field := range fields {
@@ -422,6 +445,7 @@ func hongguoProto(fields ...[]byte) []byte {
 	return out
 }
 
+// hongguoDeviceProto 编码红果设备信息的协议消息。
 func hongguoDeviceProto(deviceID string) []byte {
 	return hongguoProto(
 		hongguoProtoFieldSint(1, 1),
@@ -465,6 +489,7 @@ func hongguoDeviceProto(deviceID string) []byte {
 
 var hongguoSBOX, _ = base64.StdEncoding.DecodeString("+n0Ia5xZs0sEXznQOEqRmQBnpiCf9U2Ccybu3xhmgzOAAxn72f6uqqmwUsYL83klTni0NqxdGieeiNu9PGPsSRXBMB/cuFbUbM3KCUPINaPvHvSW0vwOcnuUhNHqRVpiAj/TEoE0K91+5ijypUYTATsh9mE3KSoN7Yyvv51cuyR2D3XkU4nhmI2xmmVwT1RMWKtub4sjxAcRDLrPoKSO2AU9FLLadMPX577Wf95IFj6FkKFVt3dCIsmGUC4X+WQxLJvxbRxEaOPpqJOXyzJX6+Vxaq3AzMfF/WAdoi1Hp+JRaV56zgpBtpWP97mH4DoGEIq1+FvV8LyS/3wvwugbQOwb2r26mJEMsiuDQTRn+wrYdrVGBVlhI3WQhyrjUBVMrLF5667llUcEaPCGPVGLD8qO5LlO8hKCvA7V9+8oJc9bXelqVQLhM76T5/WtnT45JKji+hdX0HoNCDDWuKON/QeaxB5uImSX0h2wv0VmP2zd2yeApxHcpsVS+MC2yFwAc2B7oBkTqsk1SEvTpM2fmfMQREBUfin0Bh+iq6EvPPavhWI2IX9e3yAas7Tm/3KEj2UmlFp36kN4x0rMLBRrxuh0U/zUHM4xcAMYjJY4MonxOl/X+alpt2M3WMI7w3HLnpIBigtNiJu7T21v4P6lSd5WFgntnMEt7oF92XzRLkJbTcGmXepE/UVOG6E/0YnhfS+q26utWcuxzpooyeD2cDlK1/8w9d28VzsRjbLuALbmGlp8+d7EzS6Au7lMpZ+ECMZvQmzwJ+eLOpxR+2chdUExp8ogQyq3v9l68rX4jCwjg0+PYKAEEzcU4wHFY2ZcdIHfWL1okD3SszT0GZMyKdZJrg1L2AeerB4tC0C4crp2EHGo5FYdSP7lwkeR2ocmnR+Ia8CYviUJlzOjhRZef9xuVOn3qcjow3fQgivsAmKKkg4+sA8F8/GWeDiGNhg8JM8KtFPMYWWkx5TVFX5t73kiNRJqjlIGVXtGZFCV4gzt0xcDopuZ6xz8r9Rzafpf9ywev8jh8592gHFIqpStZPuJxmDDMrNN0uBE3V+oscdoIzTJbRJ/t+sVvqnReJOgDJKk10fjisJwqyZBmnmn2BSFj8BvVtCMEbkuPOKdzw7eA11GPs04Qw8zWtkaZWwiO/wwpojqN6K0jY5RnNZA7vn4hPSul+nKCkVnVwQvg1zVxcSCtqORmB9KrJaBbssbCQivGJVJfVTt+hYxOtq4ZvWl8f4QAQZ0zGPffCgl9s6yT4vlvIdpu4YhBwA25wtQWZsc6GJYGWHyvSdeuh3mmUI9DSq13Fsp8C1MU3tqc04/df9LoTUXVXI5INOw/e8C7Hd+5CvbkMEFnnrUUmskEw==")
 
+// hongguoXorBytes 对输入字节执行协议所需的异或操作。
 func hongguoXorBytes(a, b []byte) []byte {
 	out := make([]byte, len(a))
 	for i := range a {
@@ -474,13 +499,14 @@ func hongguoXorBytes(a, b []byte) []byte {
 }
 
 type hongguoAesV3 struct {
-	box    []byte
-	con    [4]int
-	con2   [4]int
-	order  [16]int
-	keys   [12][4]byte
+	box   []byte
+	con   [4]int
+	con2  [4]int
+	order [16]int
+	keys  [12][4]byte
 }
 
+// newHongguoAesV3 创建红果AESV3。
 func newHongguoAesV3(key []byte, khronos uint32) *hongguoAesV3 {
 	wordSize := int(khronos & 3)
 	box := hongguoSBOX[wordSize*256 : (wordSize+1)*256]
@@ -525,6 +551,7 @@ func newHongguoAesV3(key []byte, khronos uint32) *hongguoAesV3 {
 	return v
 }
 
+// add 将当前分组状态与指定轮密钥相加。
 func (v *hongguoAesV3) add(rows *[4][4]byte, keys [4][4]byte) {
 	for i := 0; i < 4; i++ {
 		for j := 0; j < 4; j++ {
@@ -533,6 +560,7 @@ func (v *hongguoAesV3) add(rows *[4][4]byte, keys [4][4]byte) {
 	}
 }
 
+// addCon 将当前分组状态与当前轮常量组合。
 func (v *hongguoAesV3) addCon(rows *[4][4]byte, keys [][4]byte) {
 	for i := 0; i < 4; i++ {
 		for j := 0; j < 4; j++ {
@@ -541,6 +569,7 @@ func (v *hongguoAesV3) addCon(rows *[4][4]byte, keys [][4]byte) {
 	}
 }
 
+// sub 对分组状态执行替换变换。
 func (v *hongguoAesV3) sub(rows *[4][4]byte) {
 	for i := 0; i < 4; i++ {
 		for j := 0; j < 4; j++ {
@@ -553,6 +582,7 @@ func (v *hongguoAesV3) sub(rows *[4][4]byte) {
 	}
 }
 
+// shift 对分组状态执行位移变换。
 func (v *hongguoAesV3) shift(rows *[4][4]byte) {
 	var b [16]byte
 	for i := 0; i < 4; i++ {
@@ -565,6 +595,7 @@ func (v *hongguoAesV3) shift(rows *[4][4]byte) {
 	}
 }
 
+// shiftCon 对分组变换的轮常量执行位移。
 func (v *hongguoAesV3) shiftCon(rows *[4][4]byte) {
 	old := *rows
 	for i := 0; i < 4; i++ {
@@ -574,24 +605,26 @@ func (v *hongguoAesV3) shiftCon(rows *[4][4]byte) {
 	}
 }
 
+// hongguoAesMix 执行红果分组变换中的列混合步骤。
 func hongguoAesMix(rows *[4][4]byte) {
 	xt := func(x byte) byte {
-	 doubled := uint16(x) << 1
-	 if x&128 != 0 {
-		doubled ^= 0x1b
-	 }
-	 return byte(doubled)
+		doubled := uint16(x) << 1
+		if x&128 != 0 {
+			doubled ^= 0x1b
+		}
+		return byte(doubled)
 	}
 	for i := 0; i < 4; i++ {
 		t := rows[0][i] ^ rows[1][i] ^ rows[2][i] ^ rows[3][i]
 		u := rows[0][i]
-		rows[0][i] ^= t ^ xt(rows[0][i] ^ rows[1][i])
-		rows[1][i] ^= t ^ xt(rows[1][i] ^ rows[2][i])
-		rows[2][i] ^= t ^ xt(rows[2][i] ^ rows[3][i])
-		rows[3][i] ^= t ^ xt(rows[3][i] ^ u)
+		rows[0][i] ^= t ^ xt(rows[0][i]^rows[1][i])
+		rows[1][i] ^= t ^ xt(rows[1][i]^rows[2][i])
+		rows[2][i] ^= t ^ xt(rows[2][i]^rows[3][i])
+		rows[3][i] ^= t ^ xt(rows[3][i]^u)
 	}
 }
 
+// block 执行一次分组数据变换。
 func (v *hongguoAesV3) block(value []byte) []byte {
 	var rows [4][4]byte
 	for i := 0; i < 4; i++ {
@@ -621,6 +654,7 @@ func (v *hongguoAesV3) block(value []byte) []byte {
 	return out
 }
 
+// encrypt 按当前协议密钥对输入数据执行分组加密。
 func (v *hongguoAesV3) encrypt(data, iv []byte) []byte {
 	source := append([]byte{}, data...)
 	plaintext := make([]byte, 32)
@@ -671,6 +705,7 @@ func (v *hongguoAesV3) encrypt(data, iv []byte) []byte {
 	return append([]byte{key[len(key)-1]}, out...)
 }
 
+// hongguoXmxor 执行红果协议定义的字节异或变换。
 func hongguoXmxor(data, key []byte) []byte {
 	encoded := make([]byte, len(data))
 	for i := 0; i < len(data); i++ {
@@ -704,6 +739,7 @@ func hongguoXmxor(data, key []byte) []byte {
 	return encoded
 }
 
+// hongguoKeyHash 计算红果协议所需的密钥摘要。
 func hongguoKeyHash(signKey []byte, random uint32) ([]byte, []byte) {
 	input := append(append(append([]byte{}, signKey...), hongguoLe32(random)...), signKey...)
 	hash := hongguoMultiSM3(input)
@@ -713,6 +749,7 @@ func hongguoKeyHash(signKey []byte, random uint32) ([]byte, []byte) {
 	return hash, hongguoLe32(d2)
 }
 
+// hongguoHelios 生成红果请求使用的 Helios 字段。
 func hongguoHelios(khronos uint32) string {
 	random := hongguoMultiRandomUint32()
 	data := append(hongguoLe32(random), []byte("8662")...)
@@ -762,6 +799,7 @@ func hongguoHelios(khronos uint32) string {
 	return base64.StdEncoding.EncodeToString(append(hongguoLe32(random), output...))
 }
 
+// hongguoPythonUrlEncode 按兼容既有协议的规则编码 URL 参数。
 func hongguoPythonUrlEncode(pairs [][2]string) string {
 	var builder strings.Builder
 	encode := func(value string) {
@@ -796,11 +834,13 @@ var hongguoMultiDevicePairsTemplate = [][2]string{
 	{"compliance_status", "0"}, {"need_personal_recommend", "1"}, {"player_so_load", "1"}, {"is_android_pad_screen", "0"},
 }
 
+// hongguoSignKey 构造红果请求签名所需的密钥材料。
 func hongguoSignKey() []byte {
 	raw, _ := hex.DecodeString("8ebdfa3806ecc5cee79423e6029ed82540bc2218bb7eaef71cb691f7aa8aa2f5")
 	return raw
 }
 
+// hongguoBuildMedusa 构造红果Medusa。
 func hongguoBuildMedusa(fullURL string, body []byte, khronos uint32, deviceID, versionName string) string {
 	bodyMd5 := md5.Sum(body)
 	query := fullURL[strings.Index(fullURL, "?")+1:]
@@ -879,6 +919,7 @@ func hongguoBuildMedusa(fullURL string, body []byte, khronos uint32, deviceID, v
 	return base64.StdEncoding.EncodeToString(final)
 }
 
+// mustHex 解码固定十六进制常量，编码无效时触发初始化错误。
 func mustHex(value string) []byte {
 	raw, err := hex.DecodeString(value)
 	if err != nil {
@@ -887,24 +928,26 @@ func mustHex(value string) []byte {
 	return raw
 }
 
+// hongguoMultiBranchOf 判断当前请求属于哪一个多线路协议分支。
 func hongguoMultiBranchOf(fullURL string, body []byte, khronos uint32) int {
 	bodyMd5 := md5.Sum(body)
 	query := fullURL[strings.Index(fullURL, "?")+1:]
 	q := hongguoMultiSM3([]byte(query))
 	iv := hongguoGetIv(hongguoGetIv(hongguoGetIv(0x20230928, q), bodyMd5[:]), hongguoLe32(khronos))
 	low := int(iv & 15)
-	return low - ((low * 171) >> 9) * 3
+	return low - ((low*171)>>9)*3
 }
 
 type hongguoMultiMediaRow struct {
-	item    map[string]any
-	codec   string
-	rank    int
-	pixels  int
-	width   int
-	height  int
+	item   map[string]any
+	codec  string
+	rank   int
+	pixels int
+	width  int
+	height int
 }
 
+// hongguoMultiCleanURL 清理多线路媒体响应中的 URL 文本。
 func hongguoMultiCleanURL(value string) string {
 	value = strings.TrimSpace(value)
 	value = strings.ReplaceAll(value, "\\/", "/")
@@ -913,6 +956,7 @@ func hongguoMultiCleanURL(value string) string {
 	return value
 }
 
+// hongguoMultiCheckedURL 规整并校验多线路返回的媒体 URL。
 func hongguoMultiCheckedURL(value string, domains []string) (string, error) {
 	if !strings.HasPrefix(value, "https://") {
 		return "", errors.New("片源地址格式无效")
@@ -932,6 +976,7 @@ func hongguoMultiCheckedURL(value string, domains []string) (string, error) {
 	return "", errors.New("片源返回了不受支持的服务地址")
 }
 
+// hongguoDeriveContentKey 根据协议输入派生媒体内容密钥。
 func hongguoDeriveContentKey(value string) ([]byte, error) {
 	normalized := strings.TrimSpace(value)
 	normalized = strings.ReplaceAll(normalized, "-", "+")
@@ -982,6 +1027,7 @@ func hongguoDeriveContentKey(value string) ([]byte, error) {
 	return hex.DecodeString(strings.ToLower(hexKey))
 }
 
+// hongguoDecryptSpadeURL 解密红果SpadeURL。
 func hongguoDecryptSpadeURL(value string, seed []byte) (string, error) {
 	encoded := hongguoMultiCleanURL(value)
 	if encoded == "" {
@@ -1021,52 +1067,64 @@ func hongguoDecryptSpadeURL(value string, seed []byte) (string, error) {
 	return string(plain), nil
 }
 
-func hongguoMultiFetchJSON(ctx context.Context, client *http.Client, fullURL string, method string, headers map[string]string, body []byte) (map[string]any, error) {
-	current := fullURL
-	for redirects := 0; redirects < 4; redirects++ {
-		request, err := http.NewRequestWithContext(ctx, method, current, bytes.NewReader(body))
-		if err != nil {
-			return nil, err
-		}
-		for key, value := range headers {
-			request.Header.Set(key, value)
-		}
-		response, err := client.Do(request)
-		if err != nil {
-			return nil, err
-		}
-		if response.StatusCode >= 301 && response.StatusCode <= 308 {
-			location := response.Header.Get("Location")
-			response.Body.Close()
-			if method == http.MethodPost || location == "" {
-				return nil, errors.New("接口发生不支持的跳转")
-			}
-			if strings.HasPrefix(location, "/") {
-				parsed, _ := url.Parse(current)
-				location = parsed.Scheme + "://" + parsed.Host + location
-			}
-			current = location
-			continue
-		}
-		content, readErr := io.ReadAll(io.LimitReader(response.Body, 2<<20))
-		response.Body.Close()
-		if response.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("红果 App 接口 HTTP %d", response.StatusCode)
-		}
-		if readErr != nil {
-			return nil, readErr
-		}
-		var result map[string]any
-		decoder := json.NewDecoder(bytes.NewReader(content))
-		decoder.UseNumber()
-		if err := decoder.Decode(&result); err != nil || result == nil {
-			return nil, errors.New("接口未返回有效数据")
-		}
-		return result, nil
+// hongguoMultiFetchJSON 读取多线路接口的 JSON 响应。
+func (d *Downloader) hongguoMultiFetchJSON(ctx context.Context, fullURL, method string, headers map[string]string, body []byte, prepare func(*http.Request)) (map[string]any, error) {
+	ctx = context.WithValue(ctx, nativeNoRedirectKey{}, true)
+	if method == http.MethodPost && fullURL == hongguoMultiVideoAPI {
+		ctx = context.WithValue(ctx, hongguoMetadataReadKey{}, true)
 	}
-	return nil, errors.New("接口跳转次数过多")
+	request, err := http.NewRequestWithContext(ctx, method, fullURL, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	for key, value := range headers {
+		request.Header.Set(key, value)
+	}
+	response, err := d.doPreparedCatalogRequest(request, 8*time.Second, prepare)
+	if err != nil {
+		return nil, err
+	}
+	content, readErr := io.ReadAll(io.LimitReader(response.Body, (2<<20)+1))
+	response.Body.Close()
+	d.recordDiagnostic(diagnosticEvent{Event: "playback.hongguo_metadata_response", Level: "info", Source: sourceHongguo, Host: request.URL.Hostname(), HTTPStatus: response.StatusCode, Protocol: response.Proto, ResponseType: response.Header.Get("Content-Type"), TotalBytes: int64(len(content)), Message: "红果播放元数据响应：" + request.URL.EscapedPath() + "；不记录设备身份、请求凭证或媒体密钥"})
+	if response.StatusCode == http.StatusUnauthorized {
+		return nil, &hongguoPlaybackResponseError{"红果播放接口 HTTP 401，需要源站授权；未切换身份或取流线路"}
+	}
+	blocked := catalogResponseBlockReason(response, content)
+	if response.StatusCode != http.StatusOK || blocked != "" {
+		err := d.catalogResponseError(request, response, content)
+		if !hongguoStopPlaybackFallback(err) && (blocked != "" || response.StatusCode == http.StatusForbidden || response.StatusCode == http.StatusTooManyRequests) {
+			return nil, &hongguoPlaybackResponseError{err.Error()}
+		}
+		return nil, err
+	}
+	if readErr != nil {
+		return nil, readErr
+	}
+	if len(content) > 2<<20 {
+		return nil, &hongguoPlaybackResponseError{"红果播放元数据超过大小限制"}
+	}
+	if len(bytes.TrimSpace(content)) == 0 {
+		if method == http.MethodPost && fullURL == hongguoMultiVideoAPI {
+			return nil, errHongguoEmptyPrimaryPlayback
+		}
+		return nil, &hongguoPlaybackResponseError{"红果播放接口 HTTP 200，但正文为 0 字节；源站未返回本集数据，请稍后重试或确认访问条件，未自动轮换设备身份"}
+	}
+	var result map[string]any
+	decoder := json.NewDecoder(bytes.NewReader(content))
+	decoder.UseNumber()
+	if err := decoder.Decode(&result); err != nil || result == nil {
+		return nil, &hongguoPlaybackResponseError{"红果播放接口响应不是有效的元数据，未使用其他剧集替代"}
+	}
+	if observer, ok := ctx.Value(hongguoPlaybackCookieObserverKey{}).(hongguoPlaybackCookieObserver); ok {
+		if err := observer(request, response); err != nil {
+			return nil, err
+		}
+	}
+	return result, nil
 }
 
+// hongguoMultiParseFallback 解析多线路接口返回的备用媒体信息。
 func hongguoMultiParseFallback(value any) string {
 	switch typed := value.(type) {
 	case string:
@@ -1092,12 +1150,15 @@ func hongguoMultiParseFallback(value any) string {
 	return ""
 }
 
+// resolveHongguoMultiMedia 解析红果多线路媒体。
 func (downloader *Downloader) resolveHongguoMultiMedia(ctx context.Context, videoID string) (providerMedia, error) {
+	ctx, cancel := context.WithTimeout(ctx, 12*time.Second)
+	defer cancel()
 	if !hongguoNumericID.MatchString(videoID) {
 		return providerMedia{}, errors.New("红果视频 ID 无效")
 	}
 	payload, err := json.Marshal(map[string]any{
-		"biz_param": map[string]any{"detail_page_version": 0, "device_level": 3, "disable_digg_stat": false,
+		"biz_param": map[string]any{"detail_page_version": 0, "device_level": 1, "disable_digg_stat": false,
 			"need_all_video_definition": true, "need_mp4_align": false, "use_os_player": false, "use_server_dns": false,
 			"video_platform": 1024},
 		"mixed_video_id_map": map[string]any{"1004": []string{videoID}},
@@ -1105,54 +1166,30 @@ func (downloader *Downloader) resolveHongguoMultiMedia(ctx context.Context, vide
 	if err != nil {
 		return providerMedia{}, err
 	}
-	deviceID := hongguoMultiLocalID()
-	iid := hongguoMultiLocalID()
-	now := time.Now()
-	khronos := uint32(now.Unix())
-	ticketBase := now.UnixMilli()
-	requestTicket := ticketBase
-	query := ""
-	fullURL := ""
-	for offset := 0; offset < 32; offset++ {
-		requestTicket = ticketBase + int64(offset)
-		pairs := append([][2]string{}, hongguoMultiDevicePairsTemplate...)
-		pairs = append(pairs, [2]string{"iid", iid}, [2]string{"device_id", deviceID})
-		pairs = append(pairs, [2]string{"ts", strconv.FormatUint(uint64(khronos), 10)}, [2]string{"_rticket", strconv.FormatInt(requestTicket, 10)})
-		query = hongguoPythonUrlEncode(pairs)
-		fullURL = hongguoMultiVideoAPI + "?" + query
-		if hongguoMultiBranchOf(fullURL, payload, khronos) != 1 {
-			break
+	device, err := downloader.hongguoPlaybackDevice(ctx)
+	if err != nil {
+		if ctx.Err() != nil {
+			return providerMedia{}, ctx.Err()
 		}
+		return providerMedia{}, &hongguoPlaybackResponseError{fmt.Sprintf("红果播放设备初始化失败：%v；未使用临时设备号", publicError(err))}
 	}
-	random := hongguoMultiRandomInt(65536)
-	bodyMd5 := md5.Sum(payload)
-	headers := map[string]string{
-		"User-Agent":                    hongguoMultiUserAgent,
-		"Accept":                        "application/json; charset=utf-8,application/x-protobuf",
-		"Content-Type":                  "application/json; charset=UTF-8",
-		"x-xs-from-web":                 "0",
-		"x-ss-req-ticket":               strconv.FormatInt(requestTicket, 10),
-		"x-tt-request-tag":              "t=0;n=0",
-		"sdk-version":                   "2",
-		"passport-sdk-version":          "50561",
-		"x-vc-bdturing-sdk-version":     "3.7.2.cn",
-		"x-ss-stub":                     strings.ToUpper(hex.EncodeToString(bodyMd5[:])),
-		"x-gorgon":                      hongguoXGorgon(query, payload, khronos, random),
-		"x-khronos":                     strconv.FormatUint(uint64(khronos), 10),
-		"x-ladon":                       base64.StdEncoding.EncodeToString(hongguoBe32(khronos)),
-		"x-argus":                       base64.StdEncoding.EncodeToString(hongguoLe32(khronos)),
-		"x-helios":                      hongguoHelios(khronos),
-		"x-medusa":                      hongguoBuildMedusa(fullURL, payload, khronos, deviceID, "7.1.3.32"),
-		"x-tt-dt":                       "",
+	client := downloader.hongguoClient()
+	if err := client.hongguoAppGate(ctx); err != nil {
+		return providerMedia{}, err
 	}
-	client := downloader.client
-	response, err := hongguoMultiFetchJSON(ctx, client, fullURL, http.MethodPost, headers, payload)
+	defer client.hongguoAppGateRelease()
+	ctx = hongguoPlaybackResponseContext(ctx, func(request *http.Request, response *http.Response) error {
+		return downloader.hongguoRememberPlaybackCookies(device, request, response)
+	})
+	response, err := downloader.hongguoMultiFetchJSON(ctx, hongguoMultiVideoAPI, http.MethodPost, nil, payload, func(request *http.Request) {
+		prepareHongguoPlaybackRequest(request, payload, device, time.Now())
+	})
 	if err != nil {
 		return providerMedia{}, err
 	}
 	code := firstNonEmpty(mapString(response, "code", "Code"), "0")
 	if code != "0" {
-		return providerMedia{}, errors.New("红果 App 接口暂未提供本集播放信息")
+		return providerMedia{}, &hongguoPlaybackResponseError{"红果 App 接口暂未提供本集播放信息"}
 	}
 	data, _ := response["data"].(map[string]any)
 	entry, _ := data[videoID].(map[string]any)
@@ -1176,25 +1213,29 @@ func (downloader *Downloader) resolveHongguoMultiMedia(ctx context.Context, vide
 	default:
 		return providerMedia{}, errors.New("红果 App 播放模型格式异常")
 	}
-	fallback := hongguoMultiParseFallback(model["fallback_api"])
-	if fallback == "" {
-		return providerMedia{}, errors.New("红果 App 接口未返回本集片源地址")
+	infoData := model
+	if len(hongguoMultiMediaRows(model["video_list"])) == 0 {
+		fallback := hongguoMultiParseFallback(model["fallback_api"])
+		if fallback == "" {
+			return providerMedia{}, errors.New("红果 App 接口未返回本集片源地址")
+		}
+		if _, err := hongguoMultiCheckedURL(fallback, []string{"fqnovel.com", "snssdk.com"}); err != nil {
+			return providerMedia{}, err
+		}
+		outer, err := downloader.hongguoMultiFetchJSON(ctx, fallback, http.MethodGet, map[string]string{"User-Agent": hongguoMultiUserAgent}, nil, nil)
+		if err != nil {
+			return providerMedia{}, err
+		}
+		if code := firstNonEmpty(mapString(outer, "code", "Code"), "0"); code != "0" {
+			return providerMedia{}, errors.New("红果片源接口暂未提供本集播放信息")
+		}
+		info := nestedMap(outer, "video_info")
+		infoData = nestedMap(info, "data")
+		if infoData == nil {
+			return providerMedia{}, errors.New("红果 App 接口未返回本集片源模型")
+		}
 	}
-	if _, err := hongguoMultiCheckedURL(fallback, []string{"fqnovel.com", "snssdk.com"}); err != nil {
-		return providerMedia{}, err
-	}
-	outer, err := hongguoMultiFetchJSON(ctx, client, fallback, http.MethodGet, map[string]string{"User-Agent": hongguoMultiUserAgent}, nil)
-	if err != nil {
-		return providerMedia{}, err
-	}
-	if code := firstNonEmpty(mapString(outer, "code", "Code"), "0"); code != "0" {
-		return providerMedia{}, errors.New("红果片源接口暂未提供本集播放信息")
-	}
-	info := nestedMap(outer, "video_info")
-	infoData := nestedMap(info, "data")
-	if infoData == nil {
-		return providerMedia{}, errors.New("红果 App 接口未返回本集片源模型")
-	}
+
 	keySeed := mapString(infoData, "key_seed")
 	var seedBytes []byte
 	if keySeed != "" {
@@ -1229,16 +1270,7 @@ func (downloader *Downloader) resolveHongguoMultiMedia(ctx context.Context, vide
 				continue
 			}
 		}
-		candidates := []string{mapString(row.item, "main_url"), mapString(row.item, "backup_url")}
-		if backupList, ok := row.item["backup_url_list"].([]any); ok {
-			for _, backup := range backupList {
-				candidates = append(candidates, strings.TrimSpace(fmt.Sprint(backup)))
-			}
-		}
-		for _, candidate := range candidates {
-			if candidate == "" {
-				continue
-			}
+		for _, candidate := range hongguoMultiCandidateURLs(row.item) {
 			var media string
 			if len(seedBytes) > 0 {
 				if media, err = hongguoDecryptSpadeURL(candidate, seedBytes); err != nil {
@@ -1276,7 +1308,32 @@ func (downloader *Downloader) resolveHongguoMultiMedia(ctx context.Context, vide
 	return selected, nil
 }
 
-func hongguoMultiMediaRows(list any) []hongguoMultiMediaRow {	var raw []any
+// hongguoMultiCandidateURLs 收集当前媒体响应中的多线路候选 URL。
+func hongguoMultiCandidateURLs(item map[string]any) []string {
+	var candidates []string
+	appendURL := func(value any) {
+		if address, ok := value.(string); ok {
+			if address = strings.TrimSpace(address); address != "" {
+				candidates = append(candidates, address)
+			}
+		}
+	}
+	for _, key := range []string{"main_url", "backup_url", "backup_url_list", "backup_url_1", "backup_url_2", "backup_urls", "url_list"} {
+		switch value := item[key].(type) {
+		case []any:
+			for _, address := range value {
+				appendURL(address)
+			}
+		default:
+			appendURL(value)
+		}
+	}
+	return candidates
+}
+
+// hongguoMultiMediaRows 从多线路响应中提取媒体条目。
+func hongguoMultiMediaRows(list any) []hongguoMultiMediaRow {
+	var raw []any
 	switch typed := list.(type) {
 	case []any:
 		raw = typed
@@ -1296,7 +1353,7 @@ func hongguoMultiMediaRows(list any) []hongguoMultiMediaRow {	var raw []any
 		if item == nil {
 			continue
 		}
-		if mapString(item, "main_url") == "" && mapString(item, "backup_url") == "" && item["backup_url_list"] == nil {
+		if len(hongguoMultiCandidateURLs(item)) == 0 {
 			continue
 		}
 		meta := nestedMap(item, "video_meta")
@@ -1328,4 +1385,3 @@ func hongguoMultiMediaRows(list any) []hongguoMultiMediaRow {	var raw []any
 	}
 	return rows
 }
-

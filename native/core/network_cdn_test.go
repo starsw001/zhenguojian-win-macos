@@ -11,6 +11,7 @@ import (
 	"testing"
 )
 
+// TestCDNKeyEOFUsesVerifiedDNSAndKeepsMediaIdentity 验证「CDN Key EOF Uses Verified DNS And Keeps Media Identity」回归场景。
 func TestCDNKeyEOFUsesVerifiedDNSAndKeepsMediaIdentity(t *testing.T) {
 	var direct, lookups atomic.Int32
 	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -68,6 +69,7 @@ func TestCDNKeyEOFUsesVerifiedDNSAndKeepsMediaIdentity(t *testing.T) {
 	}
 }
 
+// TestCoverDNSRecoveryAcceptsNewImageHosts 验证「Cover DNS Recovery Accepts New Image Hosts」回归场景。
 func TestCoverDNSRecoveryAcceptsNewImageHosts(t *testing.T) {
 	var direct, lookups atomic.Int32
 	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {

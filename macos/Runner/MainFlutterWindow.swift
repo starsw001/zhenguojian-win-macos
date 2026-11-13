@@ -8,7 +8,7 @@ class MainFlutterWindow: NSWindow {
     self.contentViewController = flutterViewController
     self.setFrame(windowFrame, display: true)
 
-    // 窗口标题使用中文显示名（真果鉴 / 红果鉴），而非 ASCII 的 PRODUCT_NAME。
+    // 窗口标题使用中文显示名（真果赏 / 红果赏），而非 ASCII 的 PRODUCT_NAME。
     if let name = Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String,
        !name.isEmpty {
       self.title = name

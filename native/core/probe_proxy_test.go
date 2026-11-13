@@ -11,6 +11,7 @@ import (
 	"time"
 )
 
+// TestProbeProxyMedia 验证「Probe Proxy Media」回归场景。
 func TestProbeProxyMedia(t *testing.T) {
 	if os.Getenv("HG_PROBE") == "" {
 		t.Skip("probe disabled")

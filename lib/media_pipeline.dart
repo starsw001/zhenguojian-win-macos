@@ -61,6 +61,18 @@ class MergePlan {
   final bool canonicalAac;
   int get videoTranscodes => videoChanges.where((change) => change).length;
   int get audioTranscodes => audioChanges.where((change) => change).length;
+  String get outputExtension =>
+      {'h264', 'hevc', 'mpeg4', 'av1'}.contains(video.videoCodec) &&
+          (audio == null ||
+              {
+                'aac',
+                'ac3',
+                'eac3',
+                'alac',
+                'mp3',
+              }.contains(audio!.audio['codec_name']))
+      ? 'mp4'
+      : 'mkv';
 
   static MediaProbe _majority(
     List<MediaProbe> probes,
@@ -138,7 +150,7 @@ class MergePlan {
         probes.any(
           (p) => p.video['extradata_hash'] != video.video['extradata_hash'],
         )) {
-      throw AppFailure('视频编码参数不适合直接拼接，可保留分集并导出 Emby。');
+      throw AppFailure('视频编码参数不适合直接拼接，可保留分集并保存独立 MP4。');
     }
     return MergePlan._(video, audio, vc, ac, transport, canonicalAac);
   }

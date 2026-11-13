@@ -15,6 +15,7 @@ import (
 	"golang.org/x/net/html"
 )
 
+// duanjuFixtureDownloader 返回短剧FixtureDownloader。
 func duanjuFixtureDownloader(t *testing.T, handler http.HandlerFunc) (*Downloader, *httptest.Server) {
 	t.Helper()
 	server := httptest.NewServer(handler)
@@ -28,6 +29,7 @@ func duanjuFixtureDownloader(t *testing.T, handler http.HandlerFunc) (*Downloade
 	return d, server
 }
 
+// TestDuanjuRegistryKeepsDistinctIdentitiesFromExistingSources 验证「Duanju Registry Keeps Distinct Identities From Existing Sources」回归场景。
 func TestDuanjuRegistryKeepsDistinctIdentitiesFromExistingSources(t *testing.T) {
 	existing := []string{sourceHongguo, sourceHuangdou, sourceHuangju, sourceYeguo, sourceDSD, sourceHuangguoAI, sourceHuangguoVideo, sourceCloudFront}
 	seen := map[string]bool{}
@@ -57,6 +59,7 @@ func TestDuanjuRegistryKeepsDistinctIdentitiesFromExistingSources(t *testing.T) 
 	}
 }
 
+// TestDuanjuYaguoParsesCatalogDetailAndSearch 验证「Duanju Yaguo Parses Catalog Detail And Search」回归场景。
 func TestDuanjuYaguoParsesCatalogDetailAndSearch(t *testing.T) {
 	d, server := duanjuFixtureDownloader(t, func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Type", "application/json")
@@ -109,6 +112,7 @@ func TestDuanjuYaguoParsesCatalogDetailAndSearch(t *testing.T) {
 	}
 }
 
+// TestDuanjuGuanguoPostsJSONBodyAndReadsEpisodes 验证「Duanju Guanguo Posts JSON Body And Reads Episodes」回归场景。
 func TestDuanjuGuanguoPostsJSONBodyAndReadsEpisodes(t *testing.T) {
 	d, server := duanjuFixtureDownloader(t, func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Type", "application/json")
@@ -145,6 +149,7 @@ func TestDuanjuGuanguoPostsJSONBodyAndReadsEpisodes(t *testing.T) {
 	}
 }
 
+// TestDuanjuMaccmsParsesCardsAndPlaylist 验证「Duanju Maccms Parses Cards And Playlist」回归场景。
 func TestDuanjuMaccmsParsesCardsAndPlaylist(t *testing.T) {
 	d, server := duanjuFixtureDownloader(t, func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -161,7 +166,7 @@ func TestDuanjuMaccmsParsesCardsAndPlaylist(t *testing.T) {
 		_, _ = writer.Write([]byte(`<html><body><div class="BrowseList_listBox">
 		<div class="BrowseList_listItem"><a href="/detail/100.html" title="五五样本"><img data-original="/pic/100.jpg"></a>
 		<span class="meta-post-type2">更新至12集</span></div>
-		</div></body></html>`))
+		</div><a rel="next" href="/index.php/vod/show/id/66/page/2.html">下一页</a></body></html>`))
 	})
 	d.providerHosts[sourceWuguo] = server.URL
 
@@ -191,6 +196,7 @@ func TestDuanjuMaccmsParsesCardsAndPlaylist(t *testing.T) {
 	}
 }
 
+// TestDuanjuMaccmsPlayerParsingHandlesCommonShells 验证「Duanju Maccms Player Parsing Handles Common Shells」回归场景。
 func TestDuanjuMaccmsPlayerParsingHandlesCommonShells(t *testing.T) {
 	playerShell := `<html><script>var player_aaaa={"flag":"1","url":"https:\/\/cdn.example.cn\/hls\/index.m3u8"}</script></html>`
 	if got := maccmsNormalizePlaybackURL(maccmsPlayerURL(playerShell)); got != "https://cdn.example.cn/hls/index.m3u8" {
@@ -206,6 +212,24 @@ func TestDuanjuMaccmsPlayerParsingHandlesCommonShells(t *testing.T) {
 	}
 }
 
+// TestPiguoRootDetailKeepsNumericEpisodeLinks 验证「Piguo Root Detail Keeps Numeric Episode Links」回归场景。
+func TestPiguoRootDetailKeepsNumericEpisodeLinks(t *testing.T) {
+	document, err := html.Parse(strings.NewReader(`<html><body>
+	<a href="/644371/2/96">下集</a><a href="/644371/1/96">线路</a>
+	<a href="/644371/1/96">1</a><a href="/644371/2/96">2</a>
+	<a href="/644371/2/96">2</a><a href="/644371/3/94">3</a>
+	<a href="/other/1/96">1</a><a href="/p/66/c/67">67</a>
+	</body></html>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	episodes := piguoEpisodesFromDocument(document)
+	if len(episodes) != 3 || episodes[0].Index != 1 || episodes[1].Index != 2 || episodes[2].Index != 3 || episodes[2].URL != "/644371/3/94" {
+		t.Fatalf("root detail episodes or line identity changed: %+v", episodes)
+	}
+}
+
+// TestDuanjuNiuguoDecryptsResponseWithRequestURIKey 验证「Duanju Niuguo Decrypts Response With Request URI Key」回归场景。
 func TestDuanjuNiuguoDecryptsResponseWithRequestURIKey(t *testing.T) {
 	payload := `{"status":0,"msg":"ok","data":[{"vod_id":575258,"vod_name":"牛果样本","vod_pic":"https://pic.example.cn/a.jpg","vod_remarks":"已完结","vod_douban_score":"4.5"}]}`
 	block, err := aes.NewCipher(niuguoDecryptKey("/list?class=&ord"))
@@ -238,6 +262,7 @@ func TestDuanjuNiuguoDecryptsResponseWithRequestURIKey(t *testing.T) {
 	}
 }
 
+// TestDuanjuNiuguoRequestURIUsesEscapedQuery 验证「Duanju Niuguo Request URI Uses Escaped Query」回归场景。
 func TestDuanjuNiuguoRequestURIUsesEscapedQuery(t *testing.T) {
 	address := "https://ccc.example.cn/list?class=&order=%E6%9C%80%E6%96%B0&page=1"
 	if got := niuguoRequestURI(address); got != "/list?class=&order=%E6%9C%80%E6%96%B0&page=1" {
@@ -248,6 +273,7 @@ func TestDuanjuNiuguoRequestURIUsesEscapedQuery(t *testing.T) {
 	}
 }
 
+// TestDuanjuMaccmsAcceptsHashedClassNamesAndWidenedEpisodes 验证「Duanju Maccms Accepts Hashed Class Names And Widened Episodes」回归场景。
 func TestDuanjuMaccmsAcceptsHashedClassNamesAndWidenedEpisodes(t *testing.T) {
 	document, err := html.Parse(strings.NewReader(`<html><body>
 	<ul id="home1" class="_9dbe81752a1dbf17-vodlist clearfix">
@@ -283,8 +309,10 @@ func TestDuanjuMaccmsAcceptsHashedClassNamesAndWidenedEpisodes(t *testing.T) {
 	}
 }
 
+// TestDuanjuMaccmsDetailCandidatesMatchLiveSites 验证「Duanju Maccms Detail Candidates Match Live Sites」回归场景。
 func TestDuanjuMaccmsDetailCandidatesMatchLiveSites(t *testing.T) {
 	cases := map[string]string{
+		sourcePiguo:   "https://www.example.cn/644371",
 		sourceWuguo:   "https://www.example.cn/index.php/vod/detail/id/45856.html",
 		sourceWangguo: "https://www.example.cn/vod/48478.html",
 		sourceHuaguo:  "https://www.example.cn/zywview/20523.html",
@@ -297,6 +325,7 @@ func TestDuanjuMaccmsDetailCandidatesMatchLiveSites(t *testing.T) {
 	}
 }
 
+// firstNumericTail 提取首个数字尾部。
 func firstNumericTail(address string) string {
 	cleaned := strings.TrimSuffix(address, ".html")
 	parts := strings.Split(cleaned, "/")
@@ -308,6 +337,7 @@ func firstNumericTail(address string) string {
 	return ""
 }
 
+// TestDuanjuHeguoParsesNextDataWrappedResponses 验证「Duanju Heguo Parses Next Data Wrapped Responses」回归场景。
 func TestDuanjuHeguoParsesNextDataWrappedResponses(t *testing.T) {
 	d, server := duanjuFixtureDownloader(t, func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -338,6 +368,7 @@ func TestDuanjuHeguoParsesNextDataWrappedResponses(t *testing.T) {
 	}
 }
 
+// TestDuanjuSearchSupportMatchesReferenceScripts 验证「Duanju Search Support Matches Reference Scripts」回归场景。
 func TestDuanjuSearchSupportMatchesReferenceScripts(t *testing.T) {
 	supported := []string{sourceYaguo, sourceMaoguo, sourceFanguo, sourceGuanguo, sourceHeguo, sourceXingguo, sourceHuaguo, sourceNiuguo, sourceWangguo, sourceFaguo, sourcePiguo, sourceWuguo}
 	for _, source := range supported {
@@ -363,6 +394,7 @@ func TestDuanjuSearchSupportMatchesReferenceScripts(t *testing.T) {
 	}
 }
 
+// TestDuanjuMaoguoSearchSignatureFollowsReferenceOrder 验证「Duanju Maoguo Search Signature Follows Reference Order」回归场景。
 func TestDuanjuMaoguoSearchSignatureFollowsReferenceOrder(t *testing.T) {
 	want := duanjuMD5("extend=page=1read_preference=0track_id=" + duanjuMaoguoTrackID + "wd=都市" + duanjuMaoguoKey)
 	if got := duanjuMD5("extend=page=1read_preference=0track_id=" + duanjuMaoguoTrackID + "wd=都市" + duanjuMaoguoKey); got != want {
@@ -373,6 +405,7 @@ func TestDuanjuMaoguoSearchSignatureFollowsReferenceOrder(t *testing.T) {
 	}
 }
 
+// TestDuanjuMaccmsFallsBackToDetailAnchors 验证「Duanju Maccms Falls Back To Detail Anchors」回归场景。
 func TestDuanjuMaccmsFallsBackToDetailAnchors(t *testing.T) {
 	document, err := html.Parse(strings.NewReader(`<html><body>
 	<div class="random-hash-outer"><ul><li class="x1 y2 z3"><div class="q9 w8 e7 thumb">
@@ -393,6 +426,7 @@ func TestDuanjuMaccmsFallsBackToDetailAnchors(t *testing.T) {
 	}
 }
 
+// TestDuanjuRejectsMismatchedSourceIDsAndCategories 验证「Duanju Rejects Mismatched Source I Ds And Categories」回归场景。
 func TestDuanjuRejectsMismatchedSourceIDsAndCategories(t *testing.T) {
 	if split, id, ok := splitProviderDramaID("yaguo:51"); !ok || split != sourceYaguo || id != "51" {
 		t.Fatalf("duanju drama id split failed: %q %q %v", split, id, ok)
@@ -414,6 +448,7 @@ func TestDuanjuRejectsMismatchedSourceIDsAndCategories(t *testing.T) {
 	}
 }
 
+// TestDuanjuSourceAvailabilityFollowsBuildVariant 验证「Duanju Source Availability Follows Build Variant」回归场景。
 func TestDuanjuSourceAvailabilityFollowsBuildVariant(t *testing.T) {
 	previous := buildAllSources
 	buildAllSources = "false"
@@ -427,6 +462,7 @@ func TestDuanjuSourceAvailabilityFollowsBuildVariant(t *testing.T) {
 	buildAllSources = previous
 }
 
+// TestDuanjuNormalizePlaybackURLStripsTrailingPunctuation 验证「Duanju Normalize Playback URL Strips Trailing Punctuation」回归场景。
 func TestDuanjuNormalizePlaybackURLStripsTrailingPunctuation(t *testing.T) {
 	cases := map[string]string{
 		"https://cdn.example.cn/wjv11/202508/15/SnEXGkSedD83/video/index.m3u8,": "https://cdn.example.cn/wjv11/202508/15/SnEXGkSedD83/video/index.m3u8",
@@ -444,6 +480,7 @@ func TestDuanjuNormalizePlaybackURLStripsTrailingPunctuation(t *testing.T) {
 	}
 }
 
+// TestDuanjuNiuguoResolverRejectsMissingEpisodeID 验证「Duanju Niuguo Resolver Rejects Missing Episode ID」回归场景。
 func TestDuanjuNiuguoResolverRejectsMissingEpisodeID(t *testing.T) {
 	d := &Downloader{cfg: Config{Retries: 1}, limiter: newRequestLimiter(2, 0), providerHosts: map[string]string{}}
 	_, err := d.resolveNiuguoMedia(context.Background(), Task{Chapter: Chapter{Source: sourceNiuguo}})
@@ -455,6 +492,7 @@ func TestDuanjuNiuguoResolverRejectsMissingEpisodeID(t *testing.T) {
 	}
 }
 
+// TestDuanjuGuanguoEmptyDetailIsReportedAsUpstream 验证「Duanju Guanguo Empty Detail Is Reported As Upstream」回归场景。
 func TestDuanjuGuanguoEmptyDetailIsReportedAsUpstream(t *testing.T) {
 	d, _ := duanjuFixtureDownloader(t, func(writer http.ResponseWriter, request *http.Request) {
 		if !strings.Contains(request.URL.Path, "shortVideoDetail") {
@@ -473,6 +511,7 @@ func TestDuanjuGuanguoEmptyDetailIsReportedAsUpstream(t *testing.T) {
 	}
 }
 
+// TestDuanjuCleanTitleStripsLiveSeoSuffixes 验证「Duanju Clean Title Strips Live Seo Suffixes」回归场景。
 func TestDuanjuCleanTitleStripsLiveSeoSuffixes(t *testing.T) {
 	cases := map[string]string{
 		"黑月光归来-短剧黑月光归来全集-黑月光归来免费在线观看 - 免费五五短剧视频分享大全 - 最新的免费短剧视频": "黑月光归来",
@@ -489,6 +528,7 @@ func TestDuanjuCleanTitleStripsLiveSeoSuffixes(t *testing.T) {
 	}
 }
 
+// TestDuanjuSearchCoverageMatchesImplementedSources 验证「Duanju Search Coverage Matches Implemented Sources」回归场景。
 func TestDuanjuSearchCoverageMatchesImplementedSources(t *testing.T) {
 	for _, spec := range duanjuProviderCatalog {
 		if !spec.Searcher {
@@ -503,6 +543,7 @@ func TestDuanjuSearchCoverageMatchesImplementedSources(t *testing.T) {
 	}
 }
 
+// TestDuanjuHeguoSearchBuildsDocumentedRequest 验证「Duanju Heguo Search Builds Documented Request」回归场景。
 func TestDuanjuHeguoSearchBuildsDocumentedRequest(t *testing.T) {
 	var gotPath, gotMethod, gotPName, gotBody string
 	d, server := duanjuFixtureDownloader(t, func(writer http.ResponseWriter, request *http.Request) {
@@ -539,6 +580,7 @@ func TestDuanjuHeguoSearchBuildsDocumentedRequest(t *testing.T) {
 	}
 }
 
+// TestDuanjuXingguoSearchUsesKeyParameter 验证「Duanju Xingguo Search Uses Key Parameter」回归场景。
 func TestDuanjuXingguoSearchUsesKeyParameter(t *testing.T) {
 	var gotQuery url.Values
 	d, server := duanjuFixtureDownloader(t, func(writer http.ResponseWriter, request *http.Request) {
@@ -563,6 +605,7 @@ func TestDuanjuXingguoSearchUsesKeyParameter(t *testing.T) {
 	}
 }
 
+// TestDuanjuSearchRejectsBlankKeyword 验证「Duanju Search Rejects Blank Keyword」回归场景。
 func TestDuanjuSearchRejectsBlankKeyword(t *testing.T) {
 	d, _ := duanjuFixtureDownloader(t, func(writer http.ResponseWriter, request *http.Request) {})
 	if _, err := d.searchHeguo(context.Background(), "   "); err == nil {
@@ -573,6 +616,7 @@ func TestDuanjuSearchRejectsBlankKeyword(t *testing.T) {
 	}
 }
 
+// TestDuanjuPlainTextStripsSearchHighlightMarkup 验证「Duanju Plain Text Strips Search Highlight Markup」回归场景。
 func TestDuanjuPlainTextStripsSearchHighlightMarkup(t *testing.T) {
 	cases := map[string]string{
 		"<font color='#ff4242'>都</font><font color='#ff4242'>市</font>无上仙尊（<font color='#ff4242'>都</font><font color='#ff4242'>市</font>之无双仙尊）": "都市无上仙尊（都市之无双仙尊）",
@@ -585,5 +629,36 @@ func TestDuanjuPlainTextStripsSearchHighlightMarkup(t *testing.T) {
 		if got := duanjuPlainText(input); got != want {
 			t.Fatalf("plain %q => %q, want %q", input, got, want)
 		}
+	}
+}
+
+// TestWangguoSearchUsesObservedGetForm 验证「Wangguo Search Uses Observed Get Form」回归场景。
+func TestWangguoSearchUsesObservedGetForm(t *testing.T) {
+	d, server := duanjuFixtureDownloader(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/search/-------------.html" || r.URL.Query().Get("wd") != "第一农夫" {
+			t.Errorf("wrong observed search form: %s %s", r.Method, r.URL.String())
+			w.WriteHeader(400)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(`<html><div class="module-item"><a href="/vod/49665.html" title="第一农夫第二季">第一农夫第二季</a></div></html>`))
+	})
+	d.providerHosts[sourceWangguo] = server.URL
+	items, err := d.searchMaccms(context.Background(), sourceWangguo, "第一农夫")
+	if err != nil || len(items) != 1 || items[0].SourceID != "49665" {
+		t.Fatalf("search form failed: %+v %v", items, err)
+	}
+}
+
+// TestWangguoSearchCaptchaIsNotAnEmptySuccessfulResult 验证「Wangguo Search Captcha Is Not An Empty Successful Result」回归场景。
+func TestWangguoSearchCaptchaIsNotAnEmptySuccessfulResult(t *testing.T) {
+	d, server := duanjuFixtureDownloader(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(`<html><title>安全验证</title><p>请选择滑动拼图或图形验证码完成验证</p></html>`))
+	})
+	d.providerHosts[sourceWangguo] = server.URL
+	items, err := d.searchMaccms(context.Background(), sourceWangguo, "样本")
+	if err == nil || len(items) != 0 || !strings.Contains(err.Error(), "未绕过验证码") {
+		t.Fatalf("verification page masqueraded as empty search: %+v %v", items, err)
 	}
 }

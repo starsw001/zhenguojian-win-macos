@@ -8,6 +8,7 @@ import (
 	"time"
 )
 
+// TestLiveProviderCatalogRankingDetailAndPlaybackSmoke 验证「Live Provider Catalog Ranking Detail And Playback Smoke」回归场景。
 func TestLiveProviderCatalogRankingDetailAndPlaybackSmoke(t *testing.T) {
 	if os.Getenv("CHECK_LIVE_PROVIDERS") != "true" {
 		t.Skip("set CHECK_LIVE_PROVIDERS=true to touch live provider text APIs")
@@ -86,6 +87,7 @@ func TestLiveProviderCatalogRankingDetailAndPlaybackSmoke(t *testing.T) {
 	}
 }
 
+// fetchLiveCatalogPage 获取Live目录页。
 func fetchLiveCatalogPage(ctx context.Context, d *Downloader, source string) ([]Drama, bool, error) {
 	switch source {
 	case sourceHuangju:
@@ -99,6 +101,7 @@ func fetchLiveCatalogPage(ctx context.Context, d *Downloader, source string) ([]
 	}
 }
 
+// fetchLiveDetail 获取Live详情。
 func fetchLiveDetail(ctx context.Context, d *Downloader, source, sourceID string) (Drama, []Chapter, error) {
 	switch source {
 	case sourceHuangju:

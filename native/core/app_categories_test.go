@@ -10,6 +10,7 @@ import (
 	"testing"
 )
 
+// TestNativeCategoryPaginationStaysIndependent 验证「Native Category Pagination Stays Independent」回归场景。
 func TestNativeCategoryPaginationStaysIndependent(t *testing.T) {
 	engine := sourceFixtureEngine(t, func(request *http.Request) (*http.Response, error) {
 		if !strings.HasPrefix(request.URL.Path, "/api/videos/category/ai-") {
@@ -57,6 +58,7 @@ func TestNativeCategoryPaginationStaysIndependent(t *testing.T) {
 	}
 }
 
+// TestNativeCategoryDiscoveryUsesSourceLinks 验证「Native Category Discovery Uses Source Links」回归场景。
 func TestNativeCategoryDiscoveryUsesSourceLinks(t *testing.T) {
 	categories := parseHuangguoVideoCategories(`<a href="/videos">全部</a><a href="/videos?category=2&amp;sort=hot"><span>合成分类甲</span></a><a href="/videos?category=5">合成分类乙</a><a href="/videos?category=2">重复</a><a href="/other?category=8">无关</a><a href="/videos?category=../bad">无效</a>`)
 	if len(categories) != 2 || categories[0].ID != "2" || categories[0].Name != "合成分类甲" || categories[1].ID != "5" {
@@ -72,6 +74,7 @@ func TestNativeCategoryDiscoveryUsesSourceLinks(t *testing.T) {
 	}
 }
 
+// TestLegacyResource404KeepsHealthyEndpoint 验证「Legacy Resource 404 Keeps Healthy Endpoint」回归场景。
 func TestLegacyResource404KeepsHealthyEndpoint(t *testing.T) {
 	d := legacyFixtureDownloader(t, func(request *http.Request) (*http.Response, error) {
 		if strings.Contains(request.URL.Path, "/detail/") {

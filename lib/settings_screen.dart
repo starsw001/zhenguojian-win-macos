@@ -8,7 +8,6 @@ import 'package:path_provider/path_provider.dart';
 
 import 'core_bridge.dart';
 import 'app_theme.dart';
-import 'background_downloads.dart';
 import 'local_store.dart';
 import 'profiles_screen.dart';
 import 'app_build.dart';
@@ -186,14 +185,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ),
                 ),
               ),
-              ListTile(
-                key: const ValueKey('diary-setting'),
-                leading: const Icon(Icons.receipt_long_rounded),
-                title: const Text('播放调试日记'),
-                subtitle: const Text('查看并复制应用运行与播放器的详细事件日志'),
-                trailing: const Icon(Icons.chevron_right_rounded),
-                onTap: () => DiaryService.showDiaryDialog(context),
-              ),
+              if (appMaintenanceEntriesVisible)
+                ListTile(
+                  key: const ValueKey('diary-setting'),
+                  leading: const Icon(Icons.receipt_long_rounded),
+                  title: const Text('播放调试日记'),
+                  subtitle: const Text('查看并复制应用运行与播放器的详细事件日志'),
+                  trailing: const Icon(Icons.chevron_right_rounded),
+                  onTap: () => DiaryService.showDiaryDialog(context),
+                ),
               if (widget.store.canDownload)
                 ListTile(
                   leading: const Icon(Icons.download_outlined),
@@ -239,37 +239,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     ),
                   ),
                 ),
-                SwitchListTile(
-                  value: widget.store.autoExport,
-                  title: const Text('下载完成后自动导出 Emby'),
-                  subtitle: const Text(
-                    '在下载目录的 exports 中生成视频和海报 URL 元数据，可将该目录加入 Emby 媒体库。',
+                const ListTile(
+                  leading: Icon(Icons.video_file_outlined),
+                  title: Text('按集保存独立 MP4'),
+                  subtitle: Text(
+                    '成品位于下载目录 exports 下的剧名文件夹，不生成 NFO 或 Season 子目录；校验入库后清理原始缓存，已有同集自动跳过。',
                   ),
-                  onChanged: _busy
-                      ? null
-                      : (value) async {
-                          try {
-                            if (value) {
-                              await BackgroundDownloads.ensureStarted();
-                            }
-                            await widget.store.setAutoExport(value);
-                          } catch (error) {
-                            if (mounted) {
-                              setState(() => _message = error.toString());
-                            }
-                          }
-                        },
-                ),
-                SwitchListTile(
-                  value: widget.store.exportPosters,
-                  title: const Text('同时导出海报文件'),
-                  subtitle: const Text('默认只写海报 URL。源站海报需要解密或外部读取失败时可开启。'),
-                  onChanged: _busy
-                      ? null
-                      : (value) => saveUserChange(
-                          context,
-                          () => widget.store.setExportPosters(value),
-                        ),
                 ),
                 ListTile(
                   leading: const Icon(Icons.backup_outlined),
@@ -307,9 +282,12 @@ class StorageScreen extends StatefulWidget {
     super.key,
     required this.repository,
     required this.store,
+    this.directoryPicker,
   });
   final AppRepository repository;
   final LocalStore store;
+  @visibleForTesting
+  final Future<String?> Function()? directoryPicker;
   @override
   State<StorageScreen> createState() => _StorageScreenState();
 }
@@ -318,6 +296,7 @@ class _StorageScreenState extends State<StorageScreen> {
   Map<String, dynamic>? _info;
   String? _error;
   bool _busy = false;
+  bool _choosing = false;
   @override
   void initState() {
     super.initState();
@@ -326,6 +305,10 @@ class _StorageScreenState extends State<StorageScreen> {
 
   Future<void> _refresh() async {
     try {
+      final directory = await widget.repository.downloadDirectory();
+      if (mounted) {
+        setState(() => _info = {...?_info, 'directory': directory});
+      }
       final info = await widget.repository.storage();
       if (mounted) {
         setState(() {
@@ -339,6 +322,18 @@ class _StorageScreenState extends State<StorageScreen> {
   }
 
   Future<void> _move() async {
+    if (_busy || _choosing) return;
+    setState(() => _choosing = true);
+    try {
+      await _chooseAndMove();
+    } catch (error) {
+      if (mounted) setState(() => _error = error.toString());
+    } finally {
+      if (mounted) setState(() => _choosing = false);
+    }
+  }
+
+  Future<void> _chooseAndMove() async {
     String? parent;
     if (Platform.isAndroid || Platform.isIOS) {
       final support = await getApplicationSupportDirectory();
@@ -369,7 +364,9 @@ class _StorageScreenState extends State<StorageScreen> {
         ),
       );
     } else {
-      parent = await FilePicker.getDirectoryPath(dialogTitle: '选择下载保存位置');
+      parent =
+          await (widget.directoryPicker?.call() ??
+              FilePicker.getDirectoryPath(dialogTitle: '选择下载保存位置'));
     }
     if (parent == null || !mounted) return;
     final yes = await showDialog<bool>(
@@ -397,7 +394,11 @@ class _StorageScreenState extends State<StorageScreen> {
       _error = null;
     });
     try {
-      await widget.repository.moveDownloads(parent);
+      if (Platform.isWindows || Platform.isMacOS || Platform.isLinux) {
+        await widget.repository.moveDownloadsExactly(parent);
+      } else {
+        await widget.repository.moveDownloads(parent);
+      }
       await _refresh();
     } catch (error) {
       if (mounted) setState(() => _error = error.toString());
@@ -438,7 +439,17 @@ class _StorageScreenState extends State<StorageScreen> {
                   label: const Text('复制路径'),
                 ),
                 const SizedBox(height: 20),
-                const Text('在下载页删除不需要的分集，在本地媒体页删除合并成品或 Emby 导出，可释放空间。'),
+                const Text('在下载页删除不需要的分集，在本地媒体页删除合并成品或独立 MP4，可释放空间。'),
+              ],
+              if (Platform.isWindows) ...[
+                const SizedBox(height: 16),
+                const Text(
+                  '首次使用默认保存到软件所在目录的 download 文件夹，不存在时自动创建。已设置的下载目录会继续保留。',
+                ),
+                const SizedBox(height: 8),
+                const Text(
+                  '选择的文件夹就是下载目录，不额外添加子目录。更改位置需确认后才迁移；若软件目录不可写，请选择其他位置，无需以管理员身份运行。',
+                ),
               ],
               if (_busy || (_info == null && _error == null))
                 const Padding(
@@ -453,9 +464,9 @@ class _StorageScreenState extends State<StorageScreen> {
                 ),
               if (widget.store.profile.admin)
                 FilledButton.icon(
-                  onPressed: _busy ? null : _move,
+                  onPressed: _busy || _choosing ? null : _move,
                   icon: const Icon(Icons.drive_file_move_outline),
-                  label: const Text('更改并迁移目录'),
+                  label: Text(Platform.isWindows ? '选择下载目录' : '更改并迁移目录'),
                 ),
               TextButton(
                 onPressed: _busy ? null : _refresh,

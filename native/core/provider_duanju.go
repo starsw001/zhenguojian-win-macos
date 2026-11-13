@@ -72,6 +72,7 @@ var duanjuProviderCatalog = []duanjuSourceSpec{
 
 var duanjuMarkupPattern = regexp.MustCompile(`<[^>]{1,80}>`)
 
+// duanjuPlainText 返回短剧纯文本。
 func duanjuPlainText(raw string) string {
 	text := strings.TrimSpace(raw)
 	if !strings.Contains(text, "<") {
@@ -111,16 +112,19 @@ var duanjuSourcesByName = func() map[string]duanjuSourceSpec {
 	return registry
 }()
 
+// isDuanjuProviderSource 判断是否为短剧站源站源。
 func isDuanjuProviderSource(source string) bool {
 	_, found := duanjuSourcesByName[canonicalProviderSource(source)]
 	return found
 }
 
+// duanjuSourceSpecFor 返回短剧站源Spec对应。
 func duanjuSourceSpecFor(source string) (duanjuSourceSpec, bool) {
 	spec, found := duanjuSourcesByName[canonicalProviderSource(source)]
 	return spec, found
 }
 
+// duanjuSourceName 返回短剧站源名称。
 func duanjuSourceName(source string) string {
 	if spec, found := duanjuSourceSpecFor(source); found {
 		return spec.Name
@@ -128,6 +132,7 @@ func duanjuSourceName(source string) string {
 	return canonicalProviderSource(source)
 }
 
+// duanjuBaseURL 返回短剧基础 URL。
 func (d *Downloader) duanjuBaseURL(source string) string {
 	spec, found := duanjuSourceSpecFor(source)
 	if !found {
@@ -139,6 +144,7 @@ func (d *Downloader) duanjuBaseURL(source string) string {
 	return strings.TrimRight(spec.Base, "/")
 }
 
+// duanjuSourceForHost 返回短剧站源对应主机。
 func duanjuSourceForHost(host string) string {
 	host = strings.ToLower(strings.TrimSpace(host))
 	switch {
@@ -171,6 +177,7 @@ func duanjuSourceForHost(host string) string {
 	}
 }
 
+// validDuanjuCategory 判断是否有效：短剧分类。
 func validDuanjuCategory(source, category string) bool {
 	if category == "" {
 		return true
@@ -179,7 +186,9 @@ func validDuanjuCategory(source, category string) bool {
 		return false
 	}
 	switch canonicalProviderSource(source) {
-	case sourceHeguo, sourceXingguo, sourceYaguo, sourceMaoguo, sourceNiuguo:
+	case sourceMaoguo:
+		return category == "0" || category == "-1" || webProviderNumericID.MatchString(category)
+	case sourceHeguo, sourceXingguo, sourceYaguo, sourceNiuguo:
 		return webProviderNumericID.MatchString(strings.SplitN(category, "-", 2)[0])
 	case sourceFanguo, sourceGuanguo:
 		return true
@@ -252,8 +261,10 @@ var duanjuStaticCategories = map[string][]duanjuCategory{
 	},
 }
 
+// duanjuQueryEscape 返回短剧查询参数转义。
 func duanjuQueryEscape(value string) string { return url.QueryEscape(strings.TrimSpace(value)) }
 
+// duanjuAbsolute 返回短剧Absolute。
 func duanjuAbsolute(base, reference string) string {
 	reference = strings.TrimSpace(reference)
 	if reference == "" {

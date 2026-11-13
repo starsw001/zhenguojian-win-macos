@@ -15,6 +15,7 @@ type heifReader struct {
 	err  error
 }
 
+// take 从 HEIF 读取器中消费指定长度的字节。
 func (reader *heifReader) take(size int) []byte {
 	if reader.err != nil || size < 0 || size > len(reader.data) {
 		reader.err = errors.New("HEIC 数据不完整")
@@ -25,6 +26,7 @@ func (reader *heifReader) take(size int) []byte {
 	return value
 }
 
+// uint 从当前二进制读取器中取得指定宽度的无符号整数。
 func (reader *heifReader) uint(size int) uint64 {
 	if size < 0 || size > 8 {
 		reader.err = errors.New("HEIC 字段长度无效")
@@ -37,6 +39,7 @@ func (reader *heifReader) uint(size int) uint64 {
 	return value
 }
 
+// heifBoxes 解析 HEIF 容器中的盒结构。
 func heifBoxes(data []byte) ([]heifBox, error) {
 	var boxes []heifBox
 	for len(data) > 0 {
@@ -61,6 +64,7 @@ func heifBoxes(data []byte) ([]heifBox, error) {
 	return boxes, nil
 }
 
+// heifBoxData 取得指定 HEIF 盒中的数据。
 func heifBoxData(boxes []heifBox, kind string) []byte {
 	for _, box := range boxes {
 		if box.kind == kind {
@@ -70,6 +74,7 @@ func heifBoxData(boxes []heifBox, kind string) []byte {
 	return nil
 }
 
+// isHEICImage 判断是否为HEIC图片。
 func isHEICImage(data []byte) bool {
 	if len(data) < 16 || string(data[4:8]) != "ftyp" {
 		return false
@@ -95,6 +100,7 @@ type heifImage struct {
 	filters []string
 }
 
+// extractHEICImage 提取HEIC图片。
 func extractHEICImage(data []byte) (heifImage, error) {
 	var image heifImage
 	if len(data) > nativeCoverMaxBytes || !isHEICImage(data) {
@@ -139,6 +145,7 @@ func extractHEICImage(data []byte) (heifImage, error) {
 	return image, err
 }
 
+// validateHEICItem 校验HEIC条目。
 func validateHEICItem(data []byte, itemID uint64) error {
 	reader := &heifReader{data: data}
 	version := reader.uint(1)
@@ -179,6 +186,7 @@ func validateHEICItem(data []byte, itemID uint64) error {
 	return errors.New("HEIC 主图片不存在")
 }
 
+// heifItemProperties 读取 HEIF 图像条目的属性关联。
 func heifItemProperties(data []byte, itemID uint64) ([]byte, []string, error) {
 	boxes, err := heifBoxes(data)
 	if err != nil {
@@ -254,6 +262,7 @@ func heifItemProperties(data []byte, itemID uint64) ([]byte, []string, error) {
 	return config, filters, nil
 }
 
+// heifItemData 提取 HEIF 图像条目对应的媒体数据。
 func heifItemData(data []byte, itemID uint64, file, inline []byte) ([]byte, error) {
 	reader := &heifReader{data: data}
 	version := reader.uint(1)
@@ -313,6 +322,7 @@ func heifItemData(data []byte, itemID uint64, file, inline []byte) ([]byte, erro
 	return result, nil
 }
 
+// heifAnnexB 将 HEIF 媒体数据转换为 Annex B 字节流。
 func heifAnnexB(config, item []byte) ([]byte, error) {
 	if len(config) < 23 || config[0] != 1 {
 		return nil, errors.New("HEIC 解码配置无效")

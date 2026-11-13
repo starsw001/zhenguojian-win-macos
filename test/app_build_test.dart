@@ -17,9 +17,8 @@ void main() {
   test('edition sources include DSD only in the all-source build', () async {
     SharedPreferences.setMockInitialValues({'source': 'huangdou'});
     final store = testStore(await SharedPreferences.getInstance());
-    expect(appSlug, allSourcesEnabled ? 'zhenguojian' : 'hongguojian');
-    // 默认只显示红果、韩小圈、鬼片网与青空次元，其余站源需要密码解锁。
-    expect(store.sources.length, allSourcesEnabled ? 4 : 1);
+    expect(appSlug, allSourcesEnabled ? 'zhenguoshang' : 'hongguoshang');
+    expect(store.sources.length, allSourcesEnabled ? 23 : 1);
     expect(
       SourceSite.values.any((source) => source.id == 'dsd'),
       allSourcesEnabled,
@@ -27,11 +26,11 @@ void main() {
     expect(SourceSite.isAvailable('dsd'), allSourcesEnabled);
     expect(SourceSite.isKnown('dsd'), isTrue);
     expect(SourceSite.byId('dsd').name, '帝果');
-    expect(store.allowsSource('dsd'), isFalse);
-    expect(store.source, 'hongguo');
+    expect(store.allowsSource('dsd'), allSourcesEnabled);
+    expect(store.source, allSourcesEnabled ? 'huangdou' : 'hongguo');
     await store.enableSourceGate('666666');
     expect(store.sourcesUnlocked, isTrue);
-    expect(store.sources.length, allSourcesEnabled ? 11 : 1);
+    expect(store.sources.length, allSourcesEnabled ? 23 : 1);
     expect(store.allowsSource('dsd'), allSourcesEnabled);
     store.dispose();
   });
@@ -72,7 +71,18 @@ void main() {
       await store.importBackup(backup);
       expect(store.preferences.getString('source'), 'huangdou');
       expect(store.history, hasLength(allSourcesEnabled ? 2 : 1));
-      expect(store.favorites.map((drama) => drama.id), [other.id]);
+      expect(
+        store.favorites.map((drama) => drama.id),
+        allSourcesEnabled ? [other.id] : <String>[],
+      );
+      final restoredLibrary =
+          (jsonDecode(await store.exportBackup())['libraries']
+                  as Map)['default']
+              as Map;
+      expect(
+        (restoredLibrary['favorites'] as List).map((row) => (row as Map)['id']),
+        [other.id],
+      );
       store.dispose();
     },
   );

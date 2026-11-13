@@ -103,6 +103,7 @@ type nativeLANServer struct {
 	slots       chan struct{}
 }
 
+// nativeLANRandom 返回原生局域网随机。
 func nativeLANRandom(size int) (string, error) {
 	value := make([]byte, size)
 	if _, err := rand.Read(value); err != nil {
@@ -111,6 +112,7 @@ func nativeLANRandom(size int) (string, error) {
 	return hex.EncodeToString(value), nil
 }
 
+// nativeLANCertificate 生成局域网连接使用的证书与密钥材料。
 func nativeLANCertificate(directory string) (nativeLANIdentity, tls.Certificate, error) {
 	var identity nativeLANIdentity
 	file := filepath.Join(directory, "lan-identity.json")
@@ -171,12 +173,14 @@ func nativeLANCertificate(directory string) (nativeLANIdentity, tls.Certificate,
 	return identity, cert, err
 }
 
+// nativeLANPrivate 判断原生局域网私有是否满足当前规则。
 func nativeLANPrivate(host string) bool {
 	host, _, _ = strings.Cut(strings.Trim(host, "[]"), "%")
 	ip := net.ParseIP(host)
 	return ip != nil && (ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLoopback())
 }
 
+// nativeLANAddress 返回原生局域网地址。
 func nativeLANAddress(address string) (string, error) {
 	host, port, err := net.SplitHostPort(address)
 	number, parseErr := strconv.Atoi(port)
@@ -186,11 +190,13 @@ func nativeLANAddress(address string) (string, error) {
 	return net.JoinHostPort(host, port), nil
 }
 
+// nativeLANFingerprint 计算局域网证书的指纹。
 func nativeLANFingerprint(cert *x509.Certificate) string {
 	sum := sha256.Sum256(cert.Raw)
 	return hex.EncodeToString(sum[:])
 }
 
+// nativeLANValidateConfig 校验局域网服务配置与访问参数。
 func nativeLANValidateConfig(config nativeLANConfig) error {
 	if strings.TrimSpace(config.Name) == "" || len(config.Name) > 240 ||
 		len(config.User) > 240 || !nativeLANID.MatchString(config.Account) ||
@@ -208,6 +214,7 @@ func nativeLANValidateConfig(config nativeLANConfig) error {
 	return nil
 }
 
+// newNativeLANServer 创建原生局域网服务。
 func newNativeLANServer(directory string, config nativeLANConfig) (*nativeLANServer, error) {
 	if err := nativeLANValidateConfig(config); err != nil {
 		return nil, err
@@ -251,6 +258,7 @@ func newNativeLANServer(directory string, config nativeLANConfig) (*nativeLANSer
 	return link, nil
 }
 
+// close 关闭局域网服务。
 func (link *nativeLANServer) close() {
 	link.closeOnce.Do(func() {
 		close(link.done)
@@ -265,6 +273,7 @@ func (link *nativeLANServer) close() {
 	})
 }
 
+// info 取得局域网服务使用的状态信息。
 func (link *nativeLANServer) info(private bool) map[string]any {
 	link.mu.Lock()
 	defer link.mu.Unlock()
@@ -300,6 +309,7 @@ func (link *nativeLANServer) info(private bool) map[string]any {
 	return result
 }
 
+// nativeLAN 处理局域网连接的配置、状态与控制请求。
 func (engine *nativeEngine) nativeLAN(ctx context.Context, command string, raw json.RawMessage) (any, error) {
 	var input nativeLANInput
 	if len(raw) > nativeLANLimit || json.Unmarshal(raw, &input) != nil {

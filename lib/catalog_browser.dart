@@ -2,6 +2,7 @@ import 'dart:math';
 
 import 'core_bridge.dart';
 import 'models.dart';
+import 'ordinary_catalog.dart';
 
 String categoryName(String name) {
   final compact = name.trim().replaceAll(RegExp(r'\s+'), '');
@@ -14,6 +15,27 @@ String categoryName(String name) {
     '' => '未分类',
     _ => name.trim(),
   };
+}
+
+List<String> _categoryParts(String name, {int maximumLength = 48}) => name
+    .split(RegExp(r'[,，、;；|]'))
+    .map((part) => part.trim())
+    .where(
+      (part) =>
+          part.isNotEmpty &&
+          part.runes.length <= maximumLength &&
+          !RegExp(r'[\x00-\x1f\x7f]').hasMatch(part),
+    )
+    .toSet()
+    .take(24)
+    .toList();
+
+List<String> dramaCategoryNames(Drama drama) {
+  final names = _categoryParts(drama.category)
+      .map(categoryName)
+      .toSet()
+      .toList();
+  return names.isEmpty ? ['未分类'] : names;
 }
 
 class _CatalogChoice {
@@ -51,11 +73,17 @@ class CatalogBrowser {
     return repository.cancelCatalog();
   }
 
+  String _itemKey(Drama drama) => SourceSite.ordinaryIds.contains(drama.source)
+      ? drama.siteIdentity
+      : drama.id;
+
   void _remember(String source, Iterable<Drama> items) {
+    repository.catalogUpdates.rememberOrdinary(items);
     final library = _library.putIfAbsent(source, () => {});
     for (final drama in items) {
       if (drama.source == source) {
-        library[drama.id] = library[drama.id]?.merge(drama) ?? drama;
+        library[_itemKey(drama)] =
+            library[_itemKey(drama)]?.merge(drama) ?? drama;
       }
     }
   }
@@ -65,18 +93,20 @@ class CatalogBrowser {
   }
 
   void updateDramas(Iterable<Drama> dramas) {
-    final updates = {for (final drama in dramas) drama.id: drama};
+    final updates = {for (final drama in dramas) _itemKey(drama): drama};
     for (final drama in updates.values) {
       final library = _library[drama.source];
-      if (library?.containsKey(drama.id) == true) {
-        library![drama.id] = library[drama.id]!.merge(drama);
+      if (library?.containsKey(_itemKey(drama)) == true) {
+        library![_itemKey(drama)] = library[_itemKey(drama)]!.merge(drama);
       }
     }
     for (final session in _sessions.values) {
       for (final entry in session.entries.values) {
         entry.items = [
           for (final item in entry.items)
-            updates[item.id] == null ? item : item.merge(updates[item.id]!),
+            updates[_itemKey(item)] == null
+                ? item
+                : item.merge(updates[_itemKey(item)]!),
         ];
       }
     }
@@ -105,11 +135,19 @@ class CatalogBrowser {
         final cached = await repository.cached(source.id);
         _remember(source.id, cached.items);
       } catch (_) {}
-      if (cacheOnly) return;
+      if (cacheOnly) {
+        try {
+          final categories = await repository.cachedCategories(source.id);
+          if (categories.isNotEmpty) {
+            _menus[source.id] = categories;
+          }
+        } catch (_) {}
+        return;
+      }
       try {
         _menus[source.id] = await repository.categories(
           source.id,
-          force: force,
+          force: force || source.ordinary,
         );
       } catch (_) {
         failures.add(source.groupName);
@@ -123,10 +161,31 @@ class CatalogBrowser {
     for (final source in group.sources) {
       for (final category in _menus[source.id] ?? const <CatalogCategory>[]) {
         if (category.id.isEmpty) continue;
-        final name = categoryName(category.name);
+        if (source.id == 'huangju') {
+          final parts = _categoryParts(category.name, maximumLength: 24);
+          if (parts.length != 1 || parts.single != category.name.trim()) {
+            continue;
+          }
+        }
+        final hongguoWeb =
+            source.id == 'hongguo' && category.id.startsWith('web:');
+        final name = category.tag || hongguoWeb
+            ? category.name.trim()
+            : categoryName(category.name);
+        final key = hongguoWeb
+            ? category.id
+            : category.tag
+            ? 'tag:${source.id}:${category.id}'
+            : name;
         final choice = choices.putIfAbsent(
-          name,
-          () => _CatalogChoice(CatalogCategory('category:$name', name)),
+          key,
+          () => _CatalogChoice(
+            CatalogCategory(
+              hongguoWeb || category.tag ? key : 'category:$name',
+              name,
+              tag: category.tag,
+            ),
+          ),
         );
         choice.requests[source.id] = category.id;
       }
@@ -134,7 +193,7 @@ class CatalogBrowser {
     final names = {
       for (final source in group.sources)
         for (final item in _library[source.id]?.values ?? const <Drama>[])
-          categoryName(item.category),
+          ...dramaCategoryNames(item),
     }.toList()..sort();
     for (final name in names) {
       choices.putIfAbsent(
@@ -150,9 +209,65 @@ class CatalogBrowser {
     for (final choice in _choices(group)) choice.category,
   ];
 
-  _CatalogChoice? _choice(SourceGroup group, String category) => _choices(
-    group,
-  ).where((choice) => choice.category.id == category).firstOrNull;
+  _CatalogChoice? _choice(SourceGroup group, String category) =>
+      _choices(group)
+          .where((choice) => choice.category.id == category)
+          .firstOrNull;
+
+  Future<CatalogPage> homeFallback(
+    SourceGroup selected,
+    Iterable<SourceSite> visible, {
+    bool cacheOnly = false,
+  }) async {
+    final generation = _generation;
+    final selectedIds = selected.sources.map((source) => source.id).toSet();
+    final candidates = visible
+        .where(
+          (source) =>
+              !selectedIds.contains(source.id) &&
+              source.ordinary &&
+              !SourceSite.isRestricted(source.id),
+        )
+        .take(2)
+        .toList();
+    final rows = <String, List<Drama>>{};
+    Future<void> collect(bool cached) async {
+      await _each(candidates, (source) async {
+        if (generation != _generation) return;
+        try {
+          final result = cached
+              ? await repository.cached(source.id)
+              : await repository.catalog(source.id, page: 1);
+          if (generation != _generation) return;
+          final items = result.items
+              .where((item) => item.source == source.id)
+              .take(12)
+              .toList();
+          if (items.isNotEmpty) rows[source.id] = items;
+        } catch (_) {}
+      });
+    }
+
+    await collect(true);
+    if (rows.isEmpty && !cacheOnly && generation == _generation) {
+      await collect(false);
+    }
+    if (generation != _generation || rows.isEmpty) return CatalogPage([]);
+    final items = <String, Drama>{};
+    for (final source in candidates) {
+      for (final item in rows[source.id] ?? const <Drama>[]) {
+        items.putIfAbsent(_itemKey(item), () => item);
+      }
+    }
+    final names = candidates
+        .where((source) => rows.containsKey(source.id))
+        .map((source) => source.name)
+        .join('、');
+    return CatalogPage(
+      items.values.toList(),
+      warning: '当前频道暂未加载内容，暂展示 $names 的剧集',
+    );
+  }
 
   Future<CatalogPage> load(
     SourceGroup group, {
@@ -174,16 +289,22 @@ class CatalogBrowser {
     await repository.cancelCatalog();
     if (request != _generation) throw AppFailure('已取消加载');
     final choice = query.isEmpty ? _choice(group, category) : null;
-    final requests = choice != null && !choice.category.local
+    final hongguoWeb =
+        group.id == 'hongguo' && query.isEmpty && category.startsWith('web:');
+    final requests = hongguoWeb
+        ? {'hongguo': category}
+        : choice != null && !choice.category.local
         ? choice.requests
         : {for (final source in group.sources) source.id: ''};
     final key =
         '${group.sources.map((s) => s.id).join(',')}|'
-        '${choice?.category.local == false ? category : ''}|$query';
+        '${hongguoWeb || choice?.category.local == false ? category : ''}|$query';
     final session = _sessions.putIfAbsent(key, _CatalogSession.new);
     final generation = ++session.generation;
     final failures = <String, String>{};
     final sourceOrder = requests.keys.toList();
+    final refreshHead =
+        !cacheOnly && group.sources.any((source) => source.refreshHeadOnOpen);
     for (final source in sourceOrder) {
       session.entries.putIfAbsent(source, _CatalogEntry.new);
     }
@@ -196,21 +317,29 @@ class CatalogBrowser {
       final count = rows.fold<int>(0, (count, row) => max(count, row.length));
       for (var index = 0; index < count; index++) {
         for (final row in rows) {
-          if (index < row.length) items[row[index].id] = row[index];
+          if (index < row.length) items[_itemKey(row[index])] = row[index];
         }
       }
-      if (choice != null) {
+      if (choice?.category.local == true) {
         for (final source in group.sources) {
           for (final item in _library[source.id]?.values ?? const <Drama>[]) {
-            if (choice.category.local ||
-                categoryName(item.category) == choice.category.name) {
-              items.putIfAbsent(item.id, () => item);
+            if (dramaCategoryNames(item).contains(choice!.category.name)) {
+              items.putIfAbsent(_itemKey(item), () => item);
             }
           }
         }
       }
       return CatalogPage(
-        items.values.toList(),
+        groupOrdinaryTitles(
+          items.values
+              .map(repository.catalogUpdates.current)
+              .where(
+                (item) =>
+                    choice?.category.local != true ||
+                    dramaCategoryNames(item).contains(choice!.category.name),
+              )
+              .toList(),
+        ),
         hasMore: sourceOrder.any((source) => session.entries[source]!.hasMore),
         page: sourceOrder.fold<int>(
           1,
@@ -221,7 +350,10 @@ class CatalogBrowser {
       );
     }
 
-    if ((useCache || cacheOnly) && !force && !more && query.isEmpty) {
+    if ((useCache || cacheOnly) &&
+        (!force || refreshHead) &&
+        !more &&
+        query.isEmpty) {
       await _each(sourceOrder, (source) async {
         try {
           final cached = await repository.cached(
@@ -243,16 +375,32 @@ class CatalogBrowser {
       });
       if (generation != session.generation) return snapshot();
       final cached = snapshot();
-      if (cached.items.isNotEmpty) onCached?.call(cached);
+      if (cached.items.isNotEmpty) {
+        onCached?.call(
+          CatalogPage(
+            cached.items,
+            hasMore: cached.hasMore,
+            page: cached.page,
+            warning: cached.warning,
+            fresh: cached.fresh && !refreshHead,
+          ),
+        );
+      }
       if (cacheOnly) return cached;
-      if (cached.fresh && cached.items.isNotEmpty) return cached;
+      if (cached.fresh && cached.items.isNotEmpty && !refreshHead) {
+        return cached;
+      }
     }
 
     await _each(sourceOrder, (source) async {
       if (generation != session.generation) return;
       final entry = session.entries[source]!;
       if (more && !entry.hasMore) return;
-      if (useCache && !force && !more && entry.fresh) return;
+      final refreshSourceHead =
+          !more && query.isEmpty && SourceSite.byId(source).refreshHeadOnOpen;
+      if (useCache && !force && !more && entry.fresh && !refreshSourceHead) {
+        return;
+      }
       final page = more ? entry.nextPage : 1;
       try {
         final result = await repository.catalog(
@@ -260,20 +408,46 @@ class CatalogBrowser {
           category: requests[source]!,
           query: query,
           page: page,
-          force: force,
+          force: force || refreshSourceHead,
         );
         if (generation != session.generation) return;
         final items = <String, Drama>{
           if (more)
-            for (final item in entry.items) item.id: item,
-          for (final item in result.items) item.id: item,
+            for (final item in entry.items) _itemKey(item): item,
+          for (final item in result.items) _itemKey(item): item,
         };
+        final oldPage = entry.page, oldNext = entry.nextPage;
+        final oldHasMore = entry.hasMore;
+        final hadOldItems = entry.items.isNotEmpty;
+        if (refreshSourceHead && !result.authoritative) {
+          for (final item in entry.items) {
+            items.putIfAbsent(_itemKey(item), () => item);
+          }
+        }
         entry.items = items.values.toList();
         entry.page = result.page;
-        entry.nextPage = result.warning.isEmpty ? result.page + 1 : page;
+        final indexedSearch = query.isNotEmpty && result.localSearch;
+        entry.nextPage = result.warning.isEmpty || indexedSearch
+            ? (result.nextPage > result.page
+                  ? result.nextPage
+                  : result.page + 1)
+            : page;
+        if (refreshSourceHead &&
+            !result.authoritative &&
+            oldPage > result.page) {
+          entry.page = oldPage;
+          entry.nextPage = oldNext;
+        }
         entry.hasMore =
             (query.isEmpty || SourceSite.byId(source).pagedSearch) &&
-            (result.hasMore || result.warning.isNotEmpty);
+            (result.hasMore ||
+                result.warning.isNotEmpty &&
+                    !indexedSearch &&
+                    (query.isEmpty || source == 'huangguoai') ||
+                refreshSourceHead &&
+                    !result.authoritative &&
+                    hadOldItems &&
+                    oldHasMore);
         entry.fresh = result.fresh && result.warning.isEmpty;
         if (query.isEmpty) _remember(source, result.items);
         if (result.warning.isNotEmpty) {

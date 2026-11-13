@@ -34,6 +34,8 @@ class _CatalogFiltersState extends State<CatalogFilters> {
   @override
   void didUpdateWidget(covariant CatalogFilters oldWidget) {
     super.didUpdateWidget(oldWidget);
+    final ids = widget.categories.map((entry) => entry.id).toSet();
+    _anchors.removeWhere((id, _) => !ids.contains(id));
     if (oldWidget.category != widget.category) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         final anchor = _anchors[widget.category]?.currentContext;
@@ -51,54 +53,89 @@ class _CatalogFiltersState extends State<CatalogFilters> {
   @override
   Widget build(BuildContext context) {
     final television = AppLayout.isTelevision(context);
-    return SizedBox(
-      height: television
-          ? 64
-          : max(52, MediaQuery.textScalerOf(context).scale(14) + 28),
-      child: Row(
-        children: [
-          Expanded(
+    final tags = widget.categories.where((entry) => entry.tag).toList();
+    final selectedTag = tags.any((entry) => entry.id == widget.category);
+    Widget chip(CatalogCategory entry) => Padding(
+      key: _anchors.putIfAbsent(entry.id, GlobalKey.new),
+      padding: EdgeInsets.zero,
+      child: television
+          ? RemoteButton(
+              key: ValueKey('category-${entry.id}'),
+              label: entry.name,
+              selected:
+                  entry.id == widget.category ||
+                  entry.id.isEmpty && selectedTag,
+              onPressed: () => widget.onCategory(
+                entry.tag && entry.id == widget.category ? '' : entry.id,
+              ),
+            )
+          : ChoiceChip(
+              key: ValueKey('category-${entry.id}'),
+              label: Text(entry.name),
+              selected:
+                  entry.id == widget.category ||
+                  entry.id.isEmpty && selectedTag,
+              showCheckmark: false,
+              onSelected: (_) => widget.onCategory(
+                entry.tag && entry.id == widget.category ? '' : entry.id,
+              ),
+            ),
+    );
+    final maximumHeight = max(
+      television ? 72.0 : 52.0,
+      min(320.0, MediaQuery.sizeOf(context).height * .32),
+    );
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Expanded(
+          child: ConstrainedBox(
+            constraints: BoxConstraints(maxHeight: maximumHeight),
             child: SingleChildScrollView(
               key: const ValueKey('catalog-categories'),
-              scrollDirection: Axis.horizontal,
-              padding: const EdgeInsets.symmetric(horizontal: 12),
-              child: Row(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  for (final entry in widget.categories)
+                  Wrap(
+                    spacing: 6,
+                    runSpacing: 6,
+                    children: [
+                      for (final entry in widget.categories)
+                        if (!entry.tag) chip(entry),
+                    ],
+                  ),
+                  if (tags.isNotEmpty) ...[
                     Padding(
-                      key: _anchors.putIfAbsent(entry.id, GlobalKey.new),
-                      padding: const EdgeInsets.only(right: 6),
-                      child: television
-                          ? RemoteButton(
-                              key: ValueKey('category-${entry.id}'),
-                              label: entry.name,
-                              selected: entry.id == widget.category,
-                              onPressed: () => widget.onCategory(entry.id),
-                            )
-                          : ChoiceChip(
-                              key: ValueKey('category-${entry.id}'),
-                              label: Text(entry.name),
-                              selected: entry.id == widget.category,
-                              showCheckmark: false,
-                              onSelected: (_) => widget.onCategory(entry.id),
-                            ),
+                      padding: const EdgeInsets.only(top: 6, bottom: 2),
+                      child: Text(
+                        '热门标签',
+                        style: Theme.of(context).textTheme.labelMedium,
+                      ),
                     ),
+                    Wrap(
+                      key: const ValueKey('catalog-popular-tags'),
+                      spacing: 6,
+                      runSpacing: 6,
+                      children: [for (final entry in tags) chip(entry)],
+                    ),
+                  ],
                 ],
               ),
             ),
           ),
-          if (widget.error != null)
-            IconButton(
-              tooltip: widget.error,
-              onPressed: widget.onRetry,
-              icon: Icon(
-                Icons.refresh_rounded,
-                color: Theme.of(context).colorScheme.error,
-              ),
+        ),
+        if (widget.error != null)
+          IconButton(
+            tooltip: widget.error,
+            onPressed: widget.onRetry,
+            icon: Icon(
+              Icons.refresh_rounded,
+              color: Theme.of(context).colorScheme.error,
             ),
-          if (widget.trailing != null) widget.trailing!,
-        ],
-      ),
+          ),
+        if (widget.trailing != null) widget.trailing!,
+      ],
     );
   }
 }

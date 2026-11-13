@@ -8,6 +8,7 @@ import (
 	"time"
 )
 
+// TestProbeCatalogBroken 验证「Probe Catalog Broken」回归场景。
 func TestProbeCatalogBroken(t *testing.T) {
 	if os.Getenv("HG_PROBE") == "" {
 		t.Skip("probe disabled")

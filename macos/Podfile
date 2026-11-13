@@ -29,7 +29,7 @@ flutter_macos_podfile_setup
 target 'Runner' do
   use_frameworks!
 
-  # 真果鉴本地站源核心（Go，静态链接）。
+  # 真果赏本地站源核心（Go，静态链接）。
   pod 'DuanjuCore', :path => 'DuanjuCore'
 
   flutter_install_all_macos_pods File.dirname(File.realpath(__FILE__))

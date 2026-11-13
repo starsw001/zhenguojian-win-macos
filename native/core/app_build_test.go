@@ -10,6 +10,7 @@ import (
 	"time"
 )
 
+// TestNativeBuildAuthorization 验证「Native Build Authorization」回归场景。
 func TestNativeBuildAuthorization(t *testing.T) {
 	for _, source := range []string{sourceHongguo, sourceHuangdou, sourceHuangguoVideo, sourceHuangguoAI, sourceCloudFront, sourceDSD, "unknown"} {
 		allowed := source == sourceHongguo || buildAllSources == "true" && source != "unknown"
@@ -38,6 +39,7 @@ func TestNativeBuildAuthorization(t *testing.T) {
 	}
 }
 
+// TestNativeBuildPreservesForeignDownloadRecordsAndRestrictsScheduling 验证「Native Build Preserves Foreign Download Records And Restricts Scheduling」回归场景。
 func TestNativeBuildPreservesForeignDownloadRecordsAndRestrictsScheduling(t *testing.T) {
 	manager := downloadTestManager(t)
 	records := []*nativeDownloadRecord{}

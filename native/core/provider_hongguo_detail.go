@@ -22,13 +22,15 @@ type hongguoDetailCall struct {
 	err   error
 }
 
+// hongguoAppDetail 取得红果 App 接口提供的作品详情。
 func (downloader *Downloader) hongguoAppDetail(ctx context.Context, seriesID string) (hongguoDetailEntry, error) {
 	if !hongguoNumericID.MatchString(seriesID) {
 		return hongguoDetailEntry{}, errors.New("红果剧集 ID 无效")
 	}
 	client := downloader.hongguoClient()
 	client.mu.Lock()
-	if cached, found := client.details[seriesID]; found && time.Now().Before(cached.ExpiresAt) {
+	fresh, _ := ctx.Value(ordinaryDetailFreshKey{}).(bool)
+	if cached, found := client.details[seriesID]; !fresh && found && time.Now().Before(cached.ExpiresAt) {
 		client.mu.Unlock()
 		return cached, nil
 	}
@@ -67,6 +69,7 @@ func (downloader *Downloader) hongguoAppDetail(ctx context.Context, seriesID str
 	return entry, err
 }
 
+// parseHongguoAppDetail 解析红果App详情。
 func parseHongguoAppDetail(result map[string]any, seriesID string) (hongguoDetailEntry, error) {
 	detail := nestedMap(result, "data", "video_data")
 	returnedID := mapString(detail, "series_id_str", "series_id")
@@ -112,6 +115,7 @@ func parseHongguoAppDetail(result map[string]any, seriesID string) (hongguoDetai
 	return entry, nil
 }
 
+// hongguoCachedDrama 按作品标识读取已缓存的红果元数据。
 func (downloader *Downloader) hongguoCachedDrama(drama Drama) Drama {
 	source, seriesID, valid := splitProviderDramaID(drama.ID)
 	if !valid || source != sourceHongguo {

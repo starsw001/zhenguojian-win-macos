@@ -38,7 +38,7 @@ class TaskSnapshotTests(unittest.TestCase):
         self.assertFalse((self.destination / 'android/key.properties').exists())
         self.assertFalse(synchronize(self.source, self.destination, check=True).changed)
         self.assertTrue(result.archive.is_file())
-        self.assertRegex(result.archive.name, r'^真果·鉴-\d{12}(?:-\d+)?\.zip$')
+        self.assertRegex(result.archive.name, r'^真果·赏-\d{12}(?:-\d+)?\.zip$')
         with zipfile.ZipFile(result.archive) as archive:
             names = set(archive.namelist())
         self.assertIn('guoapp/lib/电视.dart', names)
@@ -83,6 +83,29 @@ class TaskSnapshotTests(unittest.TestCase):
             (self.destination / 'lib/main.dart').read_text(encoding='utf-8'),
             'published source',
         )
+
+    def test_no_archive_synchronizes_without_creating_compressed_files(self):
+        self.write(self.source / 'lib/main.dart', '持续开发')
+        result = finish_task(
+            self.source, self.destination, '只同步源码', create_archive=False,
+        )
+        self.assertIsNone(result.archive)
+        self.assertEqual(
+            (self.destination / 'lib/main.dart').read_text(encoding='utf-8'),
+            '持续开发',
+        )
+        self.assertFalse(list(self.root.rglob('*.zip')))
+        self.assertFalse(list(self.root.rglob('*.rar')))
+        self.assertFalse(synchronize(self.source, self.destination, check=True).changed)
+
+    def test_no_archive_in_published_directory_keeps_source(self):
+        synchronize(self.source, self.destination)
+        result = finish_task(
+            self.destination, self.destination, '不压缩的镜像收尾', create_archive=False,
+        )
+        self.assertIsNone(result.archive)
+        self.assertFalse(list(self.root.rglob('*.zip')))
+        self.assertFalse(synchronize(self.source, self.destination, check=True).changed)
 
 
 if __name__ == '__main__':

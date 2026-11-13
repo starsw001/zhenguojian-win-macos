@@ -20,6 +20,7 @@ import (
 	"time"
 )
 
+// syntheticNativeCover 返回synthetic原生海报。
 func syntheticNativeCover(t *testing.T) ([]byte, []byte) {
 	t.Helper()
 	var buffer bytes.Buffer
@@ -37,6 +38,7 @@ func syntheticNativeCover(t *testing.T) ([]byte, []byte) {
 	return plain, encrypted
 }
 
+// TestNativeCoverDecryptsAndPersistsAcrossRestart 验证「Native Cover Decrypts And Persists Across Restart」回归场景。
 func TestNativeCoverDecryptsAndPersistsAcrossRestart(t *testing.T) {
 	plain, encrypted := syntheticNativeCover(t)
 	var calls atomic.Int32
@@ -86,6 +88,7 @@ func TestNativeCoverDecryptsAndPersistsAcrossRestart(t *testing.T) {
 	}
 }
 
+// TestNativeCoverFormatsFailuresAndOfflineFallback 验证「Native Cover Formats Failures And Offline Fallback」回归场景。
 func TestNativeCoverFormatsFailuresAndOfflineFallback(t *testing.T) {
 	plain, encrypted := syntheticNativeCover(t)
 	xor := append([]byte(nil), plain...)
@@ -144,6 +147,7 @@ func TestNativeCoverFormatsFailuresAndOfflineFallback(t *testing.T) {
 	}
 }
 
+// TestNativeCoverRedirectAndBoundedDiskCache 验证「Native Cover Redirect And Bounded Disk Cache」回归场景。
 func TestNativeCoverRedirectAndBoundedDiskCache(t *testing.T) {
 	plain, _ := syntheticNativeCover(t)
 	var calls atomic.Int32
@@ -179,6 +183,7 @@ func TestNativeCoverRedirectAndBoundedDiskCache(t *testing.T) {
 	}
 }
 
+// TestNativeCatalogCacheFreshnessPagingAndRefresh 验证「Native Catalog Cache Freshness Paging And Refresh」回归场景。
 func TestNativeCatalogCacheFreshnessPagingAndRefresh(t *testing.T) {
 	var calls atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -211,38 +216,39 @@ func TestNativeCatalogCacheFreshnessPagingAndRefresh(t *testing.T) {
 		return engine
 	}
 	engine := open()
-	first, err := engine.nativeCatalog(context.Background(), nativeInput{Source: sourceHuangguoAI, Page: 1})
+	first, err := engine.nativeCatalog(context.Background(), nativeInput{Source: sourceHuangguoAI, Category: "ai-duanju", Page: 1})
 	if err != nil || len(first.Items) != 24 || !first.Fresh || !first.HasMore {
 		t.Fatal("first catalog request failed", err, first)
 	}
-	if _, err := engine.nativeCatalog(context.Background(), nativeInput{Source: sourceHuangguoAI, Page: 1}); err != nil || calls.Load() != 1 {
+	if _, err := engine.nativeCatalog(context.Background(), nativeInput{Source: sourceHuangguoAI, Category: "ai-duanju", Page: 1}); err != nil || calls.Load() != 1 {
 		t.Fatal("fresh catalog caused another request", err, calls.Load())
 	}
-	if _, err := engine.nativeCatalog(context.Background(), nativeInput{Source: sourceHuangguoAI, Page: 2}); err != nil {
+	if _, err := engine.nativeCatalog(context.Background(), nativeInput{Source: sourceHuangguoAI, Category: "ai-duanju", Page: 2}); err != nil {
 		t.Fatal(err)
 	}
 	engine = open()
-	cached := engine.nativeCached(sourceHuangguoAI)
+	cached := engine.nativeCached(nativeCatalogKey(sourceHuangguoAI, "ai-duanju"))
 	if len(cached.Items) != 25 || cached.Page != 2 || cached.HasMore || !cached.Fresh {
 		t.Fatal("cached pagination state did not survive a restart", cached)
 	}
-	if _, err := engine.nativeCatalog(context.Background(), nativeInput{Source: sourceHuangguoAI, Page: 1}); err != nil || calls.Load() != 2 {
+	if _, err := engine.nativeCatalog(context.Background(), nativeInput{Source: sourceHuangguoAI, Category: "ai-duanju", Page: 1}); err != nil || calls.Load() != 2 {
 		t.Fatal("restart bypassed fresh disk cache", err, calls.Load())
 	}
-	if _, err := engine.nativeCatalog(context.Background(), nativeInput{Source: sourceHuangguoAI, Page: 1, Force: true}); err != nil || calls.Load() != 3 {
+	if _, err := engine.nativeCatalog(context.Background(), nativeInput{Source: sourceHuangguoAI, Category: "ai-duanju", Page: 1, Force: true}); err != nil || calls.Load() != 3 {
 		t.Fatal("manual refresh reused old data", err, calls.Load())
 	}
-	state := engine.catalogStates[sourceHuangguoAI]
+	state := engine.catalogStates[nativeCatalogKey(sourceHuangguoAI, "ai-duanju")]
 	state.UpdatedAt = time.Now().Add(-nativeCatalogTTL - time.Second)
-	engine.catalogStates[sourceHuangguoAI] = state
-	if engine.nativeCached(sourceHuangguoAI).Fresh {
+	engine.catalogStates[nativeCatalogKey(sourceHuangguoAI, "ai-duanju")] = state
+	if engine.nativeCached(nativeCatalogKey(sourceHuangguoAI, "ai-duanju")).Fresh {
 		t.Fatal("expired catalog is marked fresh")
 	}
-	if _, err := engine.nativeCatalog(context.Background(), nativeInput{Source: sourceHuangguoAI, Page: 1}); err != nil || calls.Load() != 4 {
+	if _, err := engine.nativeCatalog(context.Background(), nativeInput{Source: sourceHuangguoAI, Category: "ai-duanju", Page: 1}); err != nil || calls.Load() != 4 {
 		t.Fatal("expired catalog was not updated", err, calls.Load())
 	}
 }
 
+// TestNativeCatalogCacheMigratesAndKeepsHongguoCursorItems 验证「Native Catalog Cache Migrates And Keeps Hongguo Cursor Items」回归场景。
 func TestNativeCatalogCacheMigratesAndKeepsHongguoCursorItems(t *testing.T) {
 	directory := t.TempDir()
 	old := nativeDrama{ID: "hongguo:101", Title: "原有合成记录"}

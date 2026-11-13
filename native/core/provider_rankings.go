@@ -11,6 +11,8 @@ import (
 )
 
 const rankingCacheTTL = 5 * time.Minute
+const rankingCacheMaxBytes = 16 << 20
+const rankingCacheMaxPages = 256
 
 type rankingBoard struct {
 	ID          string `json:"id"`
@@ -22,10 +24,10 @@ type rankingBoard struct {
 }
 
 var rankingBoards = []rankingBoard{
-	{ID: "hongguo-hot", Source: sourceHongguo, Name: "总热播榜", Description: "红果观看、互动等综合热度；每日更新。", path: "hot-drama", upstreamKey: "hongguo"},
-	{ID: "hongguo-real", Source: sourceHongguo, Name: "真人剧榜", Description: "红果真人剧热播榜；每日更新。", path: "hot-real-drama", upstreamKey: "real"},
-	{ID: "hongguo-comic", Source: sourceHongguo, Name: "漫剧榜", Description: "红果漫剧热播榜；每日更新。", path: "hot-comic-drama", upstreamKey: "comic"},
-	{ID: "hongguo-ai", Source: sourceHongguo, Name: "AI剧榜", Description: "红果 AI 剧热播榜；每日更新。", path: "hot-ai-drama", upstreamKey: "ai"},
+	{ID: "hongguo-hot", Source: sourceHongguo, Name: "红果热播榜", Description: "红果观看、互动等综合热度；每日更新。", path: "hot-drama", upstreamKey: "hongguo"},
+	{ID: "hongguo-real", Source: sourceHongguo, Name: "真人剧热播榜", Description: "红果真人剧热播榜；每日更新。", path: "hot-real-drama", upstreamKey: "real"},
+	{ID: "hongguo-ai", Source: sourceHongguo, Name: "AI剧热播榜", Description: "红果 AI 剧热播榜；每日更新。", path: "hot-ai-drama", upstreamKey: "ai"},
+	{ID: "hongguo-comic", Source: sourceHongguo, Name: "漫剧热播榜", Description: "红果漫剧热播榜；每日更新。", path: "hot-comic-drama", upstreamKey: "comic"},
 	{ID: "huangdou-all", Source: sourceHuangdou, Name: "总榜", Description: "黄豆短剧总榜，保留站点返回的顺序。", upstreamKey: "all"},
 	{ID: "huangdou-mogai", Source: sourceHuangdou, Name: "魔改榜", Description: "黄豆站点魔改榜。", upstreamKey: "mogai"},
 	{ID: "huangdou-search", Source: sourceHuangdou, Name: "搜索榜", Description: "黄豆站点搜索榜。", upstreamKey: "search"},
@@ -70,6 +72,7 @@ type rankingCache struct {
 	pending map[string]*rankingCall
 }
 
+// findRankingBoard 查找排行榜榜单。
 func findRankingBoard(id string) (rankingBoard, bool) {
 	for _, board := range rankingBoards {
 		if board.ID == id {
@@ -79,15 +82,18 @@ func findRankingBoard(id string) (rankingBoard, bool) {
 	return rankingBoard{}, false
 }
 
+// cloneRankingPage 复制排行榜页面。
 func cloneRankingPage(page rankingPage) rankingPage {
 	page.Items = append([]rankingItem{}, page.Items...)
 	return page
 }
 
+// singlePageRankingBoard 判断single页面排行榜榜单是否满足当前规则。
 func singlePageRankingBoard(board rankingBoard) bool {
 	return board.Source == sourceHuangguoAI || board.Source == sourceDSD
 }
 
+// rankingDramaWithoutImages 复制榜单作品信息并移除其中的图片字段。
 func rankingDramaWithoutImages(drama Drama) Drama {
 	drama.Cover, drama.CoverURL, drama.CoverURLSnake = nil, nil, nil
 	drama.Image, drama.ImageURL, drama.ImageURLSnake = nil, nil, nil
@@ -96,6 +102,7 @@ func rankingDramaWithoutImages(drama Drama) Drama {
 	return drama
 }
 
+// loadRankingPage 加载排行榜页面。
 func (d *Downloader) loadRankingPage(ctx context.Context, board rankingBoard, page int, refresh bool) (rankingPage, error) {
 	key := board.ID + ":" + strconv.Itoa(page)
 	cache := &d.rankings
@@ -137,14 +144,8 @@ func (d *Downloader) loadRankingPage(ctx context.Context, board rankingBoard, pa
 				}
 			}
 		}
-		if len(cache.pages) >= 128 {
-			oldestKey, oldest := "", time.Now()
-			for cachedKey, old := range cache.pages {
-				if old.FetchedAt.Before(oldest) {
-					oldestKey, oldest = cachedKey, old.FetchedAt
-				}
-			}
-			delete(cache.pages, oldestKey)
+		for len(cache.pages) >= d.cacheLimit("rankingPages") {
+			d.evictOldestRankingLocked()
 		}
 		cache.pages[key] = cloneRankingPage(result)
 		d.writeRankingCacheLocked()
@@ -160,6 +161,7 @@ func (d *Downloader) loadRankingPage(ctx context.Context, board rankingBoard, pa
 	return result, err
 }
 
+// fetchRankingPage 获取排行榜页面。
 func (d *Downloader) fetchRankingPage(ctx context.Context, board rankingBoard, page int) (rankingPage, error) {
 	switch board.Source {
 	case sourceHongguo:
@@ -188,6 +190,7 @@ func (d *Downloader) fetchRankingPage(ctx context.Context, board rankingBoard, p
 	}
 }
 
+// fetchCatalogRankingPage 获取目录排行榜页面。
 func (d *Downloader) fetchCatalogRankingPage(ctx context.Context, board rankingBoard, page int) (rankingPage, error) {
 	if singlePageRankingBoard(board) && page != 1 {
 		return rankingPage{}, errors.New("该榜单只有一页")

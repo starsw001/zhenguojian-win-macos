@@ -9,6 +9,7 @@ import (
 
 var providerChinaTime = time.FixedZone("CST", 8*60*60)
 
+// hongguoHeat 从红果元数据中提取热度显示值。
 func hongguoHeat(row map[string]any) string {
 	hot := nestedMap(row, "hot_score_data")
 
@@ -21,6 +22,7 @@ func hongguoHeat(row map[string]any) string {
 	return mapString(hot, "text")
 }
 
+// hongguoOnlineDate 从红果元数据中提取上线日期。
 func hongguoOnlineDate(row map[string]any, now time.Time) string {
 	if date := providerTimestampDate(mapString(row, "first_visible_time")); date != "" {
 		return date

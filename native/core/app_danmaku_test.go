@@ -15,6 +15,7 @@ import (
 const danmakuTestSeries = "1111111111111111111"
 const danmakuTestVideo = "2222222222222222222"
 
+// danmakuTestRow 返回弹幕TestRow。
 func danmakuTestRow(video, id, text string, offset any) map[string]any {
 	return map[string]any{"comment": map[string]any{
 		"comment_id": id, "common": map[string]any{"group_id": video, "status": 1, "content": map[string]any{"text": text}},
@@ -22,6 +23,7 @@ func danmakuTestRow(video, id, text string, offset any) map[string]any {
 	}}
 }
 
+// danmakuTestResult 返回弹幕Test结果。
 func danmakuTestResult(next int, rows []any) map[string]any {
 	return map[string]any{"code": 0, "data": map[string]any{
 		"data_list": rows, "extra": map[string]any{"next_query_danmaku_list_time": next},
@@ -29,6 +31,7 @@ func danmakuTestResult(next int, rows []any) map[string]any {
 	}}
 }
 
+// danmakuTestJSON 返回弹幕TestJSON。
 func danmakuTestJSON(next int, rows ...any) string {
 	if rows == nil {
 		rows = []any{}
@@ -37,6 +40,7 @@ func danmakuTestJSON(next int, rows ...any) string {
 	return string(raw)
 }
 
+// TestHongguoDanmakuPreservesSourceTimeline 验证「Hongguo Danmaku Preserves Source Timeline」回归场景。
 func TestHongguoDanmakuPreservesSourceTimeline(t *testing.T) {
 	row := func(id string, offset any) map[string]any {
 		return danmakuTestRow(danmakuTestVideo, id, "文字", offset)
@@ -63,6 +67,7 @@ func TestHongguoDanmakuPreservesSourceTimeline(t *testing.T) {
 	}
 }
 
+// TestHongguoDanmakuRejectsMalformedWindowsAndBoundsText 验证「Hongguo Danmaku Rejects Malformed Windows And Bounds Text」回归场景。
 func TestHongguoDanmakuRejectsMalformedWindowsAndBoundsText(t *testing.T) {
 	for _, result := range []map[string]any{nil, {"data": map[string]any{"data_list": []any{}}}, danmakuTestResult(0, []any{}), danmakuTestResult(danmakuMaxDurationMS+1, []any{})} {
 		if _, err := parseHongguoDanmaku(result, danmakuTestVideo, 0, 160000); err == nil {
@@ -79,6 +84,7 @@ func TestHongguoDanmakuRejectsMalformedWindowsAndBoundsText(t *testing.T) {
 	}
 }
 
+// TestHongguoDanmakuCacheAndConcurrentRequests 验证「Hongguo Danmaku Cache And Concurrent Requests」回归场景。
 func TestHongguoDanmakuCacheAndConcurrentRequests(t *testing.T) {
 	var calls atomic.Int32
 	started, release := make(chan struct{}), make(chan struct{})
@@ -164,6 +170,7 @@ func TestHongguoDanmakuCacheAndConcurrentRequests(t *testing.T) {
 	}
 }
 
+// TestHongguoDanmakuCanceledLoadCanBeRetried 验证「Hongguo Danmaku Canceled Load Can Be Retried」回归场景。
 func TestHongguoDanmakuCanceledLoadCanBeRetried(t *testing.T) {
 	var calls atomic.Int32
 	started := make(chan struct{})
@@ -188,6 +195,7 @@ func TestHongguoDanmakuCanceledLoadCanBeRetried(t *testing.T) {
 	}
 }
 
+// TestNativeDanmakuUsesPlaybackIdentityAcrossRoutes 验证「Native Danmaku Uses Playback Identity Across Routes」回归场景。
 func TestNativeDanmakuUsesPlaybackIdentityAcrossRoutes(t *testing.T) {
 	var calls atomic.Int32
 	engine := sourceFixtureEngine(t, func(request *http.Request) (*http.Response, error) {
@@ -254,6 +262,7 @@ func TestNativeDanmakuUsesPlaybackIdentityAcrossRoutes(t *testing.T) {
 	}
 }
 
+// TestNativeDanmakuCancellationDoesNotCancelPlayback 验证「Native Danmaku Cancellation Does Not Cancel Playback」回归场景。
 func TestNativeDanmakuCancellationDoesNotCancelPlayback(t *testing.T) {
 	started := make(chan struct{})
 	engine := sourceFixtureEngine(t, func(request *http.Request) (*http.Response, error) {

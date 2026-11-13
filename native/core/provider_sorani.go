@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/url"
 	"sort"
 	"strconv"
@@ -39,6 +40,7 @@ var soraniCategories = []nativeCategory{
 	{ID: "5", Name: "特摄剧场"},
 }
 
+// validSoraniCategory 判断是否有效：Sorani分类。
 func validSoraniCategory(category string) bool {
 	if category == "" {
 		return true
@@ -64,6 +66,7 @@ func soraniNumericID(value string) bool {
 	return err == nil && number > 0
 }
 
+// soraniCover 规整 Sorani 海报字段。
 func soraniCover(value any) string {
 	return providerCoverAddress(value, soraniSiteBaseURL+"/")
 }
@@ -146,6 +149,7 @@ func soraniDramaFromMap(row map[string]any) (Drama, error) {
 	}, nil
 }
 
+// leadingYear 提取开头的年份。
 func leadingYear(value string) string {
 	value = strings.TrimSpace(value)
 	if len(value) < 4 {
@@ -164,6 +168,7 @@ func leadingYear(value string) string {
 	return digits
 }
 
+// firstAnyValue 按候选键顺序取得首个符合条件的值。
 func firstAnyValue(row map[string]any, keys ...string) any {
 	for _, key := range keys {
 		if value, ok := row[key]; ok && nativeText(value) != "" {
@@ -202,6 +207,7 @@ func soraniRecordList(payload any) ([]any, bool) {
 	}
 }
 
+// soraniRequest 请求Sorani。
 func (d *Downloader) soraniRequest(ctx context.Context, route string, query url.Values, limit int64) (any, error) {
 	return d.soraniClient().get(ctx, route, query, limit)
 }
@@ -211,6 +217,7 @@ func (d *Downloader) fetchSoraniCategories() []nativeCategory {
 	return append([]nativeCategory(nil), soraniCategories...)
 }
 
+// fetchSoraniCatalogPage 获取Sorani目录页。
 func (d *Downloader) fetchSoraniCatalogPage(ctx context.Context, page int, category, query string) ([]Drama, bool, error) {
 	if page < 1 || page > soraniMaxPage {
 		return nil, false, errors.New("青空次元目录页码无效")
@@ -242,8 +249,15 @@ func (d *Downloader) fetchSoraniCatalogPage(ctx context.Context, page int, categ
 	}
 	hasMore := len(rows) >= pageSize
 	if meta, ok := payload.(map[string]any); ok {
+		current, _ := strconv.Atoi(nativeText(meta["current"]))
+		if current > 0 && current != page {
+			return nil, false, errors.New("青空次元返回页码与请求不一致，未提交重复目录")
+		}
 		if total, err := strconv.Atoi(nativeText(meta["total"])); err == nil && total >= 0 && total <= 100000000 {
 			hasMore = page*pageSize < total
+			if current == page {
+				sourceSetCatalogPagination(ctx, current, max(1, (total+pageSize-1)/pageSize), "sorani_api_current_total")
+			}
 		}
 	}
 	if hasMore && len(rows) == 0 {
@@ -266,6 +280,7 @@ func (d *Downloader) fetchSoraniCatalogPage(ctx context.Context, page int, categ
 	return items, hasMore, nil
 }
 
+// fetchSoraniDetail 获取Sorani详情。
 func (d *Downloader) fetchSoraniDetail(ctx context.Context, sourceID string) (Drama, []Chapter, error) {
 	if !soraniNumericID(sourceID) {
 		return Drama{}, nil, errors.New("青空次元剧集 ID 无效")
@@ -303,17 +318,18 @@ func (d *Downloader) fetchSoraniDetail(ctx context.Context, sourceID string) (Dr
 		if !soraniNumericID(episodeID) || seenIDs[episodeID] {
 			return Drama{}, nil, errors.New("青空次元分集目录包含无效或重复分集")
 		}
-		order := index + 1
-		if episode["episodeOrder"] != nil {
-			if parsed, err := strconv.Atoi(nativeText(episode["episodeOrder"])); err == nil && parsed > 0 && parsed <= 100000 {
-				order = parsed
-			}
+		if owner := mapString(episode, "videoId"); owner != "" && owner != sourceID {
+			return Drama{}, nil, errors.New("青空次元分集不属于当前作品，未混入列表")
+		}
+		title := mapString(episode, "episodeLabel", "title", "displayTitle")
+		order, err := soraniEpisodeNumber(episode["episodeOrder"], title, index+1)
+		if err != nil {
+			return Drama{}, nil, err
 		}
 		if seenOrders[order] {
 			return Drama{}, nil, errors.New("青空次元分集编号重复，请刷新目录")
 		}
 		seenIDs[episodeID], seenOrders[order] = true, true
-		title := mapString(episode, "episodeLabel", "title", "displayTitle")
 		if title == "" {
 			title = fmt.Sprintf("第 %d 集", order)
 		}
@@ -335,6 +351,18 @@ func (d *Downloader) fetchSoraniDetail(ctx context.Context, sourceID string) (Dr
 		return left < right
 	})
 	return drama, chapters, nil
+}
+
+// soraniEpisodeNumber 从 Sorani 分集文本中解析集号。
+func soraniEpisodeNumber(value any, title string, fallback int) (int, error) {
+	if value == nil {
+		return episodeIndex(title, fallback), nil
+	}
+	number, err := strconv.ParseFloat(strings.TrimSpace(nativeText(value)), 64)
+	if err != nil || math.IsNaN(number) || math.IsInf(number, 0) || number != math.Trunc(number) || number < 1 || number > 100000 {
+		return 0, errors.New("青空次元分集编号无效，未按列表位置重新编号")
+	}
+	return int(number), nil
 }
 
 // resolveSoraniMedia 用章节 ID 里携带的 episodeId 实时换取 m3u8 直链。

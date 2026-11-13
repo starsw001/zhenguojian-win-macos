@@ -9,11 +9,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math/bits"
+	"net/http"
 	"net/url"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const hongguoPlaybackAPI = "https://djapi.999888456.xyz/api/hongguo/play"
@@ -41,6 +45,7 @@ type hongguoPlaybackResponse struct {
 	} `json:"key_urls"`
 }
 
+// resolveHongguoPlaybackAPI 解析红果播放API。
 func (d *Downloader) resolveHongguoPlaybackAPI(ctx context.Context, seriesID, videoID string) (providerMedia, error) {
 	if !hongguoNumericID.MatchString(seriesID) || !hongguoNumericID.MatchString(videoID) {
 		return providerMedia{}, errors.New("红果播放请求缺少有效的剧集 ID")
@@ -50,7 +55,7 @@ func (d *Downloader) resolveHongguoPlaybackAPI(ctx context.Context, seriesID, vi
 		return providerMedia{}, err
 	}
 	query := url.Values{"id": {base64.StdEncoding.EncodeToString(reference)}}
-	body, err := d.fetchProviderText(ctx, hongguoPlaybackAPI+"?"+query.Encode(), hongguoBaseURL+"/")
+	body, err := d.fetchHongguoPlaybackText(ctx, hongguoPlaybackAPI+"?"+query.Encode())
 	if err != nil {
 		return providerMedia{}, err
 	}
@@ -106,6 +111,56 @@ func (d *Downloader) resolveHongguoPlaybackAPI(ctx context.Context, seriesID, vi
 	return providerMedia{}, errors.New("红果备用播放接口未返回该集可用的媒体和密钥，请稍后重试或确认该集是否仍可访问")
 }
 
+// hongguoRequestedPlaybackPage 取得本次红果播放请求关联的页面地址。
+func hongguoRequestedPlaybackPage(data map[string]any, seriesID, videoID string) (map[string]any, error) {
+	loader, _ := data["loaderData"].(map[string]any)
+	keys := []string{"player_(series_id)/(vid)/page", "player_page", "player_", "player_$"}
+	var remaining []string
+	for key := range loader {
+		if strings.HasPrefix(key, "player_") && strings.HasSuffix(key, "/page") && key != keys[0] {
+			remaining = append(remaining, key)
+		}
+	}
+	sort.Strings(remaining)
+	for _, key := range append(keys, remaining...) {
+		page, _ := loader[key].(map[string]any)
+		if mapString(page, "vid") == videoID && mapString(page, "series_id") == seriesID {
+			if page["isSuccess"] == false {
+				return nil, errors.New("红果网页明确返回本集请求失败，请确认源站访问条件")
+			}
+			return page, nil
+		}
+	}
+	return nil, errors.New("红果网页未返回所请求的剧及分集；不会用其他剧集或试看集替换，请刷新详情并确认源站访问条件")
+}
+
+// fetchHongguoPlaybackText 获取红果播放文本。
+func (d *Downloader) fetchHongguoPlaybackText(ctx context.Context, address string) (string, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, address, nil)
+	if err != nil {
+		return "", err
+	}
+	request.Header.Set("User-Agent", userAgent)
+	request.Header.Set("Referer", hongguoBaseURL+"/")
+	response, err := d.doCatalogRequestWithTimeout(request, 8*time.Second)
+	if err != nil {
+		return "", err
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(response.Body, providerMaxBodyBytes+1))
+	if err != nil {
+		return "", err
+	}
+	if len(body) > providerMaxBodyBytes {
+		return "", errors.New("红果播放响应超过大小限制")
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 || catalogResponseBlockReason(response, body) != "" {
+		return "", d.catalogResponseError(request, response, body)
+	}
+	return string(body), nil
+}
+
+// decodeHongguoPlaybackResponse 解码红果播放响应。
 func decodeHongguoPlaybackResponse(body string) ([]byte, error) {
 	text := strings.TrimSpace(body)
 	if !strings.HasPrefix(text, "v2.") {
@@ -148,6 +203,7 @@ func decodeHongguoPlaybackResponse(body string) ([]byte, error) {
 	return unpadded, nil
 }
 
+// decodeHongguoBase64 解码红果基础地址64。
 func decodeHongguoBase64(value string) ([]byte, error) {
 	value = strings.TrimSpace(value)
 	decoded, err := base64.StdEncoding.Strict().DecodeString(value)
@@ -157,6 +213,7 @@ func decodeHongguoBase64(value string) ([]byte, error) {
 	return base64.RawStdEncoding.Strict().DecodeString(value)
 }
 
+// hongguoContentKey 解析红果媒体响应中携带的内容密钥。
 func hongguoContentKey(value string) ([]byte, error) {
 	if len(value) > 1024 {
 		return nil, errors.New("红果媒体密钥数据过长")

@@ -12,8 +12,10 @@ type nativeRecommendationState struct {
 	HasMore bool                       `json:"hasMore"`
 }
 
+// nativeRecommendationKey 返回原生推荐键。
 func nativeRecommendationKey(genre string) string { return sourceHongguo + "|recommendation:" + genre }
 
+// cachedRecommendations 返回已缓存推荐列表。
 func (engine *nativeEngine) cachedRecommendations(genre string) (nativeCatalogResult, error) {
 	if err := (hongguoRecommendationQuery{Genre: genre}).validate(); err != nil {
 		return nativeCatalogResult{}, err
@@ -29,6 +31,7 @@ func (engine *nativeEngine) cachedRecommendations(genre string) (nativeCatalogRe
 	return result, nil
 }
 
+// nativeRecommendations 读取推荐作品并维护相应缓存。
 func (engine *nativeEngine) nativeRecommendations(ctx context.Context, input nativeInput) (nativeCatalogResult, error) {
 	genre := input.Category
 	if err := (hongguoRecommendationQuery{Genre: genre}).validate(); err != nil {

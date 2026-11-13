@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -27,6 +28,7 @@ type soraniAPIClient struct {
 	once       sync.Once
 }
 
+// soraniClient 取得Sorani请求使用的客户端。
 func (d *Downloader) soraniClient() *soraniAPIClient {
 	d.soraniOnce.Do(func() {
 		d.sorani = &soraniAPIClient{
@@ -38,6 +40,7 @@ func (d *Downloader) soraniClient() *soraniAPIClient {
 	return d.sorani
 }
 
+// get 从Sorani API 客户端中取得指定条目。
 func (client *soraniAPIClient) get(ctx context.Context, route string, query url.Values, limit int64) (any, error) {
 	if limit <= 0 {
 		limit = 4 << 20
@@ -47,8 +50,10 @@ func (client *soraniAPIClient) get(ctx context.Context, route string, query url.
 		return nil, errors.New("青空次元接口地址无效")
 	}
 	timeout := 15 * time.Second
-	if background, _ := ctx.Value(backgroundCatalogKey{}).(bool); background {
-		timeout = 8 * time.Second
+	background, _ := ctx.Value(backgroundCatalogKey{}).(bool)
+	refresh, _ := ctx.Value(sourceRuleRefreshKey{}).(bool)
+	if background || refresh {
+		timeout = 30 * time.Second
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -88,22 +93,43 @@ func (client *soraniAPIClient) get(ctx context.Context, route string, query url.
 		}
 		return nil
 	}
-	response, err := transport.Do(request)
-	if err != nil {
-		return nil, fmt.Errorf("青空次元连接失败：%w", publicError(err))
+	if fresh, _ := ctx.Value(providerTextNoCacheKey{}).(bool); fresh {
+		request.Header.Set("Cache-Control", "no-cache")
+		request.Header.Set("Pragma", "no-cache")
 	}
-	defer response.Body.Close()
-	data, readErr := io.ReadAll(io.LimitReader(response.Body, limit+1))
-	if d.limiter != nil {
-		d.limiter.observe(request, response)
-	}
-	observeSourceResponse(ctx, response)
-	blocked := catalogResponseBlockReason(response, data) != ""
-	if response.StatusCode < 200 || response.StatusCode >= 300 || blocked {
-		return nil, d.catalogResponseError(request, response, data)
-	}
-	if readErr != nil || int64(len(data)) > limit {
-		return nil, errors.New("青空次元返回的数据过大或读取失败")
+	var data []byte
+	for attempt := 0; attempt < 2; attempt++ {
+		response, err := transport.Do(request.Clone(ctx))
+		if err != nil {
+			return nil, fmt.Errorf("青空次元连接失败：%w", publicError(err))
+		}
+		var readErr error
+		data, readErr = io.ReadAll(io.LimitReader(response.Body, limit+1))
+		response.Body.Close()
+		if d.limiter != nil {
+			d.limiter.observe(request, response)
+		}
+		observeSourceResponse(ctx, response)
+		blocked := catalogResponseBlockReason(response, data) != ""
+		if response.StatusCode < 200 || response.StatusCode >= 300 || blocked {
+			return nil, d.catalogResponseError(request, response, data)
+		}
+		if int64(len(data)) > limit {
+			return nil, fmt.Errorf("青空次元响应超过读取上限（%d字节）", limit)
+		}
+		if readErr == nil {
+			break
+		}
+		var networkError net.Error
+		transient := errors.Is(readErr, io.ErrUnexpectedEOF) || errors.As(readErr, &networkError)
+		if attempt > 0 || !transient || ctx.Err() != nil {
+			return nil, fmt.Errorf("青空次元响应读取中断（已读%d字节）：%w", len(data), publicError(readErr))
+		}
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("青空次元响应读取超时：%w", ctx.Err())
+		case <-time.After(250 * time.Millisecond):
+		}
 	}
 	var decoded any
 	decoder := json.NewDecoder(bytes.NewReader(data))

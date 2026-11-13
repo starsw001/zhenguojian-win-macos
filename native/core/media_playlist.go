@@ -8,6 +8,7 @@ import (
 	"time"
 )
 
+// m3u8Duration 根据 M3U8 媒体段信息计算播放时长。
 func m3u8Duration(raw string) time.Duration {
 	var total time.Duration
 	for _, line := range strings.Split(raw, "\n") {

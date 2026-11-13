@@ -13,15 +13,15 @@ from sync_source import source_files, synchronize
 class TaskSnapshot:
     files: int
     total_bytes: int
-    archive: Path
+    archive: Path | None
 
 
 def create_source_archive(destination, names):
     timestamp = datetime.datetime.now().astimezone().strftime('%Y%m%d%H%M')
-    archive = destination.parent / f'真果·鉴-{timestamp}.zip'
+    archive = destination.parent / f'真果·赏-{timestamp}.zip'
     suffix = 2
     while archive.exists():
-        archive = destination.parent / f'真果·鉴-{timestamp}-{suffix}.zip'
+        archive = destination.parent / f'真果·赏-{timestamp}-{suffix}.zip'
         suffix += 1
     with tempfile.NamedTemporaryFile(prefix='.source-archive-', suffix='.zip',
                                      dir=destination.parent, delete=False) as stream:
@@ -40,7 +40,7 @@ def create_source_archive(destination, names):
     return archive
 
 
-def finish_task(source, destination, message):
+def finish_task(source, destination, message, *, create_archive=True):
     if destination.is_symlink():
         raise ValueError('同步目标不能是符号链接')
     source, destination = source.resolve(), destination.resolve()
@@ -54,7 +54,7 @@ def finish_task(source, destination, message):
     names = sorted(path.as_posix() for path in selected)
     if source != destination and synchronize(source, destination, check=True).changed:
         raise ValueError('源码同步后校验未通过')
-    archive = create_source_archive(destination, names)
+    archive = create_source_archive(destination, names) if create_archive else None
     return TaskSnapshot(
         files=len(names),
         total_bytes=sum((destination / name).stat().st_size for name in names),
@@ -65,19 +65,26 @@ def finish_task(source, destination, message):
 def main():
     source = Path(__file__).resolve().parents[1]
     parser = argparse.ArgumentParser(
-        description='同步干净源码并生成源码压缩包，不执行任何 Git 操作。'
+        description='同步干净源码，可按开发要求跳过源码压缩包，不执行任何 Git 操作。'
     )
     parser.add_argument('--message', required=True, help='本次实际完成的变更')
     parser.add_argument('--destination', type=Path, default=source.parent / 'guoapp')
+    parser.add_argument('--no-archive', action='store_true', help='持续开发时只同步源码，不生成压缩包')
     options = parser.parse_args()
     try:
-        result = finish_task(source, options.destination.expanduser(), options.message)
+        result = finish_task(
+            source, options.destination.expanduser(), options.message,
+            create_archive=not options.no_archive,
+        )
     except (OSError, ValueError) as error:
         print(str(error), file=sys.stderr)
         return 1
     print(f'已同步源码：{result.files} 个文件，{result.total_bytes / 1024:.1f} KB')
     print('源码目录：' + str(options.destination.resolve()))
-    print('源码压缩包：' + str(result.archive.resolve()))
+    if result.archive is not None:
+        print('源码压缩包：' + str(result.archive.resolve()))
+    else:
+        print('已按要求跳过源码压缩包。')
     return 0
 
 

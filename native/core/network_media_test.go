@@ -14,6 +14,7 @@ import (
 	"testing"
 )
 
+// TestHuangguoMediaUsesBrowserSessionPageRefererAndPreviewToken 验证「Huangguo Media Uses Browser Session Page Referer And Preview Token」回归场景。
 func TestHuangguoMediaUsesBrowserSessionPageRefererAndPreviewToken(t *testing.T) {
 	var previews, keys atomic.Int32
 	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -111,6 +112,7 @@ func TestHuangguoMediaUsesBrowserSessionPageRefererAndPreviewToken(t *testing.T)
 	}
 }
 
+// TestHuangguoPreviewTokenRefreshIsBoundedAndScoped 验证「Huangguo Preview Token Refresh Is Bounded And Scoped」回归场景。
 func TestHuangguoPreviewTokenRefreshIsBoundedAndScoped(t *testing.T) {
 	var previews, keys atomic.Int32
 	d := sourceFixtureDownloader(t, func(request *http.Request) (*http.Response, error) {
@@ -147,6 +149,7 @@ func TestHuangguoPreviewTokenRefreshIsBoundedAndScoped(t *testing.T) {
 	}
 }
 
+// TestLegacyPlaybackAndDownloadUseAuthenticatedPlaylistAndSourceKey 验证「Legacy Playback And Download Use Authenticated Playlist And Source Key」回归场景。
 func TestLegacyPlaybackAndDownloadUseAuthenticatedPlaylistAndSourceKey(t *testing.T) {
 	var keys atomic.Int32
 	d := sourceFixtureDownloader(t, func(request *http.Request) (*http.Response, error) {
@@ -189,6 +192,7 @@ func TestLegacyPlaybackAndDownloadUseAuthenticatedPlaylistAndSourceKey(t *testin
 	}
 }
 
+// TestLegacyDiscoverySkipsFailedHost 验证「Legacy Discovery Skips Failed Host」回归场景。
 func TestLegacyDiscoverySkipsFailedHost(t *testing.T) {
 	d := sourceFixtureDownloader(t, func(request *http.Request) (*http.Response, error) {
 		if request.URL.Path != "/api/app/ping/check" {
@@ -211,6 +215,7 @@ func TestLegacyDiscoverySkipsFailedHost(t *testing.T) {
 	}
 }
 
+// TestVideoEpisodeParsingPrefersNumberedLinksOverStartButton 验证「Video Episode Parsing Prefers Numbered Links Over Start Button」回归场景。
 func TestVideoEpisodeParsingPrefersNumberedLinksOverStartButton(t *testing.T) {
 	body := `<a href="/video/two">开始观看</a><a href="/video/one"><p>第1集</p></a><a href="/video/two"><p>第2集</p></a>`
 	episodes := parseHuangguoVideoEpisodes(body, "https://huangguo.video/series/synthetic")

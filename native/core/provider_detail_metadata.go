@@ -8,6 +8,7 @@ import (
 	"strings"
 )
 
+// parseHongguoSortDetail 解析红果排序详情。
 func parseHongguoSortDetail(body, id string) (Drama, error) {
 	row := nestedMap(routerLoaderMap(parseRouterData(body), "detail_page", "detail_"), "seriesDetail")
 	if mapString(row, "series_id", "series_id_str") != id || mapString(row, "series_name", "series_title") == "" {
@@ -23,6 +24,7 @@ func parseHongguoSortDetail(body, id string) (Drama, error) {
 	return patch, nil
 }
 
+// parseHuangguoSortDetail 解析黄果排序详情。
 func parseHuangguoSortDetail(body, pageURL string, patch Drama) (Drama, error) {
 	type entry struct {
 		Type      string `json:"@type"`
@@ -49,7 +51,7 @@ func parseHuangguoSortDetail(body, pageURL string, patch Drama) (Drama, error) {
 				continue
 			}
 			actual, err := url.Parse(firstNonEmpty(row.URL, row.ID))
-			if err != nil || actual.Host != "" && !strings.EqualFold(actual.Host, expected.Host) && providerSourceForURL(actual.String()) != patch.Source || strings.TrimRight(actual.Path, "/") != strings.TrimRight(expected.Path, "/") || row.Name == "" || patch.Source == sourceHuangguoAI && huangguoTitleNeedsRepair(row.Name, patch.SourceID) {
+			if err != nil || actual.Host != "" && !strings.EqualFold(actual.Host, expected.Host) && (patch.Source == sourceHuangguoAI || providerSourceForURL(actual.String()) != patch.Source) || strings.TrimRight(actual.Path, "/") != strings.TrimRight(expected.Path, "/") || row.Name == "" || patch.Source == sourceHuangguoAI && huangguoTitleNeedsRepair(row.Name, patch.SourceID) {
 				continue
 			}
 			matched = true
@@ -91,6 +93,7 @@ func parseHuangguoSortDetail(body, pageURL string, patch Drama) (Drama, error) {
 	return patch, nil
 }
 
+// huangguoDetailMetadata 返回黄果详情元数据。
 func huangguoDetailMetadata(body, pageURL, source, sourceID string) Drama {
 	drama := Drama{ID: providerDramaID(source, sourceID), Source: source, SourceID: sourceID,
 		Title: firstNonEmpty(extractPageTitle(body), "短剧"), Desc: extractDescription(body), Tags: extractTags(body)}

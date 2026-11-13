@@ -14,6 +14,7 @@ import (
 	"time"
 )
 
+// TestProbeCategoryRaw 验证「Probe Category Raw」回归场景。
 func TestProbeCategoryRaw(t *testing.T) {
 	if os.Getenv("HG_PROBE") == "" {
 		t.Skip("probe disabled")
@@ -83,6 +84,7 @@ func TestProbeCategoryRaw(t *testing.T) {
 	}
 }
 
+// TestProbeCategoryReal 验证「Probe Category Real」回归场景。
 func TestProbeCategoryReal(t *testing.T) {
 	if os.Getenv("HG_PROBE") == "" {
 		t.Skip("probe disabled")
@@ -141,6 +143,7 @@ func TestProbeCategoryReal(t *testing.T) {
 	}
 }
 
+// TestProbeCategoryViaApp 验证「Probe Category Via App」回归场景。
 func TestProbeCategoryViaApp(t *testing.T) {
 	if os.Getenv("HG_PROBE") == "" {
 		t.Skip("probe disabled")
@@ -174,6 +177,7 @@ func TestProbeCategoryViaApp(t *testing.T) {
 	}
 }
 
+// TestProbeCategoryOffsets 验证「Probe Category Offsets」回归场景。
 func TestProbeCategoryOffsets(t *testing.T) {
 	if os.Getenv("HG_PROBE") == "" {
 		t.Skip("probe disabled")
@@ -208,6 +212,7 @@ func TestProbeCategoryOffsets(t *testing.T) {
 	}
 }
 
+// TestProbeCategoryRate 验证「Probe Category Rate」回归场景。
 func TestProbeCategoryRate(t *testing.T) {
 	if os.Getenv("HG_PROBE") == "" {
 		t.Skip("probe disabled")
@@ -247,6 +252,7 @@ func TestProbeCategoryRate(t *testing.T) {
 	}
 }
 
+// TestProbeGenreReliability 验证「Probe Genre Reliability」回归场景。
 func TestProbeGenreReliability(t *testing.T) {
 	if os.Getenv("HG_PROBE") == "" {
 		t.Skip("probe disabled")

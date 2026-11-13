@@ -5,6 +5,7 @@ import 'package:media_kit/media_kit.dart';
 
 import 'core_bridge.dart';
 import 'media_pipeline.dart';
+import 'player_runtime_options.dart';
 
 Future<void> runPackageSmoke(List<String> arguments) async {
   if (arguments.length != 3) exit(2);
@@ -32,6 +33,10 @@ Future<void> runPackageSmoke(List<String> arguments) async {
     player = Player(
       configuration: const PlayerConfiguration(muted: true, vo: 'null'),
     );
+    final platform = player.platform;
+    if (platform is NativePlayer) {
+      await configurePortablePlaybackCache(platform.setProperty);
+    }
     await player.setAudioTrack(AudioTrack.no());
     final advancing = player.stream.position.firstWhere(
       (time) => time.inMilliseconds >= 400,

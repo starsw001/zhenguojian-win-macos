@@ -14,6 +14,7 @@ var (
 	rePublicURL  = regexp.MustCompile(`(?i)(?:https?|socks5h?)://[^\s"'<>]+`)
 )
 
+// publicError 包装面向调用方的错误，避免直接暴露敏感请求信息。
 func publicError(err error) error {
 	if err == nil {
 		return nil
@@ -23,9 +24,13 @@ func publicError(err error) error {
 
 type redactedError struct{ cause error }
 
+// Error 返回当前错误的可显示文本。
 func (err redactedError) Error() string { return redactErrorString(err.cause.Error()) }
+
+// Unwrap 返回底层错误，供 errors.Is 和 errors.As 继续匹配。
 func (err redactedError) Unwrap() error { return err.cause }
 
+// redactErrorString 隐藏错误文本中 URL 的凭据、查询参数和片段。
 func redactErrorString(s string) string {
 	return rePublicURL.ReplaceAllStringFunc(s, func(raw string) string {
 		u, err := url.Parse(raw)
@@ -48,6 +53,7 @@ func redactErrorString(s string) string {
 	})
 }
 
+// truncate 去除首尾空白，并按字符数上限截断文本。
 func truncate(s string, n int) string {
 	s = strings.TrimSpace(s)
 	r := []rune(s)

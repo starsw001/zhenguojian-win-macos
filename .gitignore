@@ -43,3 +43,9 @@ macos/Flutter/Flutter-Generated.xcconfig
 macos/Runner/GeneratedPluginRegistrant.*
 macos/DuanjuCore/*.xcframework/
 **/xcuserdata/
+/download/
+*.credentials.json
+*.key
+.dev.vars
+.dev.vars.*
+.wrangler/

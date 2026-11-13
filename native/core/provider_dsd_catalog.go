@@ -33,6 +33,7 @@ type dsdCatalogState struct {
 	limits     map[string]dsdPageLimit
 }
 
+// dsdRouteParameters 解析 DSD 页面路由中的请求参数。
 func dsdRouteParameters(pageURL, reference string) (string, map[string]string, bool) {
 	page, err := url.Parse(pageURL)
 	if err != nil || reference == "" {
@@ -68,6 +69,7 @@ func dsdRouteParameters(pageURL, reference string) (string, map[string]string, b
 	return parts[1], parameters, true
 }
 
+// parseDSDCategories 解析DSD分类列表。
 func parseDSDCategories(document *html.Node, pageURL string) ([]nativeCategory, error) {
 	var categories []nativeCategory
 	seen := map[string]bool{}
@@ -80,12 +82,13 @@ func parseDSDCategories(document *html.Node, pageURL string) ([]nativeCategory, 
 		seen[id] = true
 		categories = append(categories, nativeCategory{ID: id, Name: name})
 	}
-	if len(categories) == 0 || len(categories) > 32 {
+	if len(categories) == 0 || len(categories) > nativeCategoryMaxEntries {
 		return nil, errors.New("帝果未返回有效的内容分类")
 	}
 	return categories, nil
 }
 
+// fetchDSDCategories 获取DSD分类列表。
 func (d *Downloader) fetchDSDCategories(ctx context.Context, force bool) ([]nativeCategory, error) {
 	state := &d.dsdCatalog
 	state.mu.Lock()
@@ -113,6 +116,7 @@ func (d *Downloader) fetchDSDCategories(ctx context.Context, force bool) ([]nati
 	return categories, nil
 }
 
+// dsdCardCover 提取 DSD 作品卡片的海报字段。
 func dsdCardCover(card *html.Node, pageURL string) string {
 	images := providerHTMLNodes(card, func(node *html.Node) bool { return node.Data == "img" })
 	for _, image := range images {
@@ -143,6 +147,7 @@ func dsdCardCover(card *html.Node, pageURL string) string {
 	return ""
 }
 
+// parseDSDCards 解析DSD卡片列表。
 func parseDSDCards(document *html.Node, pageURL, category string) ([]Drama, error) {
 	items := []Drama{}
 	seen := map[string]bool{}
@@ -183,6 +188,7 @@ func parseDSDCards(document *html.Node, pageURL, category string) ([]Drama, erro
 	return items, nil
 }
 
+// dsdPagination 解析 DSD 目录页中的分页信息。
 func dsdPagination(document *html.Node, pageURL, category, query string, page int) (int, error) {
 	pagination := providerHTMLFirstClass(document, "el-pagination", "pagination", "mac_pages")
 	if pagination == nil {
@@ -223,6 +229,7 @@ func dsdPagination(document *html.Node, pageURL, category, query string, page in
 	return pages, nil
 }
 
+// dsdPageLimit 取得 DSD 目录页的条目数量上限。
 func (d *Downloader) dsdPageLimit(category string) (int, bool) {
 	state := &d.dsdCatalog
 	state.mu.Lock()
@@ -231,6 +238,7 @@ func (d *Downloader) dsdPageLimit(category string) (int, bool) {
 	return limit.pages, found && time.Since(limit.updatedAt) < 15*time.Minute
 }
 
+// fetchDSDPage 获取DSD页面。
 func (d *Downloader) fetchDSDPage(ctx context.Context, page int, category nativeCategory, query string) ([]Drama, bool, error) {
 	if query == "" && page > 1 {
 		limit, known := d.dsdPageLimit(category.ID)
@@ -279,6 +287,7 @@ func (d *Downloader) fetchDSDPage(ctx context.Context, page int, category native
 	return items, pages > page, nil
 }
 
+// fetchDSDCatalogPage 获取DSD目录页。
 func (d *Downloader) fetchDSDCatalogPage(ctx context.Context, page int, category, query string) ([]Drama, bool, error) {
 	if page < 1 || page > 1000000 || len(query) > 1024 || category != "" && !webProviderNumericID.MatchString(category) {
 		return nil, false, errors.New("帝果目录查询参数无效")

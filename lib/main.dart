@@ -10,6 +10,7 @@ import 'package:window_manager/window_manager.dart';
 
 import 'core_bridge.dart';
 import 'app_layout.dart';
+import 'app_storage.dart';
 import 'app_orientation.dart';
 import 'app_theme.dart';
 import 'home_screen.dart';
@@ -21,10 +22,21 @@ import 'lan_controller.dart';
 import 'player_screen.dart';
 import 'video_enhancement_assets.dart';
 import 'diary_service.dart';
+import 'first_start_check.dart';
+import 'app_license.dart';
 
 Future<void> main(List<String> arguments) async {
   WidgetsFlutterBinding.ensureInitialized();
-  DiaryService.add('[App] 应用启动，版本: 0.2.67+75（字幕增强版）, 平台: ${Platform.operatingSystem}');
+  if (Platform.isWindows && arguments.firstOrNull == '--first-start-check') {
+    await windowManager.ensureInitialized();
+    await windowManager.hide();
+    MediaKit.ensureInitialized();
+    await runFirstStartCheck(arguments);
+    return;
+  }
+  DiaryService.add(
+    '[App] 应用启动，版本: $appVersion, 平台: ${Platform.operatingSystem}',
+  );
   if (Platform.isAndroid) {
     await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     SystemChrome.setSystemUIOverlayStyle(AppTheme.systemBars(Brightness.dark));
@@ -39,7 +51,7 @@ Future<void> main(List<String> arguments) async {
     return;
   }
   final device = await AppDevice.detect();
-  runApp(AppBootstrap(device: device));
+  runApp(LicensedApp(child: AppBootstrap(device: device)));
 }
 
 class AppBootstrap extends StatefulWidget {
@@ -113,23 +125,27 @@ class _AppBootstrapState extends State<AppBootstrap>
       error = null;
     });
     try {
+      await prepareAppStorage();
       final preferences = await SharedPreferences.getInstance();
       await _refreshDevice();
       await repository.initialize();
       if (mounted) {
         setState(() {
+          acknowledgeUpdateFrame();
           store = LocalStore(preferences);
           repository.access = store;
+          repository.scheduleSourceAddressRefresh();
+          store!.addListener(repository.scheduleSourceAddressRefresh);
           MediaLibrary.attach(repository, store!);
           LanController.current?.dispose();
           final link = LanController(
             repository,
             store!,
-              kind: device.television
-                  ? 'tv'
-                  : Platform.isWindows || Platform.isMacOS
-                  ? 'computer'
-                  : 'phone',
+            kind: device.television
+                ? 'tv'
+                : Platform.isWindows || Platform.isMacOS
+                ? 'computer'
+                : 'phone',
           );
           LanController.current = link;
           link.openPlayback = (request) async {

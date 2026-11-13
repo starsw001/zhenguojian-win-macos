@@ -8,6 +8,7 @@ import (
 	"time"
 )
 
+// TestProbeSourceTaskUpdate 验证「Probe Source Task Update」回归场景。
 func TestProbeSourceTaskUpdate(t *testing.T) {
 	if os.Getenv("HG_PROBE") == "" {
 		t.Skip("probe disabled")

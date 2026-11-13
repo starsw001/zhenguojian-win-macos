@@ -14,7 +14,7 @@ def mirrored_pub_lockfile(root, environment):
         return
     lockfile = Path(root) / 'pubspec.lock'
     original = lockfile.read_bytes()
-    rewritten = re.sub(r'(?m)^([ \t]+url:[ \t]*)"?https://pub\.(?:dev|dartlang\.org)/?"?([ \t]*)$',
+    rewritten = re.sub(r'(?m)^([ \t]+url:[ \t]*)"?https://pub\.(?:dev|dartlang\.org)/?"?([ \t]*\r?)$',
                        lambda match: match[1] + json.dumps(mirror) + match[2],
                        original.decode('utf-8')).encode('utf-8')
     if rewritten == original:
@@ -58,7 +58,7 @@ def china_mirror_environment(environment, enabled, *, gradle=True):
     temporary = None
     try:
         with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8',
-                                         prefix='zhenguojian-', suffix='.gradle',
+                                         prefix='zhenguoshang-', suffix='.gradle',
                                          dir=init_directory, delete=False) as stream:
             temporary = Path(stream.name)
             stream.write(template.replace('__MIRROR_SESSION__', session))

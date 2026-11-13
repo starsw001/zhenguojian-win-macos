@@ -106,20 +106,20 @@ void main() {
       await capture('interface-dark-downloads');
       await store.setThemeMode('light');
       await tester.pumpAndSettle();
-      final menu = find.byKey(const ValueKey('download-queue-actions'));
+      final pause = find.byTooltip('全部暂停');
       final filters = find.byKey(const ValueKey('download-filters'));
       expect(
-        tester.getRect(menu).bottom,
-        lessThan(tester.getRect(filters).top),
+        tester.getRect(pause).bottom,
+        lessThan(tester.getRect(find.byType(TextField).first).top),
       );
       await capture('interface-light-downloads');
-      await tester.tap(menu);
-      await tester.pumpAndSettle();
-      await capture('interface-download-queue-menu');
-      await tester.tap(find.text('全部暂停'));
+      await tester.tap(pause);
       await tester.pumpAndSettle();
       expect(repository.jobs.where((job) => job.active), isEmpty);
-      await tester.tap(find.byKey(const ValueKey('download-filter-completed')));
+      await tester.tap(filters);
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(ChoiceChip, '已下载'));
+      await tester.tap(find.text('应用'));
       await tester.pumpAndSettle();
       expect(find.byKey(const ValueKey('download-task-task-0')), findsNothing);
       await capture('interface-completed-downloads');
@@ -131,7 +131,7 @@ void main() {
         'refreshAnimation': true,
         'alignedPosters': true,
         'vipOnlyOnHuangdou': true,
-        'downloadMenuAboveFilters': true,
+        'directDownloadButtonsAboveSearch': true,
         'bulkPause': true,
         'downloadFilter': true,
         'remoteImagesDisabled': true,

@@ -29,6 +29,7 @@ type hongguoSearchSeries struct {
 	labels  map[int]string
 }
 
+// hongguoSearchSeason 从红果搜索文本中识别季号。
 func hongguoSearchSeason(title string) (string, int, string, string) {
 	title = norm.NFKC.String(strings.TrimSpace(title))
 	match := hongguoSearchSeasonSuffix.FindStringSubmatchIndex(title)
@@ -78,6 +79,7 @@ func hongguoSearchSeason(title string) (string, int, string, string) {
 	return base, number, unit, label
 }
 
+// hongguoSearchChineseSeason 从中文季号文本中识别红果作品季序。
 func hongguoSearchChineseSeason(number int) string {
 	digits := []rune("零一二三四五六七八九")
 	if number < 10 {
@@ -106,6 +108,7 @@ func hongguoSearchChineseSeason(number int) string {
 	return prefix + hongguoSearchChineseSeason(rest)
 }
 
+// add 添加红果搜索系列。
 func (series *hongguoSearchSeries) add(drama Drama) bool {
 	base, season, unit, label := hongguoSearchSeason(drama.DisplayTitle())
 	if season == 0 && hongguoSearchText(drama.DisplayTitle()) == series.key {
@@ -121,6 +124,7 @@ func (series *hongguoSearchSeries) add(drama Drama) bool {
 	return true
 }
 
+// hongguoSearchSeriesGroups 将搜索结果按同系列作品分组。
 func hongguoSearchSeriesGroups(keyword string, dramas []Drama) []*hongguoSearchSeries {
 	if _, season, _, _ := hongguoSearchSeason(keyword); season > 0 {
 		return nil
@@ -161,6 +165,7 @@ func hongguoSearchSeriesGroups(keyword string, dramas []Drama) []*hongguoSearchS
 	return incomplete
 }
 
+// nextQuery 构造后续请求使用的查询参数。
 func (series *hongguoSearchSeries) nextQuery(attempted map[string]bool) string {
 	for season := 1; season <= series.maximum; season++ {
 		if series.known[season] {
@@ -193,6 +198,7 @@ func (series *hongguoSearchSeries) nextQuery(attempted map[string]bool) string {
 	return ""
 }
 
+// completeHongguoSearchSeasons 补全红果搜索季号列表。
 func (downloader *Downloader) completeHongguoSearchSeasons(ctx context.Context, keyword string, entry *hongguoSearchEntry) bool {
 	groups := hongguoSearchSeriesGroups(keyword, entry.Dramas)
 	if len(groups) == 0 {

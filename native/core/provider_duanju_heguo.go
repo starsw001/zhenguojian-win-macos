@@ -16,6 +16,7 @@ var (
 	nextEpisodePattern = regexp.MustCompile(`(?i)(https?://[^"'\s<>\\]+\.(?:mp4|m3u8)[^"'\s<>\\]*)`)
 )
 
+// nextPageProps 取得下一个页面属性。
 func nextPageProps(body string) map[string]any {
 	matches := nextDataPattern.FindStringSubmatch(body)
 	if len(matches) < 2 {
@@ -30,6 +31,7 @@ func nextPageProps(body string) map[string]any {
 	return pageProps
 }
 
+// heguoDramaFromBook 将河果响应节点转换为统一作品模型。
 func heguoDramaFromBook(book map[string]any, base string) Drama {
 	id := duanjuFindString(book, "bookId", "book_id", "id")
 	if id == "" {
@@ -52,6 +54,7 @@ func heguoDramaFromBook(book map[string]any, base string) Drama {
 	}
 }
 
+// heguoBooks 返回河果作品列表。
 func heguoBooks(pageProps map[string]any, base string) []Drama {
 	var items []Drama
 	seen := map[string]bool{}
@@ -82,6 +85,7 @@ func heguoBooks(pageProps map[string]any, base string) []Drama {
 	return items
 }
 
+// fetchHeguoCatalogPage 获取河果目录页。
 func (d *Downloader) fetchHeguoCatalogPage(ctx context.Context, page int, category string) ([]Drama, bool, error) {
 	base := d.duanjuBaseURL(sourceHeguo)
 	address := base + "/"
@@ -99,12 +103,24 @@ func (d *Downloader) fetchHeguoCatalogPage(ctx context.Context, page int, catego
 	items := heguoBooks(pageProps, base)
 	totalPages := duanjuFindInt(pageProps, "pages")
 	current := duanjuFindInt(pageProps, "page")
+	if current > 0 && current != page || totalPages > 0 && (totalPages < page || totalPages > 1000000) {
+		return nil, false, errors.New("河果返回页码与请求不一致，未提交重复目录")
+	}
+	if class := strings.TrimSpace(category); class != "" {
+		if returned := duanjuFindString(pageProps, "typeThreeId"); returned != "" && returned != class {
+			return nil, false, errors.New("河果返回分类与请求不一致，未提交其他分类")
+		}
+	}
+	if current > 0 && totalPages >= current {
+		sourceSetCatalogPagination(ctx, current, totalPages, "heguo_next_page_props")
+	}
 	if current <= 0 {
 		current = page
 	}
 	return items, totalPages > current, nil
 }
 
+// fetchHeguoDetail 获取河果详情。
 func (d *Downloader) fetchHeguoDetail(ctx context.Context, sourceID string) (Drama, []Chapter, error) {
 	base := d.duanjuBaseURL(sourceHeguo)
 	address := base + "/drama/" + url.PathEscape(sourceID)
@@ -153,6 +169,7 @@ func (d *Downloader) fetchHeguoDetail(ctx context.Context, sourceID string) (Dra
 	return drama, chapters, nil
 }
 
+// searchHeguo 搜索河果。
 func (d *Downloader) searchHeguo(ctx context.Context, query string) ([]Drama, error) {
 	keyword := strings.TrimSpace(query)
 	if keyword == "" {
@@ -178,13 +195,13 @@ func (d *Downloader) searchHeguo(ctx context.Context, query string) ([]Drama, er
 	if err != nil {
 		return nil, err
 	}
-	items := heguoSearchBooks(response, base)
-	if len(items) == 0 {
-		return nil, errors.New("河果未搜索到相关剧集")
+	if err := sourceSearchEnvelope(response, sourceHeguo); err != nil {
+		return nil, err
 	}
-	return items, nil
+	return heguoSearchBooks(response, base), nil
 }
 
+// heguoSearchBooks 搜索河果作品列表。
 func heguoSearchBooks(response map[string]any, base string) []Drama {
 	data := duanjuFindMap(response, "data")
 	var items []Drama
@@ -204,6 +221,7 @@ func heguoSearchBooks(response map[string]any, base string) []Drama {
 	return items
 }
 
+// resolveHeguoMedia 解析河果媒体。
 func (d *Downloader) resolveHeguoMedia(ctx context.Context, task Task) (providerMedia, error) {
 	source := canonicalProviderSource(task.Chapter.Source)
 	base := d.duanjuBaseURL(source)
@@ -216,13 +234,18 @@ func (d *Downloader) resolveHeguoMedia(ctx context.Context, task Task) (provider
 		return providerMedia{}, err
 	}
 	address := ""
+	var variants []providerMedia
+	seen := map[string]bool{}
 	if pageProps := nextPageProps(body); pageProps != nil {
 		if chapter := duanjuFindMap(pageProps, "chapterInfo"); chapter != nil {
 			if video := duanjuFindMap(chapter, "chapterVideoVo"); video != nil {
 				for _, key := range []string{"mp4", "mp4720p", "vodMp4Url"} {
-					if candidate := duanjuFindString(video, key); candidate != "" {
-						address = candidate
-						break
+					if candidate := duanjuFindString(video, key); isProviderHTTPMediaURL(candidate) && !seen[candidate] {
+						seen[candidate] = true
+						if address == "" {
+							address = candidate
+						}
+						variants = append(variants, providerMedia{URL: candidate, Referer: pageURL})
 					}
 				}
 			}
@@ -237,7 +260,8 @@ func (d *Downloader) resolveHeguoMedia(ctx context.Context, task Task) (provider
 		return providerMedia{}, errors.New("河果未返回有效播放地址，请刷新章节后重试")
 	}
 	return d.prepareWebProviderMedia(ctx, providerMedia{
-		URL:     address,
-		Referer: pageURL,
+		URL:      address,
+		Variants: variants,
+		Referer:  pageURL,
 	}, duanjuSourceName(source))
 }

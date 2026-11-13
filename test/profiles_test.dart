@@ -195,7 +195,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('下载'), findsNothing);
     expect(find.text('黄豆'), findsNothing);
-    expect(find.text('黄果 AI'), findsNothing);
+    expect(find.text('黄果AI'), findsNothing);
     expect(find.text('红果'), findsOneWidget);
     await tester.pumpWidget(const SizedBox.shrink());
     store.dispose();

@@ -10,6 +10,7 @@ import (
 )
 
 type providerMedia struct {
+	pending     *Task
 	credentials *providerMediaCredentials
 	Direct      bool
 	URL         string
@@ -22,6 +23,7 @@ type providerMedia struct {
 	Variants    []providerMedia
 }
 
+// providerBaseURL 取得指定站源配置的基础地址。
 func (d *Downloader) providerBaseURL(source string) string {
 	source = canonicalProviderSource(source)
 	var configured, fallback string
@@ -55,12 +57,16 @@ func (d *Downloader) providerBaseURL(source string) string {
 	return strings.TrimRight(firstNonEmpty(configured, fallback), "/")
 }
 
+// providerSourceForURL 根据地址判断其所属站源。
 func providerSourceForURL(raw string) string {
 	parsed, err := url.Parse(raw)
 	if err != nil {
 		return ""
 	}
 	host := strings.ToLower(parsed.Hostname())
+	if providerMediaOrigin(parsed) == normalizeHuangguoOrigin(huangguoAIBaseURL) {
+		return sourceHuangguoAI
+	}
 	switch {
 	case host == "huangguoai.com" || strings.HasSuffix(host, ".ediayikma.cc") || strings.HasSuffix(host, ".agdkczeyx.cc"):
 		return sourceHuangguoAI
@@ -90,8 +96,12 @@ func providerSourceForURL(raw string) string {
 	}
 }
 
+// providerURLCandidates 为输入地址整理可尝试的站源地址候选。
 func (d *Downloader) providerURLCandidates(raw string) []string {
-	source := providerSourceForURL(raw)
+	source := d.providerSourceForURL(raw)
+	if huangguoSource(source) {
+		return d.huangguoCandidates(source, raw)
+	}
 	if source == "" || source == sourceHuangju || source == sourceYeguo || isDuanjuProviderSource(source) {
 		return []string{raw}
 	}
@@ -110,20 +120,25 @@ func (d *Downloader) providerURLCandidates(raw string) []string {
 	add(rehostProviderURL(parsed, preferred))
 	configured := d.providerBaseURL(source)
 	add(rehostProviderURL(parsed, configured))
-	if providerSourceForURL(configured) == "" {
-		return candidates
-	}
-	for _, candidate := range providerURLCandidates(raw) {
-		add(candidate)
-	}
 	return candidates
 }
 
+// resolveProviderMedia 解析站源媒体。
 func (d *Downloader) resolveProviderMedia(ctx context.Context, task Task) (providerMedia, error) {
 	chapter := task.Chapter
 	chapter.Source = canonicalProviderSource(chapter.Source)
 	if chapter.Source == "" {
 		chapter.Source = sourceFromDramaID(task.DramaID)
+	}
+	if chapter.Source == sourceHuangguoAI {
+		_, identifier, valid := splitProviderDramaID(task.DramaID)
+		if !valid {
+			return providerMedia{}, fmt.Errorf("作品标识无效")
+		}
+		if err := validateHuangguoWorkChapter(identifier, chapter); err != nil {
+			return providerMedia{}, err
+		}
+		ctx = context.WithValue(ctx, huangguoProbeOriginKey{}, huangguoWorkOrigin(identifier))
 	}
 	if chapter.Source == sourceCloudFront {
 		return d.resolveLegacyMedia(ctx, task)

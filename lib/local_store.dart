@@ -141,7 +141,57 @@ class LocalStore extends ChangeNotifier {
     unlocked: _gateOff || _sourcesUnlocked,
   ).where((site) => allowsSource(site.id)).toList();
 
-  /// 默认隐藏的站源是否已解锁。解锁状态只在本次运行内有效，重启后恢复隐藏。
+  Set<String> _hiddenSources(String profileId) {
+    try {
+      final values = jsonDecode(
+        _string(_key('hiddenSources', profileId)) ?? '[]',
+      );
+      if (values is! List ||
+          values.length > SourceSite.knownValues.length ||
+          values.any(
+            (value) => value is! String || !SourceSite.isKnown(value),
+          )) {
+        throw const FormatException('隐藏站源设置无效');
+      }
+      return values.cast<String>().toSet();
+    } catch (_) {
+      return SourceSite.knownValues.map((source) => source.id).toSet();
+    }
+  }
+
+  Set<String> get hiddenSources => Set.unmodifiable(_hiddenSources(_current));
+  bool isSourceHidden(String source) => hiddenSources.contains(source);
+  bool isSourceVisible(String source) =>
+      allowsSource(source) && !isSourceHidden(source);
+  List<SourceSite> get visibleSources =>
+      sources.where((source) => !isSourceHidden(source.id)).toList();
+  String get visibleSource {
+    final visible = visibleSources;
+    final selected = source;
+    return visible.any((site) => site.id == selected)
+        ? selected
+        : visible.firstOrNull?.id ?? '';
+  }
+
+  Future<void> setSourceHidden(String source, bool hidden) {
+    final epoch = _epoch;
+    return _queue(() async {
+      if (locked || epoch != _epoch) throw StateError('当前用户已变更，请重试');
+      if (!SourceSite.isAvailable(source) ||
+          (!profile.admin && !allowsSource(source))) {
+        throw StateError('当前用户没有此站源权限');
+      }
+      final values = _hiddenSources(_current);
+      final changed = hidden ? values.add(source) : values.remove(source);
+      if (!changed) return;
+      await _commit({
+        _key('hiddenSources'): jsonEncode(values.toList()..sort()),
+      });
+      _notify();
+    });
+  }
+
+  /// 未启用密码锁时全部可见；密码解锁状态只在本次运行内有效。
   bool get sourcesUnlocked => _gateOff || _sourcesUnlocked;
 
   /// 是否已启用站源密码锁。
@@ -154,7 +204,6 @@ class LocalStore extends ChangeNotifier {
 
   void _loadSourceGate() {
     final enabled = _bool('sourceGateEnabled') ?? false;
-    final off = _bool('sourceGateOff') ?? false;
     final salt = _string('sourceGateSalt') ?? '';
     final hash = _string('sourceGateHash') ?? '';
     final valid =
@@ -162,7 +211,7 @@ class LocalStore extends ChangeNotifier {
         RegExp(r'^[a-f0-9]{32}$').hasMatch(salt) &&
         RegExp(r'^[a-f0-9]{64}$').hasMatch(hash);
     _gateEnabled = valid;
-    _gateOff = !valid && off;
+    _gateOff = !enabled && salt.isEmpty && hash.isEmpty;
     _gateSalt = valid ? salt : '';
     _gateHash = valid ? hash : '';
     _sourcesUnlocked = false;
@@ -983,7 +1032,7 @@ class LocalStore extends ChangeNotifier {
     _requireAdmin();
     final content = jsonEncode({
       'schema': 1,
-      'app': 'zhenguojian',
+      'app': 'zhenguoshang',
       'profiles': _profiles.map((profile) => profile.toJson()).toList(),
       'displayMode': displayMode,
       'themeMode': themeMode,
@@ -1006,6 +1055,7 @@ class LocalStore extends ChangeNotifier {
               _string(_key('mediaHistory', profile.id)) ?? '{}',
             ),
             'source': _string(_key('source', profile.id)) ?? '',
+            'hiddenSources': _hiddenSources(profile.id).toList()..sort(),
             'hideVip': _bool(_key('hideVip', profile.id)) ?? true,
             'playback': jsonDecode(
               _string(_key('playback', profile.id)) ?? '{}',
@@ -1034,7 +1084,8 @@ class LocalStore extends ChangeNotifier {
       throw const FormatException('备份文件过大');
     }
     final data = jsonDecode(content) as Map<String, dynamic>;
-    if (data['schema'] != 1 || data['app'] != 'zhenguojian') {
+    if (data['schema'] != 1 ||
+        !{'zhenguoshang', 'zhenguojian'}.contains(data['app'])) {
       throw const FormatException('不支持的备份格式');
     }
     final profiles = _readProfiles(data['profiles']);
@@ -1081,6 +1132,14 @@ class LocalStore extends ChangeNotifier {
       }
       if (library['hideVip'] is! bool || library['source'] is! String) {
         throw const FormatException('备份设置无效');
+      }
+      final hidden = library['hiddenSources'] ?? const [];
+      if (hidden is! List ||
+          hidden.length > SourceSite.knownValues.length ||
+          hidden.any(
+            (value) => value is! String || !SourceSite.isKnown(value),
+          )) {
+        throw const FormatException('备份隐藏站源设置无效');
       }
       PlaybackPreferences.fromJson(
         Map<String, dynamic>.from(library['playback'] as Map? ?? {}),
@@ -1141,6 +1200,9 @@ class LocalStore extends ChangeNotifier {
           library['mediaHistory'] ?? {},
         ),
         _key('source', profile.id): library['source'] as String,
+        _key('hiddenSources', profile.id): jsonEncode(
+          library['hiddenSources'] ?? [],
+        ),
         _key('hideVip', profile.id): library['hideVip'] as bool,
         _key('playback', profile.id): jsonEncode(library['playback'] ?? {}),
         _key('downloadPreferences', profile.id): jsonEncode(
@@ -1210,7 +1272,7 @@ class LocalStore extends ChangeNotifier {
   String exportRecoveryData() {
     if (_configurationError == null) throw StateError('请从设置中导出备份');
     return jsonEncode({
-      'app': 'zhenguojian',
+      'app': 'zhenguoshang',
       'recovery': true,
       'values': {
         for (final key in preferences.getKeys())

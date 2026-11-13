@@ -19,10 +19,12 @@ type providerMediaCredentials struct {
 
 type providerMediaCredentialsKey struct{}
 
+// providerMediaContext 为媒体请求保存其所属站源的访问上下文。
 func providerMediaContext(ctx context.Context, credentials *providerMediaCredentials) context.Context {
 	return context.WithValue(ctx, providerMediaCredentialsKey{}, credentials)
 }
 
+// providerMediaOrigin 取得媒体凭据允许关联的来源地址。
 func providerMediaOrigin(address *url.URL) string {
 	if address == nil {
 		return ""
@@ -35,6 +37,7 @@ func providerMediaOrigin(address *url.URL) string {
 	return scheme + "://" + host
 }
 
+// apply 应用站源媒体凭据。
 func (credentials *providerMediaCredentials) apply(request *http.Request) error {
 	request.Header.Del("Cookie")
 	if credentials.userAgent != "" {
@@ -55,6 +58,7 @@ func (credentials *providerMediaCredentials) apply(request *http.Request) error 
 	return nil
 }
 
+// client 取得站源媒体凭据使用的客户端。
 func (credentials *providerMediaCredentials) client(client *http.Client) *http.Client {
 	scoped := *client
 	scoped.Jar = nil

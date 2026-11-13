@@ -25,6 +25,7 @@ type duanjuRequest struct {
 	Timeout time.Duration
 }
 
+// duanjuDo 发送短剧站源请求并按预算读取响应。
 func (d *Downloader) duanjuDo(ctx context.Context, request duanjuRequest) ([]byte, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -87,6 +88,7 @@ func (d *Downloader) duanjuDo(ctx context.Context, request duanjuRequest) ([]byt
 	return payload, nil
 }
 
+// duanjuHostOf 从 URL 中提取主机名。
 func duanjuHostOf(address string) string {
 	parsed, err := url.Parse(address)
 	if err != nil {
@@ -95,6 +97,7 @@ func duanjuHostOf(address string) string {
 	return parsed.Hostname()
 }
 
+// duanjuJSON 读取短剧站源的 JSON 响应。
 func (d *Downloader) duanjuJSON(ctx context.Context, request duanjuRequest) (map[string]any, error) {
 	payload, err := d.duanjuDo(ctx, request)
 	if err != nil {
@@ -107,6 +110,7 @@ func (d *Downloader) duanjuJSON(ctx context.Context, request duanjuRequest) (map
 	return decoded, nil
 }
 
+// duanjuFindString 查找短剧字符串。
 func duanjuFindString(node map[string]any, keys ...string) string {
 	for _, key := range keys {
 		if value, found := node[key]; found {
@@ -118,6 +122,7 @@ func duanjuFindString(node map[string]any, keys ...string) string {
 	return ""
 }
 
+// duanjuFindInt 查找短剧整数。
 func duanjuFindInt(node map[string]any, keys ...string) int {
 	for _, key := range keys {
 		if value, found := node[key]; found {
@@ -138,6 +143,7 @@ func duanjuFindInt(node map[string]any, keys ...string) int {
 	return 0
 }
 
+// parseDuanjuNumber 解析短剧编号。
 func parseDuanjuNumber(value string) (int, error) {
 	trimmed := strings.TrimSpace(value)
 	if number, err := strconv.Atoi(trimmed); err == nil {
@@ -151,6 +157,7 @@ func parseDuanjuNumber(value string) (int, error) {
 	return 0, errors.New("不是数字")
 }
 
+// duanjuFindMap 查找短剧映射。
 func duanjuFindMap(node map[string]any, keys ...string) map[string]any {
 	for _, key := range keys {
 		if value, found := node[key]; found {
@@ -162,6 +169,7 @@ func duanjuFindMap(node map[string]any, keys ...string) map[string]any {
 	return nil
 }
 
+// duanjuFindList 查找短剧列表。
 func duanjuFindList(node map[string]any, keys ...string) []any {
 	for _, key := range keys {
 		if value, found := node[key]; found {
@@ -173,6 +181,7 @@ func duanjuFindList(node map[string]any, keys ...string) []any {
 	return nil
 }
 
+// duanjuMapList 从通用响应值中取得映射列表。
 func duanjuMapList(value any) []map[string]any {
 	listed, ok := value.([]any)
 	if !ok {
@@ -187,6 +196,7 @@ func duanjuMapList(value any) []map[string]any {
 	return rows
 }
 
+// duanjuStringList 从通用响应值中取得字符串列表。
 func duanjuStringList(value any) []string {
 	listed, ok := value.([]any)
 	if !ok {
@@ -208,10 +218,12 @@ func duanjuStringList(value any) []string {
 	return values
 }
 
+// duanjuCSV 拆分逗号分隔的文本字段。
 func duanjuCSV(values []string) string {
 	return strings.Join(values, ", ")
 }
 
+// duanjuCover 规整短剧站源的海报字段。
 func duanjuCover(base string, node map[string]any, keys ...string) string {
 	for _, key := range keys {
 		if address := providerCoverAddress(node[key], base); address != "" {
@@ -221,6 +233,7 @@ func duanjuCover(base string, node map[string]any, keys ...string) string {
 	return ""
 }
 
+// duanjuReleaseStatus 从来源字段中提取连载状态。
 func duanjuReleaseStatus(raw string, total, current int) string {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "over", "finished", "completed", "2", "已完结", "完结":
@@ -237,6 +250,7 @@ func duanjuReleaseStatus(raw string, total, current int) string {
 	return ""
 }
 
+// duanjuEpisodeNumber 解析短剧来源中的分集编号。
 func duanjuEpisodeNumber(raw string, fallback int) int {
 	raw = strings.TrimSpace(raw)
 	if number := episodeIndex(raw, 0); number > 0 {
@@ -251,6 +265,7 @@ func duanjuEpisodeNumber(raw string, fallback int) int {
 	return 1
 }
 
+// duanjuChapter 构造统一的短剧分集记录。
 func duanjuChapter(source, sourceID string, number int, title, videoURL, pageURL, referer string) Chapter {
 	if number <= 0 {
 		number = 1
@@ -269,4 +284,5 @@ func duanjuChapter(source, sourceID string, number int, title, videoURL, pageURL
 	}
 }
 
+// duanjuChapterKey 生成短剧分集用于匹配的键。
 func duanjuChapterKey(number int) string { return strconv.Itoa(number) }

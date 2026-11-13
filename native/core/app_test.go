@@ -10,6 +10,7 @@ import (
 	"testing"
 )
 
+// TestNativeMetadataPreservesIdentityAndCover 验证「Native Metadata Preserves Identity And Cover」回归场景。
 func TestNativeMetadataPreservesIdentityAndCover(t *testing.T) {
 	value := true
 	drama := nativeNormalize(Drama{ID: "hongguo:7399988776655443322", Title: "合成测试剧",
@@ -20,6 +21,7 @@ func TestNativeMetadataPreservesIdentityAndCover(t *testing.T) {
 	}
 }
 
+// TestNativeBoundaryRejectsInvalidInput 验证「Native Boundary Rejects Invalid Input」回归场景。
 func TestNativeBoundaryRejectsInvalidInput(t *testing.T) {
 	for _, input := range []string{"{", strings.Repeat("x", 1<<20+1)} {
 		var result map[string]any
@@ -39,6 +41,7 @@ func TestNativeBoundaryRejectsInvalidInput(t *testing.T) {
 	}
 }
 
+// TestNativeHLSReadsNestedPlaylistKeyAndRanges 验证「Native HLS Reads Nested Playlist Key And Ranges」回归场景。
 func TestNativeHLSReadsNestedPlaylistKeyAndRanges(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Referer") != "https://example.test/watch" {
@@ -143,6 +146,7 @@ func TestNativeHLSReadsNestedPlaylistKeyAndRanges(t *testing.T) {
 	}
 }
 
+// TestHongguoDetailAndPlayableQuality 验证「Hongguo Detail And Playable Quality」回归场景。
 func TestHongguoDetailAndPlayableQuality(t *testing.T) {
 	detail := map[string]any{"series_id": "700001", "series_title": "合成测试", "episode_cnt": 2,
 		"video_list": []any{

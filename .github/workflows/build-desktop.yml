@@ -20,9 +20,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - edition: hongguojian
+          - edition: hongguoshang
             arguments: ''
-          - edition: zhenguojian
+          - edition: zhenguoshang
             arguments: '--all-sources'
     steps:
       - name: Checkout
@@ -34,6 +34,9 @@ jobs:
           V=$(grep '^version:' pubspec.yaml | awk '{print $2}')
           printf "// 由 CI 依据 pubspec.yaml 生成，请勿手工修改。\nconst appVersion = '%s';\nconst appBuild = %s;\n" "$V" "${V##*+}" > lib/app_version.g.dart
           cat lib/app_version.g.dart
+          FLUTTER_VERSION=$(sed -n -E 's/^  flutter: *([0-9]+\.[0-9]+\.[0-9]+)[[:space:]]*$/\1/p' pubspec.yaml)
+          test -n "$FLUTTER_VERSION"
+          echo "FLUTTER_VERSION=$FLUTTER_VERSION" >> "$GITHUB_ENV"
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -44,7 +47,7 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.47.4'
+          flutter-version: ${{ env.FLUTTER_VERSION }}
           channel: stable
           cache: true
 
@@ -87,9 +90,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - edition: hongguojian
+          - edition: hongguoshang
             arguments: ''
-          - edition: zhenguojian
+          - edition: zhenguoshang
             arguments: '--all-sources'
     steps:
       - name: Checkout
@@ -101,6 +104,9 @@ jobs:
           V=$(grep '^version:' pubspec.yaml | awk '{print $2}')
           printf "// 由 CI 依据 pubspec.yaml 生成，请勿手工修改。\nconst appVersion = '%s';\nconst appBuild = %s;\n" "$V" "${V##*+}" > lib/app_version.g.dart
           cat lib/app_version.g.dart
+          FLUTTER_VERSION=$(sed -n -E 's/^  flutter: *([0-9]+\.[0-9]+\.[0-9]+)[[:space:]]*$/\1/p' pubspec.yaml)
+          test -n "$FLUTTER_VERSION"
+          echo "FLUTTER_VERSION=$FLUTTER_VERSION" >> "$GITHUB_ENV"
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -116,7 +122,7 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.47.4'
+          flutter-version: ${{ env.FLUTTER_VERSION }}
           channel: stable
           cache: true
 
@@ -140,7 +146,7 @@ jobs:
             export PATH="/c/ProgramData/chocolatey/bin:$PATH"
           fi
           x86_64-w64-mingw32-gcc --version | head -1
-          python scripts/build_windows.py ${{ matrix.arguments }} 2>&1 | tee build.log
+          python scripts/build_windows.py --archive ${{ matrix.arguments }} 2>&1 | tee build.log
 
       - name: Save build log (failure)
         if: always() && steps.build.outcome != 'success'
@@ -207,7 +213,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: build-${{ github.run_number }}
-          name: "真果鉴 / 红果鉴 电脑版构建 #${{ github.run_number }}（Windows + macOS）"
+          name: "真果赏 / 红果赏 电脑版构建 #${{ github.run_number }}（Windows + macOS）"
           body_path: release-body.md
           files: artifacts/*.zip
           fail_on_unmatched_files: false

@@ -24,10 +24,12 @@ type cdnTransport struct {
 	preferred  map[string]cdnRoute
 }
 
+// newCDNTransport 创建CDN传输层。
 func newCDNTransport(base *http.Transport, resolver *dnsResolver) *cdnTransport {
 	return &cdnTransport{base: base, resolver: resolver, transports: map[string]*http.Transport{}, preferred: map[string]cdnRoute{}}
 }
 
+// RoundTrip 按CDN传输层策略执行单次 HTTP 请求并返回响应或错误。
 func (transport *cdnTransport) RoundTrip(request *http.Request) (*http.Response, error) {
 	if request.URL.Scheme != "https" || (!protectedCDNHost(request.URL.Hostname()) && request.Context().Value(nativeCoverNetworkKey{}) != true) || (request.Method != http.MethodGet && request.Method != http.MethodHead) {
 		return transport.base.RoundTrip(request)
@@ -95,6 +97,7 @@ func (transport *cdnTransport) RoundTrip(request *http.Request) (*http.Response,
 	return nil, fmt.Errorf("资源 %s 连接失败（已尝试备用 DNS 地址）: %w", request.URL.Hostname(), publicError(lastErr))
 }
 
+// roundTripAddress 执行请求处理地址。
 func (transport *cdnTransport) roundTripAddress(request *http.Request, proxyURL *url.URL, routeKey, address string) (*http.Response, error) {
 	pinned := transport.pinnedTransport(request.URL.Hostname(), proxyURL, routeKey, address)
 	upstream := request.Clone(request.Context())
@@ -113,6 +116,7 @@ func (transport *cdnTransport) roundTripAddress(request *http.Request, proxyURL 
 	return response, err
 }
 
+// pinnedTransport 返回固定传输层。
 func (transport *cdnTransport) pinnedTransport(host string, proxyURL *url.URL, routeKey, address string) *http.Transport {
 	transport.mu.Lock()
 	defer transport.mu.Unlock()
@@ -146,6 +150,7 @@ func (transport *cdnTransport) pinnedTransport(host string, proxyURL *url.URL, r
 	return pinned
 }
 
+// tlsProxyDialer 构造 TLS 连接使用的代理拨号器。
 func (transport *cdnTransport) tlsProxyDialer(host string) func(context.Context, string, string) (net.Conn, error) {
 	return func(ctx context.Context, network, address string) (net.Conn, error) {
 		dial := transport.base.DialContext
@@ -177,6 +182,7 @@ func (transport *cdnTransport) tlsProxyDialer(host string) func(context.Context,
 	}
 }
 
+// CloseIdleConnections 关闭当前传输层持有的空闲连接。
 func (transport *cdnTransport) CloseIdleConnections() {
 	transport.base.CloseIdleConnections()
 	transport.resolver.client.CloseIdleConnections()

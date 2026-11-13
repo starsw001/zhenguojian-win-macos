@@ -5,8 +5,8 @@
 // 'flutter create' template.
 
 // The application's name. By default this is also the title of the Flutter window.
-// 保持 ASCII 便于构建脚本与签名环节；Dock / 菜单栏显示名由 Info.plist 的 CFBundleDisplayName（真果鉴）决定。
-PRODUCT_NAME = zhenguojian
+// 保持 ASCII 便于构建脚本与签名环节；Dock / 菜单栏显示名由 Info.plist 的 CFBundleDisplayName（真果赏）决定。
+PRODUCT_NAME = zhenguoshang
 
 // The application's bundle identifier
 PRODUCT_BUNDLE_IDENTIFIER = com.duanju.duanjuApp

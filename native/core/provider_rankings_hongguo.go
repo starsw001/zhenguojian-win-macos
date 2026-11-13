@@ -15,6 +15,7 @@ import (
 
 var hongguoRankingMetric = regexp.MustCompile(`^[0-9]+(?:\.[0-9]+)?[万亿]?热度$`)
 
+// fetchHongguoRankingPage 获取红果排行榜页面。
 func (d *Downloader) fetchHongguoRankingPage(ctx context.Context, board rankingBoard, page int) (rankingPage, error) {
 	ctx, cancel := context.WithTimeout(ctx, 18*time.Second)
 	defer cancel()
@@ -54,6 +55,7 @@ func (d *Downloader) fetchHongguoRankingPage(ctx context.Context, board rankingB
 	return rankingPage{}, lastErr
 }
 
+// hongguoRankingURLPage 为红果榜单查询确定对应分页地址。
 func hongguoRankingURLPage(address string, board rankingBoard) (int, bool) {
 	parsed, err := url.Parse(address)
 	if err != nil || parsed.User != nil || strings.TrimRight(parsed.Path, "/") != "/rank/"+board.path {
@@ -70,6 +72,7 @@ func hongguoRankingURLPage(address string, board rankingBoard) (int, bool) {
 	return page, err == nil && page >= 1 && page <= 500
 }
 
+// hongguoRankingDramaID 从红果榜单条目中识别统一作品标识。
 func hongguoRankingDramaID(address string) string {
 	parsed, err := url.Parse(address)
 	if err != nil || parsed.User != nil || parsed.Path != "/detail" {
@@ -85,6 +88,7 @@ func hongguoRankingDramaID(address string) string {
 	return id
 }
 
+// parseHongguoRankingDocument 解析红果排行榜文档。
 func parseHongguoRankingDocument(body string, board rankingBoard, page int, loader map[string]any) (rankingPage, error) {
 	if len(body) > 4<<20 {
 		return rankingPage{}, errHongguoRankingFormat
@@ -181,6 +185,7 @@ func parseHongguoRankingDocument(body string, board rankingBoard, page int, load
 	return result, nil
 }
 
+// parseHongguoRankingJSONLD 解析红果排行榜JSON-LD。
 func parseHongguoRankingJSONLD(body string, board rankingBoard, page int) ([]rankingItem, bool) {
 	for _, match := range rankingJSONLD.FindAllStringSubmatch(body, -1) {
 		var value struct {
@@ -213,6 +218,7 @@ func parseHongguoRankingJSONLD(body string, board rankingBoard, page int) ([]ran
 	return nil, false
 }
 
+// parseHongguoRankingArticle 解析红果排行榜Article。
 func parseHongguoRankingArticle(article *html.Node) (rankingItem, bool) {
 	label := providerHTMLAttr(article, "aria-labelledby")
 	id := strings.TrimPrefix(label, "rank-title-")

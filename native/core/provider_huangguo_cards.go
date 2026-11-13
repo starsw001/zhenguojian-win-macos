@@ -12,6 +12,7 @@ var huangguoNonContent = regexp.MustCompile(`(?is)<!--.*?-->|<script\b[^>]*>.*?<
 
 var huangguoTitleFragment = regexp.MustCompile(`(?i)(?:\b(?:class|type|title|aria-label)\s*=|(?:data|ata)-search-input|hg-search(?:__|-))`)
 
+// huangguoElementBlock 提取指定 HTML 元素的完整文本块。
 func huangguoElementBlock(raw string, start, end int, tag string) string {
 	depth := 1
 	for _, match := range huangguoHTMLTag.FindAllStringSubmatchIndex(raw[end:], -1) {
@@ -30,6 +31,7 @@ func huangguoElementBlock(raw string, start, end int, tag string) string {
 	return raw[start:end]
 }
 
+// huangguoClassBlock 提取匹配指定类名的 HTML 块。
 func huangguoClassBlock(raw, className string) string {
 	for _, match := range huangguoHTMLTag.FindAllStringSubmatchIndex(raw, -1) {
 		if match[3] > match[2] {
@@ -44,16 +46,19 @@ func huangguoClassBlock(raw, className string) string {
 	return ""
 }
 
+// huangguoClassText 提取匹配指定类名的显示文本。
 func huangguoClassText(raw, className string) string {
 	return cleanText(huangguoClassBlock(raw, className))
 }
 
+// huangguoTitleNeedsRepair 判断作品标题是否缺失或需要从页面补全。
 func huangguoTitleNeedsRepair(title, sourceID string) bool {
 	title = strings.TrimSpace(title)
 	return title == "" || title == sourceID || title == "短剧" || title == "搜索" ||
 		huangguoTitleFragment.MatchString(title) || strings.Contains(title, "搜索记录") && strings.Contains(title, "暂无搜索记录")
 }
 
+// firstHuangguoTitle 提取首个黄果标题。
 func firstHuangguoTitle(sourceID string, values ...string) string {
 	for _, title := range values {
 		if !huangguoTitleNeedsRepair(title, sourceID) {
@@ -63,6 +68,7 @@ func firstHuangguoTitle(sourceID string, values ...string) string {
 	return ""
 }
 
+// huangguoCardTitle 返回黄果卡片标题。
 func huangguoCardTitle(block, sourceID string) string {
 	return firstHuangguoTitle(sourceID,
 		extractAttr(block, "data-track-title"), huangguoClassText(block, "hg-drama-card__title"),
@@ -70,6 +76,7 @@ func huangguoCardTitle(block, sourceID string) string {
 		extractAttr(block, "title"), extractAttr(block, "alt"), extractAttr(block, "aria-label"))
 }
 
+// huangguoMapEpisodes 从映射字段中提取分集信息。
 func huangguoMapEpisodes(row map[string]any) string {
 	for _, key := range []string{"episode_count", "episodeCount", "total_episodes", "totalEpisodes", "totalEpisode", "total_episode", "episodes", "total"} {
 		if count, err := strconv.Atoi(mapString(row, key)); err == nil && count > 0 {

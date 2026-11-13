@@ -12,6 +12,7 @@ import (
 	"time"
 )
 
+// resolveHongguoAppMedia 解析红果App媒体。
 func (downloader *Downloader) resolveHongguoAppMedia(ctx context.Context, videoID string) (providerMedia, error) {
 	if !hongguoNumericID.MatchString(videoID) {
 		return providerMedia{}, errors.New("红果视频 ID 无效")
@@ -48,6 +49,7 @@ func (downloader *Downloader) resolveHongguoAppMedia(ctx context.Context, videoI
 	return selectHongguoAppMedia(model)
 }
 
+// selectHongguoAppMedia 选择红果App媒体。
 func selectHongguoAppMedia(model map[string]any) (providerMedia, error) {
 	variants := anyList(model["video_list"])
 	if rows, ok := model["video_list"].(map[string]any); ok && len(variants) == 0 {
@@ -119,6 +121,7 @@ func selectHongguoAppMedia(model map[string]any) (providerMedia, error) {
 	return providerMedia{}, errors.New("红果 App 未返回兼容的媒体，已跳过不支持的编码")
 }
 
+// hongguoMediaAddresses 从红果媒体响应中收集当前集的候选地址。
 func hongguoMediaAddresses(info map[string]any) []string {
 	var addresses []string
 	seen := map[string]bool{}

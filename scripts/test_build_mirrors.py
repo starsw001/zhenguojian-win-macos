@@ -31,7 +31,7 @@ class BuildMirrorTests(unittest.TestCase):
                     self.assertEqual(result['PUB_HOSTED_URL'], environment['PUB_HOSTED_URL'])
                     self.assertEqual(result['FLUTTER_STORAGE_BASE_URL'], 'https://storage.flutter-io.cn')
                     self.assertNotIn('ZHENGUOJIAN_MIRROR_SESSION', environment)
-                    scripts = list(init_directory.glob('zhenguojian-*.gradle'))
+                    scripts = list(init_directory.glob('zhenguoshang-*.gradle'))
                     self.assertEqual(len(scripts), 1)
                     generated = scripts[0].read_text(encoding='utf-8')
                     self.assertIn(result['ZHENGUOJIAN_MIRROR_SESSION'], generated)
@@ -77,6 +77,34 @@ class BuildMirrorTests(unittest.TestCase):
             backups = list((root / 'build').glob('pubspec-before-mirror-*.lock'))
             self.assertEqual(len(backups), 1)
             self.assertEqual(backups[0].read_bytes(), original)
+
+    def test_pub_mirror_rewrites_lf_and_crlf_without_changing_other_bytes(self):
+        for newline in [b'\n', b'\r\n']:
+            with self.subTest(newline=newline), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                lock = root / 'pubspec.lock'
+                original = newline.join([
+                    b'packages:',
+                    b'  first:',
+                    b'    description:',
+                    b'      url: "https://pub.dev"  ',
+                    b'      sha256: abc123',
+                    b'    version: "1.2.3"',
+                    b'  second:',
+                    b'    description:',
+                    b'      url: https://pub.dartlang.org/',
+                    b'  custom:',
+                    b'    description:',
+                    b'      url: "https://example.invalid"',
+                    b'',
+                ])
+                lock.write_bytes(original)
+                expected = original.replace(b'https://pub.dev', b'https://pub.flutter-io.cn')
+                expected = expected.replace(b'https://pub.dartlang.org/', b'"https://pub.flutter-io.cn"')
+                with mirrored_pub_lockfile(root, {'PUB_HOSTED_URL': 'https://pub.flutter-io.cn'}):
+                    self.assertEqual(lock.read_bytes(), expected)
+                self.assertEqual(lock.read_bytes(), original)
+                self.assertEqual(list((root / 'build').iterdir()), [])
 
 
 if __name__ == '__main__':
