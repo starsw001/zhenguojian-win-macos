@@ -882,7 +882,7 @@ func (engine *nativeEngine) nativeDetail(ctx context.Context, drama nativeDrama)
 			return nil, err
 		}
 	} else if source == sourceHuangguoAI {
-		if err := validateHuangguoWorkDetail(drama, raw, chapters); err != nil {
+		if err := validateHuangguoWorkDetail(engine.downloader, drama, raw, chapters); err != nil {
 			return nil, err
 		}
 	}

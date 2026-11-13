@@ -111,12 +111,16 @@ func validateHuangguoWorkChapter(identifier string, chapter Chapter) error {
 }
 
 // validateHuangguoWorkDetail 校验黄果作品详情。
-func validateHuangguoWorkDetail(selected nativeDrama, raw Drama, chapters []Chapter) error {
+func validateHuangguoWorkDetail(downloader *Downloader, selected nativeDrama, raw Drama, chapters []Chapter) error {
 	_, identifier, valid := splitProviderDramaID(selected.ID)
 	if !valid || huangguoWorkOrigin(identifier) == "" || raw.ID != selected.ID || raw.SourceID != identifier || raw.Source != sourceHuangguoAI {
 		return errors.New("详情的域名或作品标识与目录不一致，请重新更新该源")
 	}
-	if ordinaryTitle(selected.Title) != ordinaryTitle(raw.DisplayTitle()) {
+	selectedTitle := ordinaryTitle(selected.Title)
+	detailTitle := ordinaryTitle(raw.DisplayTitle())
+	if !strings.Contains(detailTitle, selectedTitle) {
+		downloader.recordDiagnostic(diagnosticEvent{Event: "detail.huangguo_title_mismatch", Level: "warning", Source: sourceHuangguoAI,
+			DramaID: selected.ID, DramaTitle: selectedTitle, Message: fmt.Sprintf("黄果 AI 标题判断未放过：ordinaryTitle(selected.Title)=%q；ordinaryTitle(raw.DisplayTitle())=%q", selectedTitle, detailTitle)})
 		return errors.New("详情名称与目录作品不一致，未采用同名以外或其他作品的分集")
 	}
 	for _, chapter := range chapters {
