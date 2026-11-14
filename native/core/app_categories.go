@@ -3,13 +3,11 @@ package core
 import (
 	"context"
 	"errors"
-	"fmt"
 	"html"
 	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
-	"sync"
 )
 
 type nativeCategory struct {
@@ -21,10 +19,27 @@ type nativeCategory struct {
 const nativeCategoryMaxEntries = 10000
 
 var nativeAICategories = []nativeCategory{
-	{ID: "ai-duanju", Name: "AI 短剧"},
-	{ID: "ai-manju", Name: "AI 漫剧"},
-	{ID: "ai-huanlian", Name: "AI 换脸"},
-	{ID: "ai-mogai", Name: "AI 魔改"},
+	{ID: "ai-duanju", Name: "短剧"},
+	{ID: "ai-manju", Name: "漫剧"},
+}
+
+var nativeAIWebsiteCategories = []nativeCategory{
+	{ID: "original", Name: "黄果原创"},
+	{ID: "ai-duanju", Name: "短剧"},
+	{ID: "ai-manju", Name: "漫剧"},
+	{ID: "topics", Name: "专题"},
+	{ID: "ranks-hot", Name: "排行榜"},
+}
+
+var nativeAIWebsiteSubcategories = []nativeCategory{
+	{ID: "original-manju", Name: "原创漫剧"},
+	{ID: "original-duanju", Name: "原创短剧"},
+	{ID: "ai-duanju-hot", Name: "当前热播"},
+	{ID: "ai-duanju-random", Name: "精选推荐"},
+	{ID: "ai-manju-hot", Name: "当前热播"},
+	{ID: "ai-manju-random", Name: "精选推荐"},
+	{ID: "ranks-recommend", Name: "推荐榜"},
+	{ID: "ranks-potential", Name: "飙升榜"},
 }
 
 // nativeCatalogKey 构造站源与分类对应的目录缓存键。
@@ -58,10 +73,23 @@ func validNativeCategory(source, category string) bool {
 		if validHuangguoAITagCategory(category) {
 			return true
 		}
+		if validHuangguoAITopicCategory(category) {
+			return true
+		}
 		if huangguoAICategorySlug.MatchString(category) {
 			return true
 		}
 		for _, entry := range nativeAICategories {
+			if category == entry.ID {
+				return true
+			}
+		}
+		for _, entry := range nativeAIWebsiteCategories {
+			if category == entry.ID {
+				return true
+			}
+		}
+		for _, entry := range nativeAIWebsiteSubcategories {
 			if category == entry.ID {
 				return true
 			}
@@ -125,10 +153,16 @@ func (engine *nativeEngine) nativeCategories(ctx context.Context, source string,
 	var err error
 	switch source {
 	case sourceHuangguoAI:
-		var tags []nativeCategory
-		tags, err = d.fetchHuangguoAIPopularTags(ctx)
+		var topics, tags []nativeCategory
 		all = append(all, d.huangguoAICatalogCategories()...)
-		all = append(all, tags...)
+		topics, err = d.fetchHuangguoAITopics(ctx)
+		if err == nil {
+			all = append(all, topics...)
+			tags, err = d.fetchHuangguoAIPopularTags(ctx)
+		}
+		if err == nil {
+			all = append(all, tags...)
+		}
 	case sourceCloudFront:
 		var tabs legacyTabList
 		err = d.fetchAPI(ctx, "/api/app/playlet-tab/all", nil, &tabs)
@@ -226,56 +260,8 @@ func (d *Downloader) fetchHuangguoAICatalogPage(ctx context.Context, page int, c
 	if validHuangguoAITagCategory(category) {
 		return d.fetchHuangguoAITagPage(ctx, page, category)
 	}
-	categories := d.huangguoAICatalogCategories()
-	if category != "" {
-		found := false
-		for _, entry := range categories {
-			if entry.ID == category {
-				categories = []nativeCategory{entry}
-				found = true
-				break
-			}
-		}
-		if !found {
-			return nil, false, errors.New("当前站点没有此分类，请刷新分类列表")
-		}
+	if _, _, valid := huangguoAIWebsiteCategory(category); valid {
+		return d.fetchHuangguoAIWebsitePage(ctx, page, category)
 	}
-	type categoryResult struct {
-		items []Drama
-		more  bool
-		err   error
-	}
-	results := make([]categoryResult, len(categories))
-	slots := make(chan struct{}, 2)
-	var group sync.WaitGroup
-	for index, entry := range categories {
-		group.Add(1)
-		go func(index int, entry nativeCategory) {
-			defer group.Done()
-			select {
-			case slots <- struct{}{}:
-				defer func() { <-slots }()
-			case <-ctx.Done():
-				results[index].err = ctx.Err()
-				return
-			}
-			var err error
-			results[index].items, results[index].more, err = d.fetchHuangguoAISectionPage(ctx, page, entry)
-			if err != nil {
-				results[index].err = fmt.Errorf("%s: %w", entry.Name, err)
-			}
-		}(index, entry)
-	}
-	group.Wait()
-	var items []Drama
-	var failures []error
-	more := false
-	for _, result := range results {
-		items = append(items, result.items...)
-		more = more || result.more || result.err != nil
-		if result.err != nil {
-			failures = append(failures, result.err)
-		}
-	}
-	return items, more, errors.Join(failures...)
+	return nil, false, errors.New("当前站点没有此分类，请刷新分类列表")
 }

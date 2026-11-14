@@ -122,8 +122,8 @@ func observeSourceResponse(ctx context.Context, response *http.Response) {
 	if response.Request != nil && response.Request.URL != nil {
 		address := response.Request.URL
 		step.Host = address.Hostname()
-		if step.Host == "api5-normal-sinfonlineb.fqnovel.com" && address.Path == "/novel/player/multi_video_model/v1/" {
-			step.requestRoute = "/novel/player/multi_video_model/v1/"
+		if step.Host == "api5-normal-sinfonlineb.fqnovel.com" && address.Path == hongguoVideoModelPath {
+			step.requestRoute = hongguoVideoModelPath
 		} else if step.Host == "hongguoduanju.com" && strings.HasPrefix(address.Path, "/player/") {
 			step.requestRoute = "官网同集播放页"
 		}

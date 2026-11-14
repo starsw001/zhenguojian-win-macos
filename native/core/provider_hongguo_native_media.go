@@ -12,16 +12,22 @@ import (
 	"time"
 )
 
+const hongguoVideoModelPath = "/novel/player/video_model/v1/"
+
 // resolveHongguoAppMedia 解析红果App媒体。
 func (downloader *Downloader) resolveHongguoAppMedia(ctx context.Context, videoID string) (providerMedia, error) {
 	if !hongguoNumericID.MatchString(videoID) {
 		return providerMedia{}, errors.New("红果视频 ID 无效")
 	}
 	payload := map[string]any{
-		"video_id": videoID, "content_type": 1,
-		"biz_param": map[string]any{"need_all_video_definition": true, "video_platform": 3},
+		"video_id": videoID,
+		"biz_param": map[string]any{
+			"detail_page_version": 0, "device_level": 3, "disable_digg_stat": false,
+			"need_all_video_definition": true, "need_mp4_align": false, "use_os_player": false,
+			"use_server_dns": false, "video_platform": 1024,
+		},
 	}
-	result, err := downloader.hongguoAppRequest(ctx, http.MethodPost, "/novel/player/video_model/v1/", nil, payload)
+	result, err := downloader.hongguoAppRequest(ctx, http.MethodPost, hongguoVideoModelPath, nil, payload)
 	if err != nil {
 		return providerMedia{}, err
 	}
@@ -80,7 +86,7 @@ func selectHongguoAppMedia(model map[string]any) (providerMedia, error) {
 		if len(addresses) == 0 {
 			continue
 		}
-		media := providerMedia{Referer: "https://novel.snssdk.com/", Duration: time.Duration(duration * float64(time.Second))}
+		media := providerMedia{Direct: true, Referer: "https://novel.snssdk.com/", Duration: time.Duration(duration * float64(time.Second))}
 		encryption := nestedMap(variant, "encrypt_info")
 		spade := mapString(encryption, "spade_a")
 		if spade != "" || encryption["encrypt"] == true || mapString(encryption, "encryption_method") == "cenc-aes-ctr" {

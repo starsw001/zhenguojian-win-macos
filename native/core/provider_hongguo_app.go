@@ -186,6 +186,9 @@ func hongguoAppQuery(deviceID, installID string) url.Values {
 // hongguoAppRequest 向红果 App 接口发送请求并读取响应。
 func (downloader *Downloader) hongguoAppRequest(ctx context.Context, method, path string, extra url.Values, payload any) (map[string]any, error) {
 	client := downloader.hongguoClient()
+	if method == http.MethodPost && path == hongguoVideoModelPath {
+		ctx = context.WithValue(ctx, hongguoMetadataReadKey{}, true)
+	}
 	comment, _ := ctx.Value(hongguoCommentKey{}).(bool)
 	signed := !comment && path != hongguoBookmallTabPath
 	if signed {
@@ -246,7 +249,11 @@ func (downloader *Downloader) hongguoAppRequest(ctx context.Context, method, pat
 		if err := client.hongguoAppGate(ctx); err != nil {
 			return nil, err
 		}
-		response, err := downloader.doPreparedCatalogRequest(request, 20*time.Second, func(prepared *http.Request) {
+		timeout := 20 * time.Second
+		if path == hongguoVideoModelPath {
+			timeout = 30 * time.Second
+		}
+		response, err := downloader.doPreparedCatalogRequest(request, timeout, func(prepared *http.Request) {
 			now := time.Now()
 			query.Set("_rticket", strconv.FormatInt(now.UnixMilli(), 10))
 			prepared.URL.RawQuery = query.Encode()

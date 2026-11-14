@@ -144,3 +144,28 @@ func TestNativeCoverMetadataRejectsOtherDramaAndKeepsCurrentHost(t *testing.T) {
 		t.Fatal("cover referer ignored active source mirror", got)
 	}
 }
+
+func TestHuangguoWorkMetadataPrefersInitialWorkFields(t *testing.T) {
+	patch := Drama{ID: "huangguoai:https://huangguoai.com/detail/12/", Source: sourceHuangguoAI, SourceID: "https://huangguoai.com/detail/12/"}
+	body := `<script type="application/ld+json">{"@type":"WebPage","url":"/video/12/","name":"神瞳觉醒 第一季","thumbnailUrl":"https://expired.example.test/work.jpg"}</script>
+<script type="application/ld+json">{"@type":"VideoObject","url":"/video/12/","name":"神瞳觉醒 第一季 第1集","thumbnailUrl":"https://expired.example.test/episode.jpg"}</script>
+<script id="videoInitialData">{"id":"12","title":"神瞳觉醒 第一季","posterSrc":"https://pic.drleao.cn/current.jpg?auth_key=fixture"}</script>`
+	fresh, err := parseHuangguoSortDetail(body, "https://huangguoai.com/video/12/", patch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	normalized := nativeNormalize(fresh)
+	if normalized.Title != "神瞳觉醒 第一季" || normalized.Cover != "https://pic.drleao.cn/current.jpg?auth_key=fixture" {
+		t.Fatalf("wrong work metadata: %+v", normalized)
+	}
+	stale := nativeNormalize(Drama{ID: patch.ID, Source: sourceHuangguoAI, SourceID: patch.SourceID, Title: "神瞳觉醒 第一季 第一集"})
+	if stale.Title != "神瞳觉醒 第一季" {
+		t.Fatalf("first episode suffix survived: %q", stale.Title)
+	}
+	selected := nativeDrama{ID: patch.ID, Source: sourceHuangguoAI, SourceID: patch.SourceID, Title: "神瞳觉醒 第一季 第1集"}
+	fresh.ID, fresh.Source, fresh.SourceID = patch.ID, sourceHuangguoAI, patch.SourceID
+	chapter := Chapter{ID: providerChapterID(sourceHuangguoAI, patch.SourceID, "ep-1"), Source: sourceHuangguoAI, PageURL: "https://huangguoai.com/video/12/"}
+	if err := validateHuangguoWorkDetail(&Downloader{}, selected, fresh, []Chapter{chapter}); err != nil {
+		t.Fatal(err)
+	}
+}

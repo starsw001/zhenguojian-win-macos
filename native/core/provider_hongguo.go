@@ -231,7 +231,7 @@ func (d *Downloader) resolveHongguoMedia(ctx context.Context, task Task) (provid
 
 // resolveHongguoMediaRoutes 解析红果媒体候选线路。
 func (d *Downloader) resolveHongguoMediaRoutes(ctx context.Context, episode int, seriesID, videoID string) (providerMedia, error) {
-	media, primaryErr := d.resolveHongguoMultiMedia(ctx, videoID)
+	media, primaryErr := d.resolveHongguoAppMedia(ctx, videoID)
 	if primaryErr == nil {
 		return media, nil
 	}

@@ -56,10 +56,10 @@ var (
 	huangguoPublicationURLs = []string{
 		"https://huangguoai.pages.dev",
 		"https://huang-guo.pages.dev",
+		"https://huangguoai.ai",
 	}
 	huangguoAIPermanentURLs = []string{
 		"https://huangguoai.com",
-		"https://huangguoai.ai",
 	}
 
 	// 黄果 AI 主地址，用于拼接 /detail/、/video/ 等页面路径；不要混填黄果视频站。
@@ -234,6 +234,7 @@ func mergeDramaMetadata(base, extra Drama) Drama {
 	if dramaProvider(base) == sourceHuangguoAI && base.ID == extra.ID {
 		_, sourceID, _ := splitProviderDramaID(base.ID)
 		if title := firstHuangguoTitle(sourceID, base.Title, base.Name, extra.Title, extra.Name); title != "" {
+			title = huangguoWorkTitle(title)
 			base.Title, base.Name = title, title
 		}
 	}

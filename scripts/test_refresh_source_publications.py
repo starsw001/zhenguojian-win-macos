@@ -8,8 +8,8 @@ from refresh_source_publications import DISCOVERY_ADDRESSES, PERMANENT_ADDRESSES
 
 class PublicationRefreshTests(unittest.TestCase):
     def test_permanent_entries_and_publications_are_separate(self):
-        self.assertEqual(PERMANENT_ADDRESSES, ('https://huangguoai.com', 'https://huangguoai.ai'))
-        self.assertEqual(PUBLICATIONS, ('https://huangguoai.pages.dev', 'https://huang-guo.pages.dev'))
+        self.assertEqual(PERMANENT_ADDRESSES, ('https://huangguoai.com',))
+        self.assertEqual(PUBLICATIONS, ('https://huangguoai.pages.dev', 'https://huang-guo.pages.dev', 'https://huangguoai.ai'))
         self.assertEqual(len(set(DISCOVERY_ADDRESSES)), 4)
 
     def test_normalization_excludes_credentials_downloads_and_nonpublic_origins(self):
@@ -28,6 +28,14 @@ class PublicationRefreshTests(unittest.TestCase):
           <script>window.runBadCode();</script>''')
         self.assertEqual(origins, ['https://one.example.org'])
         self.assertEqual(scripts, ['/publish.js'])
+
+    def test_route_buttons_exclude_unrelated_footer_and_download_links(self):
+        origins, _ = parse_publication('''
+          <a class="use-btn" href="https://route-one.example.org">使用线路</a>
+          <a href="https://unrelated.example.org">其他站点</a>
+          <a class="use-btn" href="https://route-two.example.org">使用线路</a>
+          <a href="https://download.example.org">下载 APP</a>''')
+        self.assertEqual(origins, ['https://route-one.example.org', 'https://route-two.example.org'])
 
     def test_subdomain_data_arrays_are_expanded_and_deduplicated(self):
         origins, _ = parse_publication('''const subdomains = [

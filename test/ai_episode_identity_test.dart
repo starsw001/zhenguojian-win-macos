@@ -107,4 +107,18 @@ void main() {
       expect(unknown.episodeCountLabel, '集数待获取');
     },
   );
+
+  test('stale first episode title is replaced by the work title', () {
+    final base = work('catalog.example.org', 21);
+    final selected = Drama.fromJson({
+      ...base.toJson(),
+      'title': '神瞳觉醒 第一季 第1集',
+    });
+    final fresh = Drama.fromJson({...base.toJson(), 'title': '神瞳觉醒 第一季'});
+    final detail = validateIsolatedSiteDetail(
+      selected,
+      DramaDetail(fresh, episodes(fresh, 21)),
+    );
+    expect(detail.drama.title, '神瞳觉醒 第一季');
+  });
 }

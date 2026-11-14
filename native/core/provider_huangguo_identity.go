@@ -114,10 +114,12 @@ func validateHuangguoWorkChapter(identifier string, chapter Chapter) error {
 func validateHuangguoWorkDetail(downloader *Downloader, selected nativeDrama, raw Drama, chapters []Chapter) error {
 	_, identifier, valid := splitProviderDramaID(selected.ID)
 	if !valid || huangguoWorkOrigin(identifier) == "" || raw.ID != selected.ID || raw.SourceID != identifier || raw.Source != sourceHuangguoAI {
+		downloader.recordDiagnostic(diagnosticEvent{Event: "detail.huangguo_identity_mismatch", Level: "warning", Source: sourceHuangguoAI,
+			DramaID: selected.ID, DramaTitle: selected.Title, Message: fmt.Sprintf("黄果 AI 详情身份不一致：selected.id=%q；selected.source=%q；selected.sourceId=%q；detail.id=%q；detail.source=%q；detail.sourceId=%q", selected.ID, selected.Source, identifier, raw.ID, raw.Source, raw.SourceID)})
 		return errors.New("详情的域名或作品标识与目录不一致，请重新更新该源")
 	}
-	selectedTitle := ordinaryTitle(selected.Title)
-	detailTitle := ordinaryTitle(raw.DisplayTitle())
+	selectedTitle := ordinaryTitle(huangguoWorkTitle(selected.Title))
+	detailTitle := ordinaryTitle(huangguoWorkTitle(raw.DisplayTitle()))
 	if !strings.Contains(detailTitle, selectedTitle) {
 		downloader.recordDiagnostic(diagnosticEvent{Event: "detail.huangguo_title_mismatch", Level: "warning", Source: sourceHuangguoAI,
 			DramaID: selected.ID, DramaTitle: selectedTitle, Message: fmt.Sprintf("黄果 AI 标题判断未放过：ordinaryTitle(selected.Title)=%q；ordinaryTitle(raw.DisplayTitle())=%q", selectedTitle, detailTitle)})
@@ -125,6 +127,8 @@ func validateHuangguoWorkDetail(downloader *Downloader, selected nativeDrama, ra
 	}
 	for _, chapter := range chapters {
 		if err := validateHuangguoWorkChapter(identifier, chapter); err != nil {
+			downloader.recordDiagnostic(diagnosticEvent{Event: "detail.huangguo_episode_mismatch", Level: "warning", Source: sourceHuangguoAI,
+				DramaID: selected.ID, DramaTitle: selected.Title, Message: fmt.Sprintf("黄果 AI 分集归属不一致：episode.id=%q；episode.source=%q；pageUrl=%q；%v", chapter.ID, chapter.Source, chapter.PageURL, err)})
 			return fmt.Errorf("分集归属校验失败：%w", err)
 		}
 	}

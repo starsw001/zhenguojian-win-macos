@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -162,24 +161,25 @@ func parseHuangguoRanking(body string, board rankingBoard) (rankingPage, error) 
 			if len(graph.Items) == 0 || len(graph.Items) > 100 {
 				return rankingPage{}, failure
 			}
+			cards := parseHuangguoAIDramaCards(strings.ReplaceAll(body, "hg-rank-item", "hg-drama-card"), graph.ID, "排行榜")
 			result := rankingPage{Items: make([]rankingItem, 0, len(graph.Items)), TotalPages: 1}
 			seen, previous := map[string]bool{}, 0
 			for _, item := range graph.Items {
-				parsed, err := url.Parse(item.URL)
-				if err != nil || !strings.HasPrefix(parsed.Path, "/detail/") {
+				_, id, valid := huangguoWorkRoute(item.URL)
+				if !valid {
 					return rankingPage{}, failure
 				}
-				id := strings.TrimSuffix(strings.TrimPrefix(parsed.Path, "/detail/"), "/")
 				if !rankingSourceID.MatchString(id) || strings.TrimSpace(item.Name) == "" || item.Position <= previous || seen[id] {
 					return rankingPage{}, failure
 				}
 				seen[id], previous = true, item.Position
 				drama := Drama{ID: providerDramaID(sourceHuangguoAI, id), Source: sourceHuangguoAI, SourceID: id, Title: item.Name, Name: item.Name}
-				drama, err = bindHuangguoWork(drama, item.URL, item.URL)
+				bound, err := bindHuangguoWork(drama, item.URL, item.URL)
 				if err != nil {
 					return rankingPage{}, failure
 				}
-				for _, card := range parseHuangguoAIDramaCards(body, item.URL, "") {
+				drama = bound
+				for _, card := range cards {
 					if card.ID == drama.ID {
 						drama = card
 						break

@@ -74,7 +74,7 @@ func (transport *huangguoBrowserTransport) createClient(proxy string) (browserHT
 		tlsclient.WithRandomTLSExtensionOrder(),
 		tlsclient.WithDisableHttp3(),
 		tlsclient.WithNotFollowRedirects(),
-		tlsclient.WithTimeoutSeconds(45),
+		tlsclient.WithTimeoutSeconds(60),
 		tlsclient.WithProxyUrl(proxy),
 		tlsclient.WithCookieJar(tlsclient.NewCookieJar()),
 		tlsclient.WithTransportOptions(&tlsclient.TransportOptions{

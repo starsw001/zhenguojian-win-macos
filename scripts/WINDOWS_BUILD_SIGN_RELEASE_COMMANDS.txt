@@ -1,0 +1,183 @@
+# Windows 手动构建、分发签名与发版命令（PowerShell）
+
+# 说明：
+# 1. 在 Windows PowerShell 中分段复制执行。
+# 2. 构建前先完成源码修改和 README 记录，不要在同一版本输出目录上覆盖构建。
+# 3. 本项目的“签名”是 distribution.json 和 update.json 的 Ed25519 分发签名，不是 Windows Authenticode 证书签名。
+# 4. 私钥、授权配置和客户分发文件必须保留在源码目录之外，不要上传、复制进源码或放入 Release。
+# 5. 脚本不会自动上传 Release；最后由人工上传 tag 目录里的两个 ZIP 和两个 update.json。
+
+# ===============================================================================
+# 一、通用路径与环境预检
+# ===============================================================================
+
+$Project = "D:\work-ai\zhenguojian-win-macos"
+$LicenseRoot = "D:\work-ai\license-cloudflare\license-server"
+$PublicConfig = Join-Path $LicenseRoot "config\production-public.json"
+$CustomerFile = Join-Path $LicenseRoot "config\universal-distribution.json"
+$SigningKey = Join-Path $LicenseRoot "distribution-signing.key"
+$Output = Join-Path $Project "dist\windows"
+
+Set-Location $Project
+
+python --version
+flutter --version
+go version
+
+foreach ($Required in @($PublicConfig, $CustomerFile, $SigningKey)) {
+  if (-not (Test-Path -LiteralPath $Required -PathType Leaf)) {
+    throw "缺少构建或签名文件：$Required"
+  }
+}
+
+$CurrentVersion = [regex]::Match(
+  (Get-Content -LiteralPath "pubspec.yaml" -Raw -Encoding UTF8),
+  '(?m)^version:\s*(\d+\.\d+\.\d+\+\d+)\s*$'
+).Groups[1].Value
+
+if (-not $CurrentVersion) {
+  throw "pubspec.yaml 版本号无效"
+}
+
+"Current version: $CurrentVersion"
+
+# ===============================================================================
+# 二、推荐：下一版本一键递增、构建两版、分发签名并生成 Tag 资产
+# ===============================================================================
+
+# 只在准备发布“下一个新版本”时执行一次。
+# 例如当前为 1.1.43+174，会递增为 1.1.44+175，构建两版并输出 releases\tag1.1.44。
+# 如果中途失败，pubspec.yaml 可能已经递增；不要再执行 --next-from，请使用后面的“当前版本逐步续做”。
+
+python scripts/release_windows_updates.py `
+  --next-from $CurrentVersion `
+  --cn-mirrors `
+  --bundle-root $Output `
+  --signing-key $SigningKey `
+  --public-config $PublicConfig `
+  --distribution $CustomerFile `
+  --edition both
+
+if ($LASTEXITCODE -ne 0) {
+  throw "一键构建和打包失败，请保留当前版本号并按下方步骤续做"
+}
+
+# ===============================================================================
+# 三、当前版本逐步续做：先构建红果赏
+# ===============================================================================
+
+python scripts/build_windows.py `
+  --cn-mirrors `
+  --keep-publication-addresses `
+  --license-build-config $PublicConfig `
+  --customer-file $CustomerFile `
+  --signing-key $SigningKey `
+  --output-dir $Output
+
+if ($LASTEXITCODE -ne 0) {
+  throw "红果赏构建失败"
+}
+
+# ===============================================================================
+# 四、当前版本逐步续做：再构建真果赏（全站源）
+# ===============================================================================
+
+python scripts/build_windows.py `
+  --cn-mirrors `
+  --keep-publication-addresses `
+  --license-build-config $PublicConfig `
+  --customer-file $CustomerFile `
+  --signing-key $SigningKey `
+  --output-dir $Output `
+  --all-sources
+
+if ($LASTEXITCODE -ne 0) {
+  throw "真果赏构建失败"
+}
+
+# ===============================================================================
+# 五、从当前版本的两个已签名目录生成四个 Tag 发布资产
+# ===============================================================================
+
+python scripts/release_windows_updates.py `
+  --bundle-root $Output `
+  --signing-key $SigningKey `
+  --public-config $PublicConfig `
+  --distribution $CustomerFile `
+  --edition both
+
+if ($LASTEXITCODE -ne 0) {
+  throw "Tag 发布资产生成失败"
+}
+
+# 如果某一款已生成、只需续做另一款，将 both 换为以下之一：
+#   --edition hongguoshang
+#   --edition zhenguoshang
+# 脚本不覆盖已存在的发布资产。
+
+# ===============================================================================
+# 六、核对可执行目录、Tag 目录、版本与 SHA-256
+# ===============================================================================
+
+$Version = [regex]::Match(
+  (Get-Content -LiteralPath "pubspec.yaml" -Raw -Encoding UTF8),
+  '(?m)^version:\s*(\d+\.\d+\.\d+\+\d+)\s*$'
+).Groups[1].Value
+$ReleaseVersion = $Version.Split('+')[0]
+$RedDirectory = Join-Path $Output "hongguoshang-$Version-windows-x64"
+$FullDirectory = Join-Path $Output "zhenguoshang-$Version-windows-x64"
+$TagDirectory = Join-Path $Output "releases\tag$ReleaseVersion"
+
+foreach ($Directory in @($RedDirectory, $FullDirectory, $TagDirectory)) {
+  if (-not (Test-Path -LiteralPath $Directory -PathType Container)) {
+    throw "缺少输出目录：$Directory"
+  }
+  Get-Item -LiteralPath $Directory | Select-Object FullName, LastWriteTime
+}
+
+Get-Item -LiteralPath (Join-Path $RedDirectory "hongguoshang.exe") |
+  Select-Object FullName, @{Name='ProductVersion';Expression={$_.VersionInfo.ProductVersion}}
+
+Get-Item -LiteralPath (Join-Path $FullDirectory "zhenguoshang.exe") |
+  Select-Object FullName, @{Name='ProductVersion';Expression={$_.VersionInfo.ProductVersion}}
+
+Get-ChildItem -LiteralPath $TagDirectory -File |
+  Sort-Object Name |
+  ForEach-Object {
+    [PSCustomObject]@{
+      Name = $_.Name
+      Bytes = $_.Length
+      SHA256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+    }
+  } | Format-Table -AutoSize
+
+# Tag 目录正常应只有 4 个需要人工上传的文件：
+#   hongguoshang-<版本>-build<构建号>-windows-x64.zip
+#   hongguoshang-windows-x64.update.json
+#   zhenguoshang-<版本>-build<构建号>-windows-x64.zip
+#   zhenguoshang-windows-x64.update.json
+
+# ===============================================================================
+# 七、源码收尾同步（当本次发布同时修改了版本或源码时执行）
+# ===============================================================================
+
+python scripts/finish_task.py --message "完成 Windows 双版构建、分发签名并生成 Tag 发布资产"
+
+if ($LASTEXITCODE -ne 0) {
+  throw "源码收尾同步失败"
+}
+
+python scripts/sync_source.py --check
+
+if ($LASTEXITCODE -ne 0) {
+  throw "guoapp 源码镜像不一致"
+}
+
+# ===============================================================================
+# 八、手动发版
+# ===============================================================================
+
+# 1. 使用 $TagDirectory 的 tag 名称创建发布版本，例如 tag1.1.43。
+# 2. 只上传 $TagDirectory 中的两个 ZIP 和两个 update.json。
+# 3. 不上传 distribution-signing.key、production-public.json、universal-distribution.json、app-data、download、logs、视频、构建缓存、调试符号或纯源码恢复包。
+# 4. 发布后保留本地已签名目录和源码恢复包，不要覆盖旧版本。

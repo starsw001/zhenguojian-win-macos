@@ -31,10 +31,9 @@ List<String> _categoryParts(String name, {int maximumLength = 48}) => name
     .toList();
 
 List<String> dramaCategoryNames(Drama drama) {
-  final names = _categoryParts(drama.category)
-      .map(categoryName)
-      .toSet()
-      .toList();
+  final names = _categoryParts(
+    drama.category,
+  ).map(categoryName).toSet().toList();
   return names.isEmpty ? ['未分类'] : names;
 }
 
@@ -169,11 +168,14 @@ class CatalogBrowser {
         }
         final hongguoWeb =
             source.id == 'hongguo' && category.id.startsWith('web:');
-        final name = category.tag || hongguoWeb
+        final huangguoWebsite = source.id == 'huangguoai' && !category.tag;
+        final name = category.tag || hongguoWeb || huangguoWebsite
             ? category.name.trim()
             : categoryName(category.name);
         final key = hongguoWeb
             ? category.id
+            : huangguoWebsite
+            ? 'huangguo:${category.id}'
             : category.tag
             ? 'tag:${source.id}:${category.id}'
             : name;
@@ -181,7 +183,13 @@ class CatalogBrowser {
           key,
           () => _CatalogChoice(
             CatalogCategory(
-              hongguoWeb || category.tag ? key : 'category:$name',
+              hongguoWeb
+                  ? key
+                  : huangguoWebsite
+                  ? category.id
+                  : category.tag
+                  ? key
+                  : 'category:$name',
               name,
               tag: category.tag,
             ),
@@ -190,11 +198,16 @@ class CatalogBrowser {
         choice.requests[source.id] = category.id;
       }
     }
-    final names = {
-      for (final source in group.sources)
-        for (final item in _library[source.id]?.values ?? const <Drama>[])
-          ...dramaCategoryNames(item),
-    }.toList()..sort();
+    final names =
+        group.id == 'huangguoai'
+              ? <String>[]
+              : {
+                  for (final source in group.sources)
+                    for (final item
+                        in _library[source.id]?.values ?? const <Drama>[])
+                      ...dramaCategoryNames(item),
+                }.toList()
+          ..sort();
     for (final name in names) {
       choices.putIfAbsent(
         name,
@@ -209,10 +222,9 @@ class CatalogBrowser {
     for (final choice in _choices(group)) choice.category,
   ];
 
-  _CatalogChoice? _choice(SourceGroup group, String category) =>
-      _choices(group)
-          .where((choice) => choice.category.id == category)
-          .firstOrNull;
+  _CatalogChoice? _choice(SourceGroup group, String category) => _choices(
+    group,
+  ).where((choice) => choice.category.id == category).firstOrNull;
 
   Future<CatalogPage> homeFallback(
     SourceGroup selected,

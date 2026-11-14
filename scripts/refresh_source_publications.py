@@ -13,10 +13,10 @@ from pathlib import Path
 PUBLICATIONS = (
     'https://huangguoai.pages.dev',
     'https://huang-guo.pages.dev',
+    'https://huangguoai.ai',
 )
 PERMANENT_ADDRESSES = (
     'https://huangguoai.com',
-    'https://huangguoai.ai',
 )
 DISCOVERY_ADDRESSES = (*PUBLICATIONS, *PERMANENT_ADDRESSES)
 EXCLUDED = {'x.com', 'twitter.com', 't.me', 'telegram.org', 'github.com',
@@ -56,7 +56,7 @@ class PublicationParser(html.parser.HTMLParser):
     def handle_starttag(self, tag, attributes):
         attributes = dict(attributes)
         if tag == 'a':
-            self.current = [attributes.get('href', ''), '']
+            self.current = [attributes.get('href', ''), '', 'use-btn' in attributes.get('class', '').split()]
         elif tag == 'script' and attributes.get('src'):
             self.scripts.append(attributes['src'])
 
@@ -74,7 +74,10 @@ def parse_publication(body):
     parser = PublicationParser()
     parser.feed(body)
     values = []
-    for address, label in parser.links:
+    preferred = any(link[2] for link in parser.links)
+    for address, label, route in parser.links:
+        if preferred and not route:
+            continue
         if not any(word in label.lower() for word in ('下载', 'app', '隐私', '协议')):
             values.append(address)
     arrays = {}

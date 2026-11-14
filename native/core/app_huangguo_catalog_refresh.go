@@ -94,12 +94,8 @@ func (d *Downloader) huangguoAICatalogContext(ctx context.Context) (context.Cont
 
 // huangguoAICatalogCategories 返回黄果AI目录分类列表。
 func (d *Downloader) huangguoAICatalogCategories() []nativeCategory {
-	d.providerMu.Lock()
-	defer d.providerMu.Unlock()
-	if len(d.huangguoCatalogSections) > 0 {
-		return append([]nativeCategory{}, d.huangguoCatalogSections...)
-	}
-	return append([]nativeCategory{}, nativeAICategories...)
+	categories := append([]nativeCategory{}, nativeAIWebsiteCategories...)
+	return append(categories, nativeAIWebsiteSubcategories...)
 }
 
 // huangguoAISections 返回黄果AI分区列表。
@@ -203,6 +199,109 @@ func (d *Downloader) fetchHuangguoAISectionPage(ctx context.Context, page int, s
 	return items, huangguoAIPageHasMore(body, max(1, page), len(items)), nil
 }
 
+func huangguoAIWebsiteCategory(category string) (string, string, bool) {
+	switch category {
+	case "":
+		return "/", "全部", true
+	case "original":
+		return "/original/", "全部原创", true
+	case "original-manju":
+		return "/original/manju/", "原创漫剧", true
+	case "original-duanju":
+		return "/original/duanju/", "原创短剧", true
+	case "ai-duanju":
+		return "/ai-duanju/", "最近更新", true
+	case "ai-duanju-hot":
+		return "/ai-duanju/hot/", "当前热播", true
+	case "ai-duanju-random":
+		return "/ai-duanju/random/", "精选推荐", true
+	case "ai-manju":
+		return "/ai-manju/", "最近更新", true
+	case "ai-manju-hot":
+		return "/ai-manju/hot/", "当前热播", true
+	case "ai-manju-random":
+		return "/ai-manju/random/", "精选推荐", true
+	case "topics":
+		return "/topics/", "全部专题", true
+	case "ranks-hot":
+		return "/ranks/hot/", "热播榜", true
+	case "ranks-recommend":
+		return "/ranks/recommend/", "推荐榜", true
+	case "ranks-potential":
+		return "/ranks/potential/", "飙升榜", true
+	default:
+		slug, valid := huangguoAITopicSlug(category)
+		if !valid {
+			return "", "", false
+		}
+		return "/topics/" + url.PathEscape(slug) + "/", "专题", true
+	}
+}
+
+func (d *Downloader) fetchHuangguoAIWebsitePage(ctx context.Context, page int, category string) ([]Drama, bool, error) {
+	path, name, valid := huangguoAIWebsiteCategory(category)
+	if !valid {
+		return nil, false, errors.New("当前站点没有此分类，请刷新分类列表")
+	}
+	ctx = context.WithValue(ctx, providerTextNoCacheKey{}, true)
+	ctx, base := d.huangguoAICatalogContext(ctx)
+	page = max(1, page)
+	address := strings.TrimRight(base, "/") + path
+	if page > 1 {
+		if path == "/" {
+			address += "?page=" + strconv.Itoa(page)
+		} else {
+			address = strings.TrimRight(base, "/") + strings.TrimRight(path, "/") + "/" + strconv.Itoa(page) + "/"
+		}
+	}
+	document, actual, err := d.fetchProviderPage(ctx, address, base+"/", "")
+	if err != nil {
+		return nil, false, err
+	}
+	var body strings.Builder
+	if strings.HasPrefix(category, "ranks-") {
+		if err := html.Render(&body, document); err != nil {
+			return nil, false, err
+		}
+		boardPath := strings.TrimPrefix(category, "ranks-")
+		board, found := findRankingBoard("huangguo-" + boardPath)
+		if !found {
+			return nil, false, errors.New("当前站点没有此排行榜，请刷新分类列表")
+		}
+		result, err := parseHuangguoRanking(body.String(), board)
+		if err != nil {
+			return nil, false, err
+		}
+		items := make([]Drama, 0, len(result.Items))
+		for _, item := range result.Items {
+			items = append(items, item.Drama)
+		}
+		return items, false, nil
+	}
+	content := providerHTMLFirstClass(document, "hg-main")
+	if category != "" {
+		active := providerHTMLNodes(document, func(node *html.Node) bool {
+			return providerHTMLClass(node, "hg-card-grid") && providerHTMLClass(node, "is-active")
+		})
+		if len(active) > 0 {
+			content = active[0]
+		} else {
+			content = providerHTMLFirstClass(document, "hg-card-grid")
+		}
+	}
+	if content == nil {
+		return nil, false, errors.New("分类页面结构已变化，未取得剧集列表，请刷新重试")
+	}
+	if err := html.Render(&body, content); err != nil {
+		return nil, false, err
+	}
+	items := parseHuangguoAIDramaCards(body.String(), actual, name)
+	if len(items) == 0 {
+		return nil, false, errors.New("分类页面未返回剧集，请刷新重试")
+	}
+	return items, sourceDocumentHasMore(document, actual, page), nil
+}
+
 // saveHuangguoCatalogProbe 保存黄果目录探测。
 func (d *Downloader) saveHuangguoCatalogProbe(origin, message string) error {
 	r := d.huangguoMirrorStore()
@@ -221,10 +320,6 @@ func (d *Downloader) saveHuangguoCatalogProbe(origin, message string) error {
 func (d *Downloader) loadHuangguoCatalogOrigins(ctx context.Context) (*huangguoCatalogSession, error) {
 	ctx = context.WithValue(ctx, providerTextNoCacheKey{}, true)
 	previous, _, _ := d.huangguoMirrorStore().snapshot()
-	known := map[string]bool{}
-	for _, entry := range previous {
-		known[entry.Origin] = true
-	}
 	publicationContext, cancel := context.WithTimeout(ctx, 45*time.Second)
 	_, published, publicationError := d.discoverHuangguoCatalogCandidates(publicationContext, true)
 	cancel()
@@ -285,12 +380,7 @@ func (d *Downloader) loadHuangguoCatalogOrigins(ctx context.Context) (*huangguoC
 			return nil, err
 		}
 	}
-	roots := []string{}
-	for _, origin := range append(append([]string{}, permanentLinks...), published...) {
-		if !known[origin] {
-			roots = append(roots, origin)
-		}
-	}
+	roots := append([]string{}, published...)
 	roots = append(roots, validPermanent...)
 	d.providerMu.Lock()
 	lastOrigin := d.huangguoCatalogOrigin
@@ -303,7 +393,6 @@ func (d *Downloader) loadHuangguoCatalogOrigins(ctx context.Context) (*huangguoC
 		}
 	}
 	roots = append(roots, permanentLinks...)
-	roots = append(roots, published...)
 	roots = append(roots, d.providerBaseURL(sourceHuangguoAI))
 	session := &huangguoCatalogSession{roots: roots, pages: validPages, seen: map[string]bool{}}
 	if publicationError != nil {
@@ -492,7 +581,11 @@ func (engine *nativeEngine) collectHuangguoCatalog(ctx context.Context, origin s
 	ctx = context.WithValue(ctx, huangguoCatalogOriginKey{}, origin)
 	sections := huangguoAISections(document)
 	snapshot.sections = sections
-	snapshot.categories = append(append([]nativeCategory{{Name: "全部"}}, sections...), parseHuangguoAIPopularTags(document, origin+"/")...)
+	snapshot.categories = append([]nativeCategory{{Name: "全部"}}, engine.downloader.huangguoAICatalogCategories()...)
+	if topics, err := engine.downloader.fetchHuangguoAITopics(ctx); err == nil {
+		snapshot.categories = append(snapshot.categories, topics...)
+	}
+	snapshot.categories = append(snapshot.categories, parseHuangguoAIPopularTags(document, origin+"/")...)
 	positions := map[string]int{}
 	stagedBytes := 0
 	for index, section := range sections {

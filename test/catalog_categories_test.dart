@@ -42,8 +42,19 @@ class CategoryRepository extends FixtureRepository {
     'huangguo-video' => const [CatalogCategory.all, CatalogCategory('2', '短片')],
     'huangguoai' => const [
       CatalogCategory.all,
-      CatalogCategory('ai-duanju', 'AI 短剧'),
-      CatalogCategory('ai-manju', 'AI 漫剧'),
+      CatalogCategory('original', '黄果原创'),
+      CatalogCategory('ai-duanju', '短剧'),
+      CatalogCategory('ai-manju', '漫剧'),
+      CatalogCategory('topics', '专题'),
+      CatalogCategory('ranks-hot', '排行榜'),
+      CatalogCategory('original-manju', '原创漫剧'),
+      CatalogCategory('original-duanju', '原创短剧'),
+      CatalogCategory('ai-duanju-hot', '当前热播'),
+      CatalogCategory('ai-duanju-random', '精选推荐'),
+      CatalogCategory('ai-manju-hot', '当前热播'),
+      CatalogCategory('ai-manju-random', '精选推荐'),
+      CatalogCategory('ranks-recommend', '推荐榜'),
+      CatalogCategory('ranks-potential', '飙升榜'),
     ],
     'cloudfront' => const [
       CatalogCategory.all,
@@ -232,7 +243,11 @@ void main() {
       expect(find.text('旧版'), findsNothing);
       expect(repository.categoryRequests.toSet(), equals({'huangguoai||1'}));
       expect(find.text('AI成人短剧'), findsNothing);
-      expect(find.text('AI 短剧'), findsOneWidget);
+      expect(find.text('AI 短剧'), findsNothing);
+      expect(find.text('AI 漫剧'), findsNothing);
+      expect(find.text('黄果原创'), findsOneWidget);
+      expect(find.text('短剧'), findsOneWidget);
+      expect(find.text('漫剧'), findsOneWidget);
       Future<void> choose(String name) async {
         final chip = find.widgetWithText(ChoiceChip, name);
         await tester.ensureVisible(chip);
@@ -243,8 +258,8 @@ void main() {
 
       final pending = Completer<CatalogPage>();
       repository.pendingComic = pending;
-      await choose('AI 漫剧');
-      await choose('AI 短剧');
+      await choose('漫剧');
+      await choose('短剧');
       await tester.pumpAndSettle();
       pending.complete(
         CatalogPage(const [

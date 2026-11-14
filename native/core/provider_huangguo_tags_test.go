@@ -38,18 +38,24 @@ func TestHuangguoPopularTagsReloadWithoutDiscardingSavedOptionsOnFailure(t *test
 	reads := 0
 	fail := false
 	engine := sourceFixtureEngine(t, func(request *http.Request) (*http.Response, error) {
-		if request.URL.Path != "/" || request.Header.Get("Cache-Control") != "no-cache" {
+		if request.Header.Get("Cache-Control") != "no-cache" {
 			t.Fatal("unexpected tag request", request.URL.Path, request.Header)
 		}
 		if fail {
 			return sourceFixtureResponse(request, 403, "ordinary fixture unavailable"), nil
+		}
+		if request.URL.Path == "/topics/" {
+			return sourceFixtureResponse(request, 200, `<div class="hg-topic-grid"><a class="hg-topic-card" href="/topics/fixture/"><h3 class="hg-topic-card__title">站点专题</h3></a></div>`), nil
+		}
+		if request.URL.Path != "/" {
+			t.Fatal("unexpected tag request", request.URL.Path)
 		}
 		reads++
 		return sourceFixtureResponse(request, 200, fmt.Sprintf(`<section class="hg-home-popular-tags"><a class="hg-tagrow__item" href="/tag/topic-%d/">普通标签</a></section>`, reads)), nil
 	})
 	for index := 1; index <= 2; index++ {
 		categories, err := engine.nativeCategories(context.Background(), sourceHuangguoAI, false)
-		if err != nil || len(categories) != 6 || categories[5].ID != fmt.Sprintf("tag:topic-%d", index) {
+		if err != nil || len(categories) != 16 || categories[14].ID != "topic:fixture" || categories[15].ID != fmt.Sprintf("tag:topic-%d", index) {
 			t.Fatal("cached options suppressed refresh", index, err)
 		}
 	}
@@ -57,7 +63,7 @@ func TestHuangguoPopularTagsReloadWithoutDiscardingSavedOptionsOnFailure(t *test
 	if _, err := engine.nativeCategories(context.Background(), sourceHuangguoAI, true); err == nil {
 		t.Fatal("failed request appeared current")
 	}
-	if engine.categoryOptions[sourceHuangguoAI][5].ID != "tag:topic-2" {
+	if engine.categoryOptions[sourceHuangguoAI][15].ID != "tag:topic-2" {
 		t.Fatal("failure deleted previous tag choices")
 	}
 }
@@ -86,7 +92,7 @@ func TestHuangguoTagPagesUseRemoteSelectionAndIndependentPagination(t *testing.T
 		if err != nil || result.Page != page || !result.Authoritative || result.HasMore != (page == 1) {
 			t.Fatal("tag cursor or empty final page failed", page, result, err)
 		}
-		if page < 3 && (len(result.Items) != 1 || !strings.HasSuffix(result.Items[0].ID, fmt.Sprintf(":topic-%d", page))) {
+		if page < 3 && (len(result.Items) != 1 || !strings.HasSuffix(result.Items[0].SourceID, fmt.Sprintf("/video/topic-%d/", page))) {
 			t.Fatal("old entries or unrelated recommendation leaked", result.Items)
 		}
 		if page == 3 && len(result.Items) != 0 {

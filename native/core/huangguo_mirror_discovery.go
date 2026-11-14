@@ -50,7 +50,11 @@ func (d *Downloader) fetchHuangguoDirectText(ctx context.Context, address, refer
 	if referer != "" {
 		request.Header.Set("Referer", providerRefererForURL(address, referer))
 	}
-	response, err := d.doCatalogRequestWithTimeout(request, 8*time.Second)
+	timeout := 8 * time.Second
+	if playback, _ := ctx.Value(huangguoPlaybackPageReadKey{}).(bool); playback {
+		timeout = 30 * time.Second
+	}
+	response, err := d.doCatalogRequestWithTimeout(request, timeout)
 	if err != nil {
 		var backoff *requestBackoff
 		blocked := errors.As(err, &backoff)
@@ -276,7 +280,7 @@ func acceptedHuangguoPublicationOrigin(raw string) string {
 		return ""
 	}
 	u, _ := url.Parse(origin)
-	for _, excluded := range []string{"x.com", "twitter.com", "t.me", "telegram.org", "github.com", "youtube.com", "google.com", "mc.yandex.ru", "huangguoai.pages.dev", "huang-guo.pages.dev", "huangguoai.ai"} {
+	for _, excluded := range []string{"x.com", "twitter.com", "t.me", "telegram.org", "github.com", "youtube.com", "google.com", "mc.yandex.ru", "huangguoai.pages.dev", "huang-guo.pages.dev", "huangguoai.com", "huangguoai.ai"} {
 		if u.Hostname() == excluded || strings.HasSuffix(u.Hostname(), "."+excluded) {
 			return ""
 		}
@@ -296,6 +300,12 @@ func parseHuangguoPublication(body string) []string {
 		}
 	}
 	if document, err := html.Parse(strings.NewReader(body)); err == nil {
+		type publicationLink struct {
+			href      string
+			label     string
+			preferred bool
+		}
+		var links []publicationLink
 		var text func(*html.Node) string
 		text = func(node *html.Node) string {
 			if node.Type == html.TextNode {
@@ -310,13 +320,19 @@ func parseHuangguoPublication(body string) []string {
 		var visit func(*html.Node)
 		visit = func(node *html.Node) {
 			if node.Type == html.ElementNode && node.Data == "a" {
-				label := strings.ToLower(text(node))
-				if !strings.Contains(label, "下载") && !strings.Contains(label, "app") && !strings.Contains(label, "隐私") && !strings.Contains(label, "协议") {
-					for _, a := range node.Attr {
-						if a.Key == "href" {
-							add(a.Val)
+				link := publicationLink{label: strings.ToLower(text(node))}
+				for _, a := range node.Attr {
+					if a.Key == "href" {
+						link.href = a.Val
+					}
+					if a.Key == "class" {
+						for _, className := range strings.Fields(a.Val) {
+							link.preferred = link.preferred || className == "use-btn"
 						}
 					}
+				}
+				if link.href != "" {
+					links = append(links, link)
 				}
 			}
 			for child := node.FirstChild; child != nil; child = child.NextSibling {
@@ -324,6 +340,16 @@ func parseHuangguoPublication(body string) []string {
 			}
 		}
 		visit(document)
+		preferred := false
+		for _, link := range links {
+			preferred = preferred || link.preferred
+		}
+		for _, link := range links {
+			if preferred && !link.preferred || strings.Contains(link.label, "下载") || strings.Contains(link.label, "app") || strings.Contains(link.label, "隐私") || strings.Contains(link.label, "协议") {
+				continue
+			}
+			add(link.href)
+		}
 	}
 	arrays := map[string][]string{}
 	for _, match := range huangguoPublicationArray.FindAllStringSubmatch(body, -1) {

@@ -84,6 +84,14 @@ void main() {
         SourceSite.byId('huangguoai'),
       ]);
       await browser.loadCategories(group);
+      expect(
+        browser
+            .categories(group)
+            .where((entry) => !entry.tag)
+            .map((entry) => entry.id),
+        ['', 'ai-duanju'],
+      );
+      expect(browser.categories(group).where((entry) => entry.local), isEmpty);
       final tags = browser
           .categories(group)
           .where((entry) => entry.tag)

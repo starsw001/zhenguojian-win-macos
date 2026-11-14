@@ -51,7 +51,7 @@ func validateOrdinaryDetail(selected nativeDrama, raw Drama, fetchedTitle string
 		title = fetchedTitle
 	}
 	expected := ordinaryTitle(selected.Title)
-	if title != "" && title != "短剧" && expected != "" && expected != "短剧" && ordinaryTitle(title) != expected {
+	if title != "" && title != "短剧" && expected != "" && expected != "短剧" && !strings.Contains(ordinaryTitle(title), expected) {
 		return errors.New("站点详情名称与所选作品不符，请刷新目录或切换站点")
 	}
 	for _, chapter := range chapters {

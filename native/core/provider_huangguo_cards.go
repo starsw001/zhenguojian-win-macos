@@ -12,6 +12,8 @@ var huangguoNonContent = regexp.MustCompile(`(?is)<!--.*?-->|<script\b[^>]*>.*?<
 
 var huangguoTitleFragment = regexp.MustCompile(`(?i)(?:\b(?:class|type|title|aria-label)\s*=|(?:data|ata)-search-input|hg-search(?:__|-))`)
 
+var huangguoFirstEpisodeTitleSuffix = regexp.MustCompile(`\s*第\s*(?:0*1|一)\s*集\s*$`)
+
 // huangguoElementBlock 提取指定 HTML 元素的完整文本块。
 func huangguoElementBlock(raw string, start, end int, tag string) string {
 	depth := 1
@@ -66,6 +68,15 @@ func firstHuangguoTitle(sourceID string, values ...string) string {
 		}
 	}
 	return ""
+}
+
+func huangguoWorkTitle(title string) string {
+	title = strings.TrimSpace(title)
+	trimmed := strings.TrimSpace(huangguoFirstEpisodeTitleSuffix.ReplaceAllString(title, ""))
+	if trimmed != "" {
+		return trimmed
+	}
+	return title
 }
 
 // huangguoCardTitle 返回黄果卡片标题。

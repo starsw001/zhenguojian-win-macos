@@ -38,6 +38,10 @@ func TestHuangguoPublicationDataOnly(t *testing.T) {
 	if len(got) != 4 || got[0] != "https://thu.one.example" || got[3] != "https://pku.two.example" {
 		t.Fatalf("literal arrays not parsed without executing scripts: %v", got)
 	}
+	got = parseHuangguoPublication(`<a class="use-btn" href="https://route-one.example">使用线路</a><a href="https://unrelated.example">其他站点</a><a class="use-btn" href="https://route-two.example">使用线路</a>`)
+	if len(got) != 2 || got[0] != "https://route-one.example" || got[1] != "https://route-two.example" {
+		t.Fatalf("route buttons included unrelated links: %v", got)
+	}
 }
 
 // mirrorFixtureRecord 返回镜像Fixture记录。

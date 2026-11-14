@@ -9,6 +9,7 @@ import 'app_bottom_navigation.dart';
 import 'core_bridge.dart';
 import 'catalog_filters.dart';
 import 'hongguo_catalog_filters.dart';
+import 'huangguo_catalog_filters.dart';
 import 'catalog_browser.dart';
 import 'catalog_sort.dart';
 import 'catalog_sort_sheet.dart';
@@ -339,13 +340,18 @@ class _HomeScreenState extends State<HomeScreen> {
   void _swipeCategory(DragEndDetails details) {
     final velocity = details.primaryVelocity ?? 0;
     if (velocity.abs() < 240) return;
-    final categories = _group.id == 'hongguo'
-        ? hongguoWebCategories
-        : _displayCategories;
+    final categories = switch (_group.id) {
+      'hongguo' => hongguoWebCategories,
+      'huangguoai' => huangguoWebsiteCategories,
+      _ => _displayCategories,
+    };
     final index = categories.indexWhere(
       (entry) =>
           entry.id == _displayCategory ||
-          _group.id == 'hongguo' && _displayCategory.startsWith('${entry.id}:'),
+          _group.id == 'hongguo' &&
+              _displayCategory.startsWith('${entry.id}:') ||
+          _group.id == 'huangguoai' &&
+              entry.id == huangguoWebsiteRoot(_displayCategory),
     );
     final next = index + (velocity < 0 ? 1 : -1);
     if (next >= 0 && next < categories.length) {
@@ -1423,6 +1429,14 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
         if (_group.id == 'hongguo' && !_showRecommendations)
           HongguoCatalogFilters(
+            categories: _categories,
+            category: _category,
+            onCategory: _changeCategory,
+            onRetry: () => _loadCategories(force: true),
+            error: _categoriesError,
+          )
+        else if (_group.id == 'huangguoai')
+          HuangguoCatalogFilters(
             categories: _categories,
             category: _category,
             onCategory: _changeCategory,

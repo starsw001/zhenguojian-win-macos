@@ -3,6 +3,8 @@ import 'models.dart';
 
 String ordinaryTitleKey(String title) =>
     title.trim().replaceAll(RegExp(r'\s+'), ' ').toLowerCase();
+String _withoutFirstEpisodeSuffix(String title) =>
+    title.replaceFirst(RegExp(r'\s*第\s*(?:0*1|一)\s*集\s*$'), '').trim();
 String _knownYear(Drama drama) {
   final date = RegExp(
     r'^(?:19|20)\d{2}',
@@ -30,6 +32,18 @@ bool ordinaryTitlesCompatible(Drama first, Drama second) {
   final x = _knownKind(first), y = _knownKind(second);
   return (a.isEmpty || b.isEmpty || a == b) &&
       (x.isEmpty || y.isEmpty || x == y);
+}
+
+bool ordinaryDetailTitlesCompatible(Drama selected, Drama detail) {
+  final selectedTitle = ordinaryTitleKey(selected.title);
+  final detailTitle = ordinaryTitleKey(detail.title);
+  if (selectedTitle.isNotEmpty && detailTitle.contains(selectedTitle)) {
+    return true;
+  }
+  return selected.source == 'huangguoai' &&
+      detailTitle.isNotEmpty &&
+      ordinaryTitleKey(_withoutFirstEpisodeSuffix(selected.title)) ==
+          detailTitle;
 }
 
 List<Drama> ordinarySiteOptions(Drama drama) {
@@ -109,12 +123,15 @@ DramaDetail validateIsolatedSiteDetail(Drama selected, DramaDetail detail) {
   if (selected.legacyUnscopedAI) {
     throw AppFailure('旧目录条目缺少站点身份，请重新更新目录；历史和本地视频保留。', code: 'site_identity');
   }
-  if (detail.drama.id != selected.id ||
-      detail.drama.source != selected.source ||
-      detail.drama.siteIdentity != selected.siteIdentity ||
-      !ordinaryTitlesCompatible(selected, detail.drama)) {
+  final differences = <String>[
+    if (detail.drama.id != selected.id) 'id',
+    if (detail.drama.source != selected.source) 'source',
+    if (detail.drama.siteIdentity != selected.siteIdentity) 'siteIdentity',
+    if (!ordinaryDetailTitlesCompatible(selected, detail.drama)) 'title',
+  ];
+  if (differences.isNotEmpty) {
     throw AppFailure(
-      '站点返回的作品与所选剧集不一致，已阻止混入分集，请刷新目录或切换站点。',
+      '站点返回的作品与所选剧集不一致（${differences.join('、')}），已阻止混入分集，请刷新目录或切换站点。',
       code: 'site_identity',
     );
   }
@@ -151,8 +168,14 @@ DramaDetail validateIsolatedSiteDetail(Drama selected, DramaDetail detail) {
     throw AppFailure('暂时没有可播放的集数', code: 'site_empty');
   }
   final merged = selected.merge(detail.drama);
+  final displayTitle = selected.source == 'huangguoai'
+      ? _withoutFirstEpisodeSuffix(
+          detail.drama.title.isEmpty ? selected.title : detail.drama.title,
+        )
+      : merged.title;
   final fresh = Drama.fromJson({
     ...merged.toJson(),
+    'title': displayTitle,
     'episodes': detail.episodes.length,
     'episodeCountVerified': true,
   }, sites: selected.sites);

@@ -47,40 +47,42 @@ type Config struct {
 }
 
 type Downloader struct {
-	cachePolicy             atomic.Pointer[nativeCacheLimits]
-	rankings                rankingCache
-	cfg                     Config
-	client                  *http.Client
-	huangdouDetails         map[string]huangdouDetailEntry
-	huangdouDetailPending   map[string]*huangdouDetailCall
-	providerMu              sync.Mutex
-	providerHosts           map[string]string
-	huangguoCatalogOrigin   string
-	huangguoCatalogSections []nativeCategory
-	limiter                 *requestLimiter
-	proxyRouter             *proxyRouter
-	hongguoMediaCache       hongguoMediaCache
-	hongguoOnce             sync.Once
-	hongguo                 *hongguoAppClient
-	huangjuOnce             sync.Once
-	huangju                 *huangjuAPIClient
-	yeguoOnce               sync.Once
-	yeguo                   *yeguoAPIClient
-	soraniOnce              sync.Once
-	sorani                  *soraniAPIClient
-	dsdCatalog              dsdCatalogState
-	diagnostics             *diagnosticLog
-	apiMu                   sync.Mutex
-	apiBase                 string
-	apiFailures             map[string]time.Time
-	legacyOnce              sync.Once
-	legacy                  *legacyAPIClient
-	previewMu               sync.Mutex
-	previewSessions         map[string]*huangguoPreviewSession
-	huangguoMirrorOnce      sync.Once
-	huangguoMirrors         *huangguoMirrorRegistry
-	huangguoDecode          func(context.Context, providerMedia) (huangguoDecodeResult, error)
-	huangguoPoster          func(context.Context, Drama, string) (huangguoPosterResult, error)
+	cachePolicy              atomic.Pointer[nativeCacheLimits]
+	rankings                 rankingCache
+	cfg                      Config
+	client                   *http.Client
+	huangdouDetails          map[string]huangdouDetailEntry
+	huangdouDetailPending    map[string]*huangdouDetailCall
+	providerMu               sync.Mutex
+	providerHosts            map[string]string
+	huangguoCatalogOrigin    string
+	huangguoCatalogSections  []nativeCategory
+	limiter                  *requestLimiter
+	proxyRouter              *proxyRouter
+	hongguoMediaCache        hongguoMediaCache
+	hongguoOnce              sync.Once
+	hongguo                  *hongguoAppClient
+	huangjuOnce              sync.Once
+	huangju                  *huangjuAPIClient
+	yeguoOnce                sync.Once
+	yeguo                    *yeguoAPIClient
+	soraniOnce               sync.Once
+	sorani                   *soraniAPIClient
+	dsdCatalog               dsdCatalogState
+	diagnostics              *diagnosticLog
+	apiMu                    sync.Mutex
+	apiBase                  string
+	apiFailures              map[string]time.Time
+	legacyOnce               sync.Once
+	legacy                   *legacyAPIClient
+	previewMu                sync.Mutex
+	previewSessions          map[string]*huangguoPreviewSession
+	huangguoPlaybackMu       sync.Mutex
+	huangguoPlaybackSessions map[string]*huangguoPlaybackEdgeSession
+	huangguoMirrorOnce       sync.Once
+	huangguoMirrors          *huangguoMirrorRegistry
+	huangguoDecode           func(context.Context, providerMedia) (huangguoDecodeResult, error)
+	huangguoPoster           func(context.Context, Drama, string) (huangguoPosterResult, error)
 }
 
 // defaultConfig 构造默认配置。
@@ -277,7 +279,11 @@ func nativeNormalize(drama Drama) nativeDrama {
 		}
 	}
 	source, sourceID, _ := splitProviderDramaID(drama.ID)
-	return nativeDrama{MetadataSchema: 1, ID: drama.ID, Source: source, SourceID: sourceID, Title: drama.DisplayTitle(),
+	title := drama.DisplayTitle()
+	if source == sourceHuangguoAI {
+		title = huangguoWorkTitle(title)
+	}
+	return nativeDrama{MetadataSchema: 1, ID: drama.ID, Source: source, SourceID: sourceID, Title: title,
 		Description: firstNonEmpty(drama.Desc, drama.Intro), Cover: cover, Episodes: episodes,
 		Category: nativeDramaCategory(drama), VIP: drama.VIP,
 		Heat: drama.Heat, Views: drama.Views, OnlineDate: providerReleaseDate(drama.OnlineDate),
@@ -316,7 +322,7 @@ func newNativeEngine(directory string, defaultDownloads ...string) (*nativeEngin
 	transport.ResponseHeaderTimeout = 20 * time.Second
 	transport.Proxy = router.proxy
 	cdn := newCDNTransport(transport, newDNSResolver(transport))
-	d.client = &http.Client{Transport: newAutoProxyFallbackTransport(newHuangguoBrowserTransport(cdn, d), router, d.recordDiagnostic), Timeout: 45 * time.Second,
+	d.client = &http.Client{Transport: newAutoProxyFallbackTransport(newHuangguoBrowserTransport(cdn, d), router, d.recordDiagnostic), Timeout: 60 * time.Second,
 		CheckRedirect: func(request *http.Request, via []*http.Request) error {
 			if len(via) >= 10 {
 				return errors.New("站源重定向次数过多")
@@ -879,6 +885,9 @@ func (engine *nativeEngine) nativeDetail(ctx context.Context, drama nativeDrama)
 	}
 	if ordinarySource(source) {
 		if err := validateOrdinaryDetail(drama, raw, title, chapters); err != nil {
+			actual := nativeNormalize(raw)
+			engine.downloader.recordDiagnostic(diagnosticEvent{Event: "detail.ordinary_identity_mismatch", Level: "warning", Source: source,
+				DramaID: drama.ID, DramaTitle: drama.Title, Message: fmt.Sprintf("普通站源详情校验失败：selected.id=%q；selected.source=%q；selected.sourceId=%q；selected.title=%q；detail.id=%q；detail.source=%q；detail.sourceId=%q；detail.title=%q；fetchedTitle=%q；%v", drama.ID, drama.Source, drama.SourceID, drama.Title, actual.ID, actual.Source, actual.SourceID, actual.Title, title, err)})
 			return nil, err
 		}
 	} else if source == sourceHuangguoAI {

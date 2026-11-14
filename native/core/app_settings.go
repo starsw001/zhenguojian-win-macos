@@ -94,7 +94,7 @@ type proxyRouter struct {
 
 // proxy 根据资源设置为当前请求选择代理。
 func (router *proxyRouter) proxy(request *http.Request) (*url.URL, error) {
-	if request.Context().Value(directProxyRetryKey{}) == true {
+	if request.Context().Value(directProxyAttemptKey{}) == true {
 		return nil, nil
 	}
 	if request.URL.Hostname() == "127.0.0.1" || request.URL.Hostname() == "localhost" || request.URL.Hostname() == "::1" {

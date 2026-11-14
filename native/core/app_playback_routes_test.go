@@ -16,7 +16,7 @@ func TestHongguoHealthTraceUsesOnlySafeRouteLabels(t *testing.T) {
 	trace := &sourceResponseTrace{}
 	ctx := context.WithValue(context.Background(), sourceTraceKey{}, trace)
 	for _, tc := range []struct{ address, want string }{
-		{"https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/v1/?device_id=fixture-id", "/novel/player/multi_video_model/v1/"},
+		{"https://api5-normal-sinfonlineb.fqnovel.com/novel/player/video_model/v1/?device_id=fixture-id", hongguoVideoModelPath},
 		{"https://hongguoduanju.com/player/1234/5678?private=value", "官网同集播放页"},
 		{"https://v9-reading-video.qznovelvod.com/signed-media-path/?token=fixture-secret", ""},
 	} {

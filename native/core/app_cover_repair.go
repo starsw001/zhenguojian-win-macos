@@ -70,7 +70,7 @@ func (cache *nativeCoverCache) repair(ctx context.Context, drama nativeDrama, fo
 	call := &nativeCoverRepair{done: make(chan struct{})}
 	cache.repairs[drama.ID] = call
 	cache.mu.Unlock()
-	work, cancel := context.WithTimeout(ctx, 15*time.Second)
+	work, cancel := context.WithTimeout(ctx, 35*time.Second)
 	defer cancel()
 	var address string
 	var err error

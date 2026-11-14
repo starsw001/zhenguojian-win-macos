@@ -4,9 +4,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"net/url"
+	"regexp"
 	"strings"
 )
+
+var huangguoVideoInitialMetadata = regexp.MustCompile(`(?is)<script\b[^>]*id=["']videoInitialData["'][^>]*>(.*?)</script>`)
 
 // parseHongguoSortDetail 解析红果排序详情。
 func parseHongguoSortDetail(body, id string) (Drama, error) {
@@ -64,6 +68,9 @@ func parseHuangguoSortDetail(body, pageURL string, patch Drama) (Drama, error) {
 			}
 		}
 	}
+	if initial, ok := huangguoInitialMetadata(body, pageURL, patch); ok {
+		patch, matched = initial, true
+	}
 	if !matched {
 		return patch, fmt.Errorf("黄果详情没有返回所请求剧集的元数据")
 	}
@@ -91,6 +98,31 @@ func parseHuangguoSortDetail(body, pageURL string, patch Drama) (Drama, error) {
 		}
 	}
 	return patch, nil
+}
+
+func huangguoInitialMetadata(body, pageURL string, patch Drama) (Drama, bool) {
+	if patch.Source != sourceHuangguoAI {
+		return patch, false
+	}
+	_, owner, valid := huangguoWorkRoute(pageURL)
+	match := huangguoVideoInitialMetadata.FindStringSubmatch(body)
+	if !valid || len(match) < 2 {
+		return patch, false
+	}
+	var data map[string]any
+	if json.Unmarshal([]byte(html.UnescapeString(match[1])), &data) != nil {
+		return patch, false
+	}
+	if id := cleanID(mapString(data, "id", "videoId", "video_id")); id != "" && id != owner {
+		return patch, false
+	}
+	if title := firstHuangguoTitle(owner, mapString(data, "title", "seriesTitle", "series_name", "name")); title != "" {
+		patch.Title, patch.Name = title, title
+	}
+	if cover := providerCoverAddress(firstNonEmpty(mapString(data, "posterSrc", "poster_url"), mapString(data, "coverSrc", "cover_url")), pageURL); cover != "" {
+		patch.Cover, patch.CoverURL = cover, cover
+	}
+	return patch, true
 }
 
 // huangguoDetailMetadata 返回黄果详情元数据。

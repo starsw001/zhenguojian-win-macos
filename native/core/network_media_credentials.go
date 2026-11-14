@@ -10,11 +10,16 @@ import (
 )
 
 type providerMediaCredentials struct {
-	cookie    string
-	origin    string
-	referer   string
-	userAgent string
-	expires   time.Time
+	cookie       string
+	origin       string
+	referer      string
+	userAgent    string
+	expires      time.Time
+	cdnAuthKey   string
+	cdnAuthValue string
+	cdnApp       string
+	cdnM3U8      bool
+	cdnOther     bool
 }
 
 type providerMediaCredentialsKey struct{}
@@ -40,6 +45,10 @@ func providerMediaOrigin(address *url.URL) string {
 // apply 应用站源媒体凭据。
 func (credentials *providerMediaCredentials) apply(request *http.Request) error {
 	request.Header.Del("Cookie")
+	if credentials.cdnAuthKey != "" {
+		request.Header.Del(credentials.cdnAuthKey)
+	}
+	request.Header.Del("X-CDN-App")
 	if credentials.userAgent != "" {
 		request.Header.Set("User-Agent", credentials.userAgent)
 	}
@@ -53,7 +62,16 @@ func (credentials *providerMediaCredentials) apply(request *http.Request) error 
 		if !credentials.expires.IsZero() && !time.Now().Before(credentials.expires) {
 			return errors.New("播放凭证已过期，请重新解析播放")
 		}
-		request.Header.Set("Cookie", credentials.cookie)
+		if credentials.cookie != "" {
+			request.Header.Set("Cookie", credentials.cookie)
+		}
+		path := strings.ToLower(request.URL.Path)
+		m3u8 := credentials.cdnM3U8 && strings.HasSuffix(path, ".m3u8")
+		other := credentials.cdnOther && (strings.HasSuffix(path, ".ts") || strings.HasSuffix(path, ".m4s") || strings.HasSuffix(path, ".key"))
+		if (m3u8 || other) && credentials.cdnAuthKey != "" && credentials.cdnAuthValue != "" && credentials.cdnApp != "" {
+			request.Header.Set(credentials.cdnAuthKey, credentials.cdnAuthValue)
+			request.Header.Set("X-CDN-App", credentials.cdnApp)
+		}
 	}
 	return nil
 }

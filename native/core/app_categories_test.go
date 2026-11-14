@@ -74,6 +74,109 @@ func TestNativeCategoryDiscoveryUsesSourceLinks(t *testing.T) {
 	}
 }
 
+func TestHuangguoWebsiteCategoriesMatchCurrentNavigation(t *testing.T) {
+	expected := []nativeCategory{
+		{ID: "original", Name: "黄果原创"},
+		{ID: "ai-duanju", Name: "短剧"},
+		{ID: "ai-manju", Name: "漫剧"},
+		{ID: "topics", Name: "专题"},
+		{ID: "ranks-hot", Name: "排行榜"},
+	}
+	if len(nativeAIWebsiteCategories) != len(expected) {
+		t.Fatal(nativeAIWebsiteCategories)
+	}
+	for index, entry := range expected {
+		if nativeAIWebsiteCategories[index] != entry || !validNativeCategory(sourceHuangguoAI, entry.ID) {
+			t.Fatal(index, nativeAIWebsiteCategories[index], entry)
+		}
+	}
+	if path, name, valid := huangguoAIWebsiteCategory(""); !valid || path != "/" || name != "全部" {
+		t.Fatal(path, name, valid)
+	}
+	expectedChildren := []nativeCategory{
+		{ID: "original-manju", Name: "原创漫剧"},
+		{ID: "original-duanju", Name: "原创短剧"},
+		{ID: "ai-duanju-hot", Name: "当前热播"},
+		{ID: "ai-duanju-random", Name: "精选推荐"},
+		{ID: "ai-manju-hot", Name: "当前热播"},
+		{ID: "ai-manju-random", Name: "精选推荐"},
+		{ID: "ranks-recommend", Name: "推荐榜"},
+		{ID: "ranks-potential", Name: "飙升榜"},
+	}
+	if len(nativeAIWebsiteSubcategories) != len(expectedChildren) {
+		t.Fatal(nativeAIWebsiteSubcategories)
+	}
+	for index, entry := range expectedChildren {
+		if nativeAIWebsiteSubcategories[index] != entry || !validNativeCategory(sourceHuangguoAI, entry.ID) {
+			t.Fatal(index, nativeAIWebsiteSubcategories[index], entry)
+		}
+	}
+	for category, expectedPath := range map[string]string{
+		"original":          "/original/",
+		"original-manju":    "/original/manju/",
+		"original-duanju":   "/original/duanju/",
+		"ai-duanju":         "/ai-duanju/",
+		"ai-duanju-hot":     "/ai-duanju/hot/",
+		"ai-duanju-random":  "/ai-duanju/random/",
+		"ai-manju":          "/ai-manju/",
+		"ai-manju-hot":      "/ai-manju/hot/",
+		"ai-manju-random":   "/ai-manju/random/",
+		"topics":            "/topics/",
+		"topic:fixture-one": "/topics/fixture-one/",
+		"ranks-hot":         "/ranks/hot/",
+		"ranks-recommend":   "/ranks/recommend/",
+		"ranks-potential":   "/ranks/potential/",
+	} {
+		path, _, valid := huangguoAIWebsiteCategory(category)
+		if !valid || path != expectedPath {
+			t.Fatal(category, path, valid)
+		}
+	}
+}
+
+func TestHuangguoWebsiteCategoriesReturnPlayableWorkRoutes(t *testing.T) {
+	d := sourceFixtureDownloader(t, func(request *http.Request) (*http.Response, error) {
+		card := func(id, title string) string {
+			return `<div class="hg-drama-card" data-track-id="` + id + `"><a href="/video/` + id + `/"><h3 class="hg-drama-card__title">` + title + `</h3></a></div>`
+		}
+		if strings.HasPrefix(request.URL.Path, "/ranks/") {
+			board := strings.Trim(strings.TrimPrefix(request.URL.Path, "/ranks/"), "/")
+			return sourceFixtureResponse(request, 200, `<div class="hg-rank-item" data-track-id="104" data-track-title="榜单剧集"><a href="/video/104/"><img data-src="https://images.example.org/104.jpg"></a></div><script type="application/ld+json">{"@graph":[{"@type":"ItemList","@id":"https://ordinary.example.org/ranks/`+board+`/#itemlist","itemListElement":[{"position":1,"name":"榜单剧集","url":"https://ordinary.example.org/video/104/"}]}]}</script>`), nil
+		}
+		switch request.URL.Path {
+		case "/":
+			return sourceFixtureResponse(request, 200, `<main class="hg-main">`+card("101", "首页剧集")+`</main>`), nil
+		case "/original/", "/original/manju/", "/original/duanju/", "/ai-duanju/", "/ai-duanju/hot/", "/ai-duanju/random/", "/ai-manju/", "/ai-manju/hot/", "/ai-manju/random/", "/topics/", "/topics/fixture-one/":
+			return sourceFixtureResponse(request, 200, `<div class="hg-card-grid">`+card("102", "分类剧集")+`</div>`), nil
+		default:
+			return nil, fmt.Errorf("unexpected route %s", request.URL.Path)
+		}
+	})
+	ctx := context.WithValue(context.Background(), huangguoCatalogOriginKey{}, "https://ordinary.example.org")
+	for _, category := range []string{"", "original", "original-manju", "original-duanju", "ai-duanju", "ai-duanju-hot", "ai-duanju-random", "ai-manju", "ai-manju-hot", "ai-manju-random", "topics", "topic:fixture-one", "ranks-hot", "ranks-recommend", "ranks-potential"} {
+		items, more, err := d.fetchHuangguoAICatalogPage(ctx, 1, category)
+		if err != nil || more || len(items) != 1 || !strings.HasPrefix(items[0].SourceID, "https://ordinary.example.org/video/") {
+			t.Fatal(category, len(items), more, err, items)
+		}
+		if strings.HasPrefix(category, "ranks-") && items[0].Cover != "https://images.example.org/104.jpg" {
+			t.Fatal("ranking cover missing", items[0])
+		}
+	}
+}
+
+func TestHuangguoWebsiteCategoryPaginationUsesCurrentRoutes(t *testing.T) {
+	requested := ""
+	d := sourceFixtureDownloader(t, func(request *http.Request) (*http.Response, error) {
+		requested = request.URL.Path
+		return sourceFixtureResponse(request, 200, `<div class="hg-card-grid is-active"><div class="hg-drama-card" data-track-id="page-two"><a href="/video/page-two/"><h3 class="hg-drama-card__title">第二页剧集</h3></a></div></div>`), nil
+	})
+	ctx := context.WithValue(context.Background(), huangguoCatalogOriginKey{}, "https://ordinary.example.org")
+	items, more, err := d.fetchHuangguoAICatalogPage(ctx, 2, "ai-duanju-hot")
+	if err != nil || more || len(items) != 1 || requested != "/ai-duanju/hot/2/" {
+		t.Fatal(requested, len(items), more, err)
+	}
+}
+
 // TestLegacyResource404KeepsHealthyEndpoint 验证「Legacy Resource 404 Keeps Healthy Endpoint」回归场景。
 func TestLegacyResource404KeepsHealthyEndpoint(t *testing.T) {
 	d := legacyFixtureDownloader(t, func(request *http.Request) (*http.Response, error) {

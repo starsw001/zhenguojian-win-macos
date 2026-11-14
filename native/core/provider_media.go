@@ -205,6 +205,9 @@ func (d *Downloader) resolveProviderMedia(ctx context.Context, task Task) (provi
 	if chapter.PageURL != "" && (chapter.Source == sourceHuangguoAI || chapter.Source == sourceHuangguoVideo) {
 		responses := &playbackResponseURLs{}
 		pageContext := context.WithValue(ctx, playbackResponseURLsKey{}, responses)
+		if chapter.Source == sourceHuangguoAI {
+			pageContext = context.WithValue(pageContext, huangguoPlaybackPageReadKey{}, true)
+		}
 		body, err := d.fetchProviderText(pageContext, chapter.PageURL, media.Referer)
 		if err != nil {
 			return providerMedia{}, err
@@ -213,19 +216,29 @@ func (d *Downloader) resolveProviderMedia(ctx context.Context, task Task) (provi
 		if actual, ok := responses.values.Load(chapter.PageURL); ok {
 			pageURL = actual.(string)
 		}
+		media.Referer = pageURL
 		if chapter.Source == sourceHuangguoAI {
 			media.URL = parseAIVideoURL(body, pageURL)
+			if media.URL == "" {
+				media, err = d.resolveHuangguoAIPlayback(ctx, pageURL, chapter, task.Index)
+				if err != nil {
+					return providerMedia{}, err
+				}
+			}
 		} else {
 			media.URL = parseDataHLS(body, pageURL)
 		}
-		media.Referer = pageURL
 	}
 	if !isProviderHTTPMediaURL(media.URL) {
 		return providerMedia{}, fmt.Errorf("%s 未返回有效播放地址，请刷新章节或确认站点访问权限", chapter.Source)
 	}
 	parsed, _ := url.Parse(media.URL)
 	if strings.HasSuffix(strings.ToLower(parsed.Path), ".m3u8") {
-		playlist, finalURL, err := d.fetchMediaPlaylist(ctx, media.URL, media.Referer)
+		mediaContext := ctx
+		if media.credentials != nil {
+			mediaContext = providerMediaContext(ctx, media.credentials)
+		}
+		playlist, finalURL, err := d.fetchMediaPlaylist(mediaContext, media.URL, media.Referer)
 		if err != nil {
 			return providerMedia{}, fmt.Errorf("获取播放列表失败: %w", err)
 		}

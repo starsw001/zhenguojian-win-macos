@@ -20,8 +20,8 @@ func autoProxyFixtureRouter(mode string) *proxyRouter {
 		system: nativeSystemProxy{HTTP: address.String(), HTTPS: address.String()}}
 }
 
-// TestAutoProxyEOFRetriesSameRequestDirectlyWithoutChangingSettings 验证「Auto Proxy EOF Retries Same Request Directly Without Changing Settings」回归场景。
-func TestAutoProxyEOFRetriesSameRequestDirectlyWithoutChangingSettings(t *testing.T) {
+// TestAutoProxyDirectEOFRetriesSameRequestThroughProxyWithoutChangingSettings 验证「Auto Proxy Direct EOF Retries Same Request Through Proxy Without Changing Settings」回归场景。
+func TestAutoProxyDirectEOFRetriesSameRequestThroughProxyWithoutChangingSettings(t *testing.T) {
 	router := autoProxyFixtureRouter("auto")
 	request, _ := http.NewRequest(http.MethodGet, "https://api.example/catalog?signature=a%2Fb", nil)
 	request.Header.Set("Referer", "https://site.example/")
@@ -31,7 +31,7 @@ func TestAutoProxyEOFRetriesSameRequestDirectlyWithoutChangingSettings(t *testin
 	base := sourceFixtureTransport(func(current *http.Request) (*http.Response, error) {
 		calls++
 		proxy, err := router.proxy(current)
-		if err != nil || (calls == 1) != (proxy != nil) {
+		if err != nil || calls == 1 && proxy != nil || calls == 2 && proxy == nil {
 			t.Fatal("unexpected route", calls, proxy, err)
 		}
 		if current.URL.String() != request.URL.String() || current.Header.Get("Authorization") != "synthetic-read-token" || current.Header.Get("Referer") != request.Header.Get("Referer") {
@@ -45,10 +45,10 @@ func TestAutoProxyEOFRetriesSameRequestDirectlyWithoutChangingSettings(t *testin
 	transport := newAutoProxyFallbackTransport(base, router, func(event diagnosticEvent) { events = append(events, event) })
 	response, err := transport.RoundTrip(request)
 	if err != nil || response.StatusCode != 200 || calls != 2 || len(events) != 2 {
-		t.Fatal("direct fallback did not complete", err, calls, events)
+		t.Fatal("proxy fallback did not complete", err, calls, events)
 	}
 	response.Body.Close()
-	if request.Context().Value(directProxyRetryKey{}) != nil || router.mode != "auto" {
+	if request.Context().Value(directProxyAttemptKey{}) != nil || router.mode != "auto" {
 		t.Fatal("fallback mutated the original request or user mode")
 	}
 }
@@ -160,13 +160,13 @@ func TestAutoProxyMutationAndCredentialPOSTNeverReplay(t *testing.T) {
 	}
 }
 
-// TestAutoProxyDirectFailureStopsAfterOneRetry 验证「Auto Proxy Direct Failure Stops After One Retry」回归场景。
-func TestAutoProxyDirectFailureStopsAfterOneRetry(t *testing.T) {
+// TestAutoProxyFailureStopsAfterOneProxyRetry 验证「Auto Proxy Failure Stops After One Proxy Retry」回归场景。
+func TestAutoProxyFailureStopsAfterOneProxyRetry(t *testing.T) {
 	calls := 0
 	base := sourceFixtureTransport(func(*http.Request) (*http.Response, error) { calls++; return nil, io.EOF })
 	request, _ := http.NewRequest(http.MethodGet, "https://site.example/", nil)
 	_, err := newAutoProxyFallbackTransport(base, autoProxyFixtureRouter("auto"), nil).RoundTrip(request)
-	if err == nil || calls != 2 || !strings.Contains(err.Error(), "同址直连仍失败") {
+	if err == nil || calls != 2 || !strings.Contains(err.Error(), "同址系统代理仍失败") {
 		t.Fatal("unbounded or unreported retries", calls, err)
 	}
 }
@@ -183,25 +183,25 @@ func TestAutoProxyBodyReplayFailureDoesNotRetry(t *testing.T) {
 	}
 }
 
-// TestAutoProxyReservesTimeForDirectBeforeCallerDeadline 验证「Auto Proxy Reserves Time For Direct Before Caller Deadline」回归场景。
-func TestAutoProxyReservesTimeForDirectBeforeCallerDeadline(t *testing.T) {
+// TestAutoProxyReservesTimeForProxyBeforeCallerDeadline 验证「Auto Proxy Reserves Time For Proxy Before Caller Deadline」回归场景。
+func TestAutoProxyReservesTimeForProxyBeforeCallerDeadline(t *testing.T) {
 	calls := 0
 	base := sourceFixtureTransport(func(request *http.Request) (*http.Response, error) {
 		calls++
-		if request.Context().Value(directProxyRetryKey{}) != true {
+		if request.Context().Value(directProxyAttemptKey{}) == true {
 			<-request.Context().Done()
 			return nil, request.Context().Err()
 		}
 		return sourceFixtureResponse(request, 200, "recovered"), nil
 	})
 	transport := newAutoProxyFallbackTransport(base, autoProxyFixtureRouter("auto"), nil)
-	transport.proxyTimeout = 10 * time.Millisecond
+	transport.directTimeout = 10 * time.Millisecond
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	request, _ := http.NewRequestWithContext(ctx, http.MethodGet, "https://site.example/", nil)
 	response, err := transport.RoundTrip(request)
 	if err != nil || calls != 2 || ctx.Err() != nil {
-		t.Fatal("proxy exhausted the caller deadline", err, calls, ctx.Err())
+		t.Fatal("direct attempt exhausted the caller deadline", err, calls, ctx.Err())
 	}
 	response.Body.Close()
 }
@@ -214,7 +214,7 @@ func TestAutoProxyHeaderBudgetDoesNotCancelResponseBody(t *testing.T) {
 		return sourceFixtureResponse(request, 200, "stream-body"), nil
 	})
 	transport := newAutoProxyFallbackTransport(base, autoProxyFixtureRouter("auto"), nil)
-	transport.proxyTimeout = time.Millisecond
+	transport.directTimeout = time.Millisecond
 	request, _ := http.NewRequest(http.MethodGet, "https://site.example/", nil)
 	response, err := transport.RoundTrip(request)
 	if err != nil {

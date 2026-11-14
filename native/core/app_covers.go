@@ -166,7 +166,7 @@ func (cache *nativeCoverCache) loadAddress(ctx context.Context, drama nativeDram
 
 // fetch 取得海报数据并完成当前合并请求的缓存写入与通知。
 func (cache *nativeCoverCache) fetch(key string, drama nativeDrama, referer, fallback string, call *nativeCoverCall) {
-	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
 	defer cancel()
 	var data []byte
 	var err error

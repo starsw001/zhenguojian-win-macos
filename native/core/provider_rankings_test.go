@@ -98,6 +98,9 @@ func TestHuangdouRankingPreservesOrderAndMetrics(t *testing.T) {
 // TestHuangguoRankingStructuredData 验证「Huangguo Ranking Structured Data」回归场景。
 func TestHuangguoRankingStructuredData(t *testing.T) {
 	board, _ := findRankingBoard("huangguo-potential")
+	if board.Name != "飙升榜" || board.path != "potential" {
+		t.Fatal(board)
+	}
 	body := `<script type="application/ld+json">{"@graph":[{"@type":"BreadcrumbList","itemListElement":[]},{"@type":"ItemList","@id":"https://huangguoai.com/ranks/potential/#itemlist","itemListElement":[{"position":1,"name":"A & B","url":"https://huangguoai.com/detail/12/"},{"position":3,"name":"第二条","url":"https://huangguoai.com/detail/34/"}]}]}</script>`
 	result, err := parseHuangguoRanking(body, board)
 	if err != nil || len(result.Items) != 2 || result.Items[1].Rank != 3 || result.Items[0].Drama.ID != "huangguoai:https://huangguoai.com/detail/12/" || result.HasMore {
