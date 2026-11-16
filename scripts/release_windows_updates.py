@@ -59,6 +59,7 @@ def main():
             raise SystemExit('新版本目录已经存在，不覆盖、不再递增。')
         pubspec.write_bytes(raw[:m.start(1)] + version.encode('ascii') + raw[m.end(1):])
         print(f'仅递增一次至 {version}，失败后请按此版本续做，不要再次递增。', flush=True)
+        subprocess.run([sys.executable, '-B', root/'scripts/refresh_source_publications.py'], cwd=root, check=True)
         for ed in editions:
             cmd = [sys.executable, '-B', root/'scripts/build_windows.py', '--keep-publication-addresses',
                    '--license-build-config', args.public_config.resolve(), '--customer-file', args.distribution.resolve(),

@@ -1,22 +1,27 @@
 import json
+import re
 import tempfile
 import unittest
 from pathlib import Path
 
-from refresh_source_publications import DISCOVERY_ADDRESSES, PERMANENT_ADDRESSES, PUBLICATIONS, normalize_origin, parse_publication, refresh
+from refresh_source_publications import (DISCOVERY_ADDRESSES, PERMANENT_ADDRESSES,
+                                         PUBLICATIONS, PublicationRefreshError,
+                                         configured_proxy, normalize_origin,
+                                         parse_publication, refresh)
 
 
 class PublicationRefreshTests(unittest.TestCase):
-    def test_permanent_entries_and_publications_are_separate(self):
+    def test_three_publications_are_the_only_authoritative_build_sources(self):
         self.assertEqual(PERMANENT_ADDRESSES, ('https://huangguoai.com',))
         self.assertEqual(PUBLICATIONS, ('https://huangguoai.pages.dev', 'https://huang-guo.pages.dev', 'https://huangguoai.ai'))
-        self.assertEqual(len(set(DISCOVERY_ADDRESSES)), 4)
+        self.assertEqual(DISCOVERY_ADDRESSES, PUBLICATIONS)
 
     def test_normalization_excludes_credentials_downloads_and_nonpublic_origins(self):
         self.assertEqual(normalize_origin('https://Mirror.Example.org/'), 'https://mirror.example.org')
         for value in ['http://mirror.example.org', 'https://127.0.0.1', 'https://user:token@example.org',
                       'https://mirror.example.org/video/1', 'https://mirror.example.org/?token=x',
-                      'https://huangguoai.pages.dev', 'https://x.com/user', 'https://host.local']:
+                      'https://huangguoai.pages.dev', 'https://huangguoai.com', 'https://x.com/user',
+                      'https://host.local']:
             self.assertIsNone(normalize_origin(value), value)
 
     def test_only_entry_links_and_data_are_parsed_without_executing_scripts(self):
@@ -47,49 +52,94 @@ class PublicationRefreshTests(unittest.TestCase):
         self.assertEqual(origins, ['https://alpha.example.org', 'https://beta.example.org'])
         self.assertEqual(parse_publication("const subdomains=['one','two']; const urls=['https://example.org/'];")[0], ['https://one.example.org', 'https://two.example.org', 'https://example.org'])
 
-    def test_refresh_appends_dates_keeps_failed_history_and_ignores_remote_scripts(self):
+    def test_refresh_replaces_stale_candidates_in_publication_order(self):
         with tempfile.TemporaryDirectory() as temporary:
             file = Path(temporary) / 'candidates.json'
-            original = {'origin': 'https://old.example.org', 'addedOn': '2026-10-23', 'addedFrom': 'user', 'failure': 'keep'}
-            file.write_text(json.dumps([original]), encoding='utf-8')
+            file.write_text(json.dumps([{'origin': 'https://old.example.org', 'addedOn': '2026-10-23', 'addedFrom': 'old'}]), encoding='utf-8')
             calls = []
 
             def fetch(url):
                 calls.append(url)
-                if url.endswith('/publish.js'):
+                if url == 'https://one.release/publish.js':
                     return '<a href="https://two.example.org">线路</a>'
-                if 'failed' in url:
-                    raise OSError('fixture unavailable')
-                return '<a href="https://one.example.org">线路</a><script src="/publish.js"></script><script src="https://outside.example.org/evil.js"></script>'
+                if url == 'https://one.release/':
+                    return '<a href="https://one.example.org">线路</a><script src="/publish.js"></script><script src="https://outside.example.org/evil.js"></script>'
+                if url == 'https://two.release/':
+                    return '<a href="https://one.example.org">重复线路</a>'
+                return '<a class="use-btn" href="https://three.example.org">使用线路</a><a href="https://ignored.example.org">其他</a>'
 
-            result = refresh(file, fetch, ['https://publication.example.org', 'https://failed.example.org'], date='2026-10-26')
+            result = refresh(file, fetch, ['https://one.release', 'https://two.release', 'https://three.release'], date='2026-10-26')
             records = json.loads(file.read_text(encoding='utf-8'))
-            self.assertEqual(records[0], original)
-            self.assertEqual(result['added'], 2)
-            self.assertEqual(records[1]['addedOn'], '2026-10-26')
+            self.assertEqual([row['origin'] for row in records], ['https://one.example.org', 'https://two.example.org', 'https://three.example.org'])
+            self.assertEqual(result['staleCandidatesReplaced'], 1)
+            self.assertFalse(result['oldRecordsRetained'])
+            self.assertTrue(result['catalogFallbackEnabled'])
             self.assertFalse(any('outside' in call for call in calls))
-            self.assertEqual(result['publications'][1]['state'], 'failed')
-            self.assertEqual(refresh(file, fetch, ['https://publication.example.org'], date='2026-10-27')['added'], 0)
 
-    def test_failed_optional_script_keeps_successful_page_links(self):
+    def test_any_failed_publication_retains_candidates_and_seed_bytes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            candidates = directory / 'candidates.json'
+            seeds = directory / 'seeds.go'
+            candidates.write_text('[{"origin":"https://old.example.org","addedOn":"2026-10-23","addedFrom":"old"}]', encoding='utf-8')
+            seeds.write_text('package core\n\nconst huangguoMirrorSeedJSON = `[]`\n\nconst huangguoPublicationSeedJSON = `[]`\n', encoding='utf-8')
+            before_candidates, before_seeds = candidates.read_bytes(), seeds.read_bytes()
+
+            def fetch(url):
+                if url.startswith('https://failed.release'):
+                    raise OSError('fixture unavailable')
+                return '<a href="https://one.example.org">线路</a>'
+
+            with self.assertRaises(PublicationRefreshError):
+                refresh(candidates, fetch, ['https://one.release', 'https://failed.release', 'https://three.release'],
+                        date='2026-10-26', mirror_seed_path=seeds)
+            self.assertEqual(candidates.read_bytes(), before_candidates)
+            self.assertEqual(seeds.read_bytes(), before_seeds)
+
+    def test_declared_script_failure_does_not_publish_partial_addresses(self):
         with tempfile.TemporaryDirectory() as temporary:
             file = Path(temporary) / 'candidates.json'
+            file.write_text('[]', encoding='utf-8')
 
             def fetch(url):
                 if url.endswith('.js'):
                     raise OSError('optional script unavailable')
                 return '<a href="https://one.example.org">线路</a><script src="/publish.js"></script>'
 
-            result = refresh(file, fetch, ['https://publication.example.org'], date='2026-10-26')
-            self.assertEqual(result['added'], 1)
-            self.assertEqual(result['publications'][0]['state'], 'partial')
+            with self.assertRaises(PublicationRefreshError):
+                refresh(file, fetch, ['https://one.release', 'https://two.release', 'https://three.release'], date='2026-10-26')
+            self.assertEqual(file.read_text(encoding='utf-8'), '[]')
+
+    def test_refresh_rebuilds_mirror_origins_and_effective_origins(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            candidates = directory / 'candidates.json'
+            seeds = directory / 'seeds.go'
+
+            def fetch(url):
+                host = url.split('/')[2].split('.')[0]
+                return f'<a href="https://{host}.example.org">线路</a>'
+
+            refresh(candidates, fetch, ['https://one.release', 'https://two.release', 'https://three.release'],
+                    date='2026-10-26', mirror_seed_path=seeds)
+            source = seeds.read_text(encoding='utf-8')
+            mirror_json = re.search(r'(?s)huangguoMirrorSeedJSON = `(\[.*?\])`', source)[1]
+            rows = json.loads(mirror_json)
+            self.assertEqual([row['origin'] for row in rows], ['https://one.example.org', 'https://two.example.org', 'https://three.example.org'])
+            self.assertTrue(all(row['origin'] == row['effectiveOrigin'] and row['state'] == 'pending' for row in rows))
+            self.assertTrue(all(not row['poster'] and not row['playback'] for row in rows))
+
+    def test_proxy_configuration_uses_http_proxy_for_https_fallback(self):
+        self.assertEqual(configured_proxy({'HTTP_PROXY': 'http://127.0.0.1:10808'}), 'http://127.0.0.1:10808')
+        self.assertEqual(configured_proxy({'HTTPS_PROXY': 'https://proxy.example:443', 'HTTP_PROXY': 'http://other'}), 'https://proxy.example:443')
+        self.assertEqual(configured_proxy({'HTTPS_PROXY': 'socks5://unsupported'}), '')
 
     def test_corrupt_candidate_file_is_retained(self):
         with tempfile.TemporaryDirectory() as temporary:
             file = Path(temporary) / 'candidates.json'
             file.write_text('{broken', encoding='utf-8')
             with self.assertRaises(ValueError):
-                refresh(file, lambda _: '', [])
+                refresh(file, lambda _: '', ['https://one.release', 'https://two.release', 'https://three.release'])
             self.assertEqual(file.read_text(encoding='utf-8'), '{broken')
 
 

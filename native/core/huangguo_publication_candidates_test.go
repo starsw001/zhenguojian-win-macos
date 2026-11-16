@@ -1,7 +1,9 @@
 package core
 
 import (
+	"context"
 	"encoding/json"
+	"net/http"
 	"testing"
 )
 
@@ -29,5 +31,32 @@ func TestBuildPublicationCandidatesArePendingAndNeverOverrideVerifiedRoutes(t *t
 		if entry.State != "pending" || usableHuangguoMirror(entry, sourceHuangguoAI) || usableHuangguoMirror(entry, sourceHuangguoVideo) {
 			t.Fatal("unverified address enabled")
 		}
+	}
+}
+
+func TestPackagedPublicationCandidatesRemainCatalogFallback(t *testing.T) {
+	previousJSON, previousPublications, previousPermanent := huangguoPublicationCandidateJSON, huangguoPublicationURLs, huangguoAIPermanentURLs
+	huangguoPublicationURLs = []string{"https://publication.example.org"}
+	huangguoAIPermanentURLs = nil
+	huangguoPublicationCandidateJSON = `[
+  {"origin":"https://packaged.example.org","addedOn":"2026-11-14","addedFrom":"https://publication.example.org"},
+  {"origin":"https://ignored.example.org","addedOn":"2026-11-14","addedFrom":"https://other.example.org"}
+]`
+	t.Cleanup(func() {
+		huangguoPublicationCandidateJSON, huangguoPublicationURLs, huangguoAIPermanentURLs = previousJSON, previousPublications, previousPermanent
+	})
+	d := sourceFixtureDownloader(t, func(request *http.Request) (*http.Response, error) {
+		if request.URL.Host == "publication.example.org" {
+			return sourceFixtureResponse(request, 502, "fixture unavailable"), nil
+		}
+		t.Fatalf("catalog fallback unexpectedly fetched %s", request.URL)
+		return nil, nil
+	})
+	session, err := d.loadHuangguoCatalogOrigins(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(session.roots) == 0 || session.roots[0] != "https://packaged.example.org" {
+		t.Fatalf("packaged latest address was not first fallback: %v", session.roots)
 	}
 }

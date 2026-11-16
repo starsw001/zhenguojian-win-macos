@@ -316,6 +316,28 @@ func (d *Downloader) saveHuangguoCatalogProbe(origin, message string) error {
 	return r.saveLocked()
 }
 
+func packagedHuangguoCatalogOrigins() []string {
+	var candidates []huangguoMirrorRecord
+	if json.Unmarshal([]byte(huangguoPublicationCandidateJSON), &candidates) != nil {
+		return nil
+	}
+	publications := map[string]bool{}
+	for _, publication := range huangguoPublicationURLs {
+		publications[publication] = true
+	}
+	seen := map[string]bool{}
+	result := []string{}
+	for _, candidate := range candidates {
+		origin := publicHuangguoOrigin(candidate.Origin)
+		if origin == "" || !publications[candidate.AddedFrom] || seen[origin] {
+			continue
+		}
+		seen[origin] = true
+		result = append(result, origin)
+	}
+	return result
+}
+
 // loadHuangguoCatalogOrigins 加载黄果目录来源列表。
 func (d *Downloader) loadHuangguoCatalogOrigins(ctx context.Context) (*huangguoCatalogSession, error) {
 	ctx = context.WithValue(ctx, providerTextNoCacheKey{}, true)
@@ -381,6 +403,7 @@ func (d *Downloader) loadHuangguoCatalogOrigins(ctx context.Context) (*huangguoC
 		}
 	}
 	roots := append([]string{}, published...)
+	roots = append(roots, packagedHuangguoCatalogOrigins()...)
 	roots = append(roots, validPermanent...)
 	d.providerMu.Lock()
 	lastOrigin := d.huangguoCatalogOrigin
