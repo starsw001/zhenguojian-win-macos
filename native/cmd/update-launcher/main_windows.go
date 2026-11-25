@@ -2,11 +2,11 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
 	"duanjuapp/native/licensing"
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -26,6 +26,135 @@ func tell(s string) {
 	p, _ := windows.UTF16PtrFromString(s)
 	title, _ := windows.UTF16PtrFromString("软件更新")
 	windows.NewLazySystemDLL("user32.dll").NewProc("MessageBoxW").Call(0, uintptr(unsafe.Pointer(p)), uintptr(unsafe.Pointer(title)), 0x40)
+}
+
+func cleanUpdateEnvironment() []string {
+	result := make([]string, 0, len(os.Environ()))
+	for _, value := range os.Environ() {
+		if !strings.HasPrefix(strings.ToUpper(value), "GUO_UPDATE_") {
+			result = append(result, value)
+		}
+	}
+	return result
+}
+
+func waitForProcessExit(pid int, timeout time.Duration) error {
+	if pid <= 0 || pid == os.Getpid() {
+		return errors.New("更新等待进程无效")
+	}
+	handle, err := windows.OpenProcess(windows.SYNCHRONIZE, false, uint32(pid))
+	if err == windows.ERROR_INVALID_PARAMETER {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer windows.CloseHandle(handle)
+	result, err := windows.WaitForSingleObject(handle, uint32(timeout.Milliseconds()))
+	if err != nil {
+		return err
+	}
+	if result != windows.WAIT_OBJECT_0 {
+		return errors.New("等待旧版本退出超时")
+	}
+	return nil
+}
+
+func verifyInstalledRoot(root string) error {
+	command := exec.Command(filepath.Join(root, edition+".exe"), "--verify-window-host")
+	command.Dir = root
+	command.Env = cleanUpdateEnvironment()
+	command.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	output, err := command.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("原目录新版启动校验失败：%s", strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+func startInstalledRoot(root string) error {
+	command := exec.Command(filepath.Join(root, edition+".exe"))
+	command.Dir = root
+	command.Env = cleanUpdateEnvironment()
+	command.SysProcAttr = &syscall.SysProcAttr{
+		CreationFlags: windows.DETACHED_PROCESS | windows.CREATE_NEW_PROCESS_GROUP,
+		HideWindow:    true,
+	}
+	if err := command.Start(); err != nil {
+		return err
+	}
+	return command.Process.Release()
+}
+
+func runSilentStagedInstall(root string) (int, error) {
+	i, err := secureupdate.Runtime(publicKey, edition)
+	if err != nil {
+		return 1, err
+	}
+	if i.ID != distributionID || os.Getenv("GUO_UPDATE_PARENT_PID") != strconv.Itoa(os.Getppid()) {
+		return 1, errors.New("静默更新启动上下文不符")
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		return 1, err
+	}
+	slot, err := i.CurrentStagedSlot(executable)
+	if err != nil || !strings.EqualFold(filepath.Dir(executable), root) {
+		return 1, errors.New("静默更新程序目录无效")
+	}
+	session := os.Getenv("GUO_UPDATE_SESSION")
+	if err = i.Ack(session); err != nil {
+		return 1, err
+	}
+	if err = i.WaitActive(slot, 15*time.Second); err != nil {
+		return 1, err
+	}
+	if err = i.StartInstaller(slot); err != nil {
+		_ = i.Commit(secureupdate.Selection{})
+		return 1, err
+	}
+	return 0, nil
+}
+
+func applyStagedUpdate(slot string) error {
+	if os.Getenv("GUO_UPDATE_TRIAL") != "1" || !secureupdate.ValidDigest(slot) {
+		return errors.New("原位更新上下文无效")
+	}
+	clientPID, err := strconv.Atoi(os.Getenv("GUO_UPDATE_INSTALL_PARENT_PID"))
+	if err != nil || clientPID != os.Getppid() {
+		return errors.New("原位更新助手的父进程不匹配")
+	}
+	supervisorPID, err := strconv.Atoi(os.Getenv("GUO_UPDATE_PARENT_PID"))
+	if err != nil || supervisorPID <= 0 || supervisorPID == clientPID {
+		return errors.New("更新监督进程无效")
+	}
+	install, err := secureupdate.Runtime(publicKey, edition)
+	if err != nil {
+		return err
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	current, err := install.CurrentStagedSlot(executable)
+	if err != nil || current != slot || install.Selection().Active != slot {
+		return errors.New("试启动确认与待覆盖版本不一致")
+	}
+	if err = waitForProcessExit(clientPID, 60*time.Second); err != nil {
+		return err
+	}
+	if err = waitForProcessExit(supervisorPID, 60*time.Second); err != nil {
+		return err
+	}
+	_, err = install.ApplyStaged(slot, verifyInstalledRoot)
+	if err != nil {
+		_ = install.Commit(secureupdate.Selection{})
+		if restartErr := startInstalledRoot(install.Root); restartErr != nil {
+			return fmt.Errorf("%v；旧版重新启动失败：%w", err, restartErr)
+		}
+		return err
+	}
+	return startInstalledRoot(install.Root)
 }
 
 // runWindow 从指定版本目录启动客户端窗口，并返回其退出状态。
@@ -94,6 +223,9 @@ func launch(check bool) (int, error) {
 	root := filepath.Dir(exe)
 	if os.Getenv("GUO_UPDATE_PARENT_PID") == strconv.Itoa(os.Getppid()) &&
 		secureupdate.ValidToken(os.Getenv("GUO_UPDATE_SESSION")) {
+		if !check && os.Getenv("GUO_UPDATE_TRIAL") == "1" {
+			return runSilentStagedInstall(root)
+		}
 		return runWindow(root, check)
 	}
 	i, err := secureupdate.Locate(root, edition, distributionID, publicKey, version)
@@ -111,19 +243,33 @@ func launch(check bool) (int, error) {
 		}
 		return <-child.Done(), nil
 	}
-	hash := sha256.Sum256([]byte(strings.ToLower(root) + "|" + edition))
-	name, _ := windows.UTF16PtrFromString(fmt.Sprintf("Local\\GuoApp-Launch-%x", hash[:16]))
-	h, err := windows.CreateMutex(nil, false, name)
+	go func() {
+		for attempt := 0; attempt < 30; attempt++ {
+			if i.Selection().Active != "" || i.PruneStaged("") == nil {
+				return
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+	}()
+	h, alreadyRunning, err := acquireProductLaunchMutex(productInstanceKey())
 	if h != 0 {
 		defer windows.CloseHandle(h)
 	}
-	if err == windows.ERROR_ALREADY_EXISTS {
-		tell("软件已在运行，请使用已经打开的窗口。")
+	if alreadyRunning {
+		processes, _ := productProcesses(root, true)
+		tell(runningProductMessage(newestProcessVersion(processes)))
 		return 0, nil
 	}
 	if err != nil {
 		return 1, errors.New("无法取得启动锁")
 	}
+	if processes, processErr := productProcesses(root, false); processErr == nil && len(processes) > 0 {
+		tell(runningProductMessage(newestProcessVersion(processes)))
+		return 0, nil
+	}
+	guardStop := make(chan struct{})
+	go guardLegacyInstances(root, guardStop, tell)
+	defer close(guardStop)
 	if err = i.Supervise(i.Start(os.Args[1:]), 120*time.Second, tell); err != nil {
 		return 1, err
 	}
@@ -162,6 +308,13 @@ func checkReleaseChannel() error {
 
 // main 启动 Windows 更新启动器，并处理启动失败提示。
 func main() {
+	if len(os.Args) == 3 && os.Args[1] == "--apply-staged-update" {
+		if err := applyStagedUpdate(os.Args[2]); err != nil {
+			tell("更新未能覆盖到原安装目录，旧版文件和用户下载已保留：" + err.Error())
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) == 2 && os.Args[1] == "--check-release-channel" {
 		if err := checkReleaseChannel(); err != nil {
 			fmt.Fprintln(os.Stderr, err)

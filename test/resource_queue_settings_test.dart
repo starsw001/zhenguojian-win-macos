@@ -90,8 +90,47 @@ void main() {
     expect(settings.downloadSourceConcurrency, 1);
     expect(settings.downloadBySource, isTrue);
     expect(settings.proxyMode, 'direct');
+    expect(settings.hongguoProxyMode, 'auto');
     expect(settings.toJson()['downloadSourceConcurrency'], 1);
+    expect(settings.toJson()['hongguoProxyMode'], 'auto');
+    for (final old in ['direct', 'system']) {
+      expect(
+        ResourceSettings.fromJson({'hongguoProxyMode': old}).hongguoProxyMode,
+        'auto',
+      );
+    }
   });
+
+  testWidgets(
+    'Hongguo network defaults to direct-first and saves strict direct',
+    (tester) async {
+      tester.view.physicalSize = const Size(1000, 1600);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      SharedPreferences.setMockInitialValues({});
+      final store = LocalStore(await SharedPreferences.getInstance());
+      addTearDown(store.dispose);
+      final repository = QueueSettingsRepository();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: ResourceSettingsScreen(repository: repository, store: store),
+        ),
+      );
+      await tester.pumpAndSettle();
+      final control = find.byKey(const ValueKey('hongguo-proxy-mode'));
+      expect(control, findsOneWidget);
+      expect(tester.widget<SegmentedButton<String>>(control).selected, const {
+        'auto',
+      });
+      await tester.tap(find.text('仅直连'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('保存'));
+      await tester.pumpAndSettle();
+      expect(repository.saved!.hongguoProxyMode, 'directOnly');
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
 
   testWidgets(
     'download controls offer1-10 and persist per-source cap with total',

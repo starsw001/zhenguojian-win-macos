@@ -165,6 +165,66 @@ func (i Install) Supervise(start StartChild, timeout time.Duration, notice func(
 	}
 }
 
+func (i Install) CurrentStagedSlot(executable string) (string, error) {
+	directory := filepath.Clean(filepath.Dir(executable))
+	name := filepath.Base(filepath.Dir(directory))
+	slot := strings.TrimPrefix(name, "slot-")
+	if name == slot || !ValidDigest(slot) {
+		return "", errors.New("当前程序不在签名更新槽位中")
+	}
+	valid, _, err := i.Slot(slot)
+	if err != nil || !samePath(valid, directory) {
+		return "", errors.New("当前更新槽位未通过验证")
+	}
+	return slot, nil
+}
+
+func (i Install) WaitActive(slot string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if i.Selection().Active == slot {
+			return nil
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return errors.New("更新监督进程未确认新版本")
+}
+
+func (i Install) PruneStaged(keep string) error {
+	entries, err := os.ReadDir(i.Cache)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if active := i.Selection().Active; active != "" {
+		keep = active
+	}
+	var first error
+	for _, entry := range entries {
+		name := entry.Name()
+		digest := strings.TrimPrefix(name, "slot-")
+		if name == digest || !ValidDigest(digest) || digest == keep {
+			continue
+		}
+		path := filepath.Join(i.Cache, name)
+		if entry.Type()&os.ModeSymlink != 0 || !entry.IsDir() {
+			if first == nil {
+				first = errors.New("更新缓存包含无效槽位")
+			}
+			continue
+		}
+		if err = NoLinks(path); err == nil {
+			err = os.RemoveAll(path)
+		}
+		if err != nil && first == nil {
+			first = err
+		}
+	}
+	return first
+}
+
 type childProcess struct {
 	cmd  *exec.Cmd
 	done chan int

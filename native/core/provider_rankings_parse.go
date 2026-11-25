@@ -18,17 +18,22 @@ var errHongguoRankingFormat = errors.New("红果榜单格式或分页已变化�
 type hongguoRankingContent struct {
 	Success bool `json:"isSuccess"`
 	Rows    []struct {
-		ID           string   `json:"id"`
-		SeriesID     string   `json:"seriesId"`
-		Rank         int      `json:"rank"`
-		Title        string   `json:"title"`
-		Heat         string   `json:"heatText"`
-		Score        string   `json:"scoreText"`
-		Tags         []string `json:"tags"`
-		Description  string   `json:"description"`
-		EpisodeIDs   []string `json:"episodeVids"`
-		EpisodeCount int      `json:"episodeCount"`
-		Cover        any      `json:"cover"`
+		PrimaryMetricText   string   `json:"primaryMetricText"`
+		ReservationOnly     bool     `json:"reservationOnly"`
+		SubscribeText       string   `json:"subscribeText"`
+		FavoriteText        string   `json:"favoriteText"`
+		ExpectedPublishText string   `json:"expectedPublishText"`
+		ID                  string   `json:"id"`
+		SeriesID            string   `json:"seriesId"`
+		Rank                int      `json:"rank"`
+		Title               string   `json:"title"`
+		Heat                string   `json:"heatText"`
+		Score               string   `json:"scoreText"`
+		Tags                []string `json:"tags"`
+		Description         string   `json:"description"`
+		EpisodeIDs          []string `json:"episodeVids"`
+		EpisodeCount        int      `json:"episodeCount"`
+		Cover               any      `json:"cover"`
 	} `json:"rankList"`
 	Pagination struct {
 		Page       int `json:"pageNum"`
@@ -96,7 +101,17 @@ func parseHongguoRanking(body string, board rankingBoard, page int) (rankingPage
 		if row.EpisodeCount > 0 && row.EpisodeCount <= 1000000 {
 			drama.TotalEpisode = row.EpisodeCount
 		}
-		result.Items = append(result.Items, rankingItem{Rank: row.Rank, Drama: drama, Metric: row.Heat})
+		metric := firstNonEmpty(row.PrimaryMetricText, row.Heat)
+		status := []string{}
+		for _, value := range []string{row.ExpectedPublishText, row.SubscribeText, row.FavoriteText} {
+			if value != "" && !strings.Contains(metric, value) {
+				status = append(status, value)
+			}
+		}
+		if row.Score != "" && !strings.Contains(metric, strings.TrimPrefix(row.Score, "评分")) {
+			status = append(status, "评分"+strings.TrimPrefix(row.Score, "评分"))
+		}
+		result.Items = append(result.Items, rankingItem{Rank: row.Rank, Drama: drama, Metric: metric, Status: strings.Join(status, " · "), ReservationOnly: row.ReservationOnly})
 	}
 	if len(result.Items) == 0 && result.HasMore {
 		return rankingPage{}, failure

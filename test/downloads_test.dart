@@ -328,10 +328,89 @@ void main() {
           find.text(added == 0 ? '所选集数已在下载列表中' : '已加入 2 集，已有任务自动跳过'),
           findsOneWidget,
         );
+        final view = find.byKey(const ValueKey('download-notice-view'));
+        final close = find.byKey(const ValueKey('download-notice-close'));
+        expect(view, findsOneWidget);
+        expect(close, findsOneWidget);
+        expect(tester.getCenter(view).dx, lessThan(tester.getCenter(close).dx));
+        if (added > 0) {
+          await tester.tap(close);
+          await tester.pumpAndSettle();
+          expect(find.text('已加入 2 集，已有任务自动跳过'), findsNothing);
+        } else {
+          await tester.pump(const Duration(seconds: 9));
+          expect(find.text('所选集数已在下载列表中'), findsOneWidget);
+          await tester.pump(const Duration(seconds: 2));
+          await tester.pumpAndSettle();
+          expect(find.text('所选集数已在下载列表中'), findsNothing);
+        }
         expect(tester.takeException(), isNull);
       },
     );
   }
+
+  testWidgets(
+    'downloaded playback expands to all episodes when switching online',
+    (tester) async {
+      size(tester, const Size(1280, 720));
+      final repository = DownloadRepository();
+      repository.jobs = [repository.job(2, 'completed')];
+      final store = await makeStore();
+      final player = ScriptedPlayer();
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: ThemeData.dark(),
+          home: DownloadsScreen(
+            repository: repository,
+            store: store,
+            playerBuilder: (detail, index, position) => PlayerScreen(
+              detail: detail,
+              initialIndex: index,
+              initialPosition: position,
+              repository: repository,
+              store: store,
+              localOnly: true,
+              playerFactory: () => Player(platformPlayer: player),
+              videoBuilder: (controls) => controls,
+            ),
+          ),
+        ),
+      );
+      await tick(tester);
+      await tester.tap(find.text('测试短剧'));
+      await tick(tester);
+      await tester.tap(
+        find.descendant(
+          of: find.byKey(const ValueKey('download-task-2')),
+          matching: find.byType(ListTile),
+        ),
+      );
+      await tick(tester);
+      expect(find.text('选集 · 1 集'), findsOneWidget);
+      expect(find.byKey(const ValueKey('play-episode-2')), findsOneWidget);
+      expect(find.byKey(const ValueKey('play-episode-1')), findsNothing);
+      expect(repository.detailCalls, 0);
+      expect(repository.localCalls, 1);
+      await tester.tap(find.byKey(const ValueKey('playback-switch-online')));
+      await tick(tester);
+      expect(repository.detailCalls, 1);
+      expect(repository.onlineCalls, 1);
+      expect(find.text('选集 · 3 集'), findsOneWidget);
+      expect(find.byKey(const ValueKey('play-episode-1')), findsOneWidget);
+      expect(find.byKey(const ValueKey('play-episode-2')), findsOneWidget);
+      expect(find.byKey(const ValueKey('play-episode-3')), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('play-episode-3')));
+      await tick(tester);
+      expect(repository.onlineCalls, 2);
+      expect(repository.localCalls, 1);
+      expect(player.opened.last.uri, contains('online.mp4'));
+      expect(find.byKey(const ValueKey('playback-switch-local')), findsNothing);
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tick(tester);
+      expect(player.disposed, isTrue);
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets('mobile player moves download and follow into tabs', (
     tester,
@@ -566,8 +645,11 @@ void main() {
         expect(player.opened.last.start, const Duration(seconds: 28));
         await tester.tap(find.byTooltip('下一集').last);
         await tick(tester);
-        expect(player.opened.last.uri, contains('local.mp4'));
-        expect(repository.onlineCalls, 1);
+        expect(
+          player.opened.last.uri,
+          contains(localOnly ? 'online.mp4' : 'local.mp4'),
+        );
+        expect(repository.onlineCalls, localOnly ? 2 : 1);
         await tester.pumpWidget(const SizedBox.shrink());
         await tick(tester);
         expect(player.disposed, isTrue);

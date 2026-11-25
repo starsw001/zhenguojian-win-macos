@@ -165,6 +165,13 @@ abstract class AppRepository {
   Future<List<CatalogCategory>> cachedCategories(String source) async =>
       const [];
   bool get supportsSourceManagement => false;
+  Future<Map<String, dynamic>> sourceAccount(
+    String source,
+    String command, {
+    Map<String, dynamic>? session,
+  }) async => command == 'status'
+      ? {'authenticated': false, 'persistent': false}
+      : throw AppFailure('当前环境不支持站源账号登录');
   bool get supportsRealSourcePlayback => false;
   Future<SourceStatus> sourceStatus(String source) async =>
       SourceStatus.fromJson({'source': source});
@@ -598,6 +605,18 @@ class NativeRepository extends AppRepository {
       );
 
   @override
+  Future<Map<String, dynamic>> sourceAccount(
+    String source,
+    String command, {
+    Map<String, dynamic>? session,
+  }) async => _call({
+    'action': 'sourceAccount',
+    'source': source,
+    'command': command,
+    'sourceAuth': ?session,
+  });
+
+  @override
   Future<SourceStatus> saveSourceHealth(
     String source,
     Map<String, dynamic> health,
@@ -752,6 +771,7 @@ class NativeRepository extends AppRepository {
         'sourceJob',
         'cancelSourceJob',
         'saveSourceHealth',
+        'sourceAccount',
       }.contains(action)) {
         final source = input['source'] as String;
         if (!(action == 'sourceStatus' &&
@@ -1038,7 +1058,9 @@ class NativeRepository extends AppRepository {
       'drama': detail.drama.toJson(),
       'quality': quality,
       'preferredRoute': preferredRoute,
-      'session': preferredRoute > 0 ? playback?.session ?? '' : '',
+      'session': preferredRoute > 0 || detail.drama.source == 'hongguo'
+          ? playback?.session ?? ''
+          : '',
       'entries': episodes
           .map((episode) => {'chapter': episode.raw, 'index': episode.number})
           .toList(),

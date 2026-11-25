@@ -1,6 +1,7 @@
 package core
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -27,9 +28,19 @@ func TestProbeRegression(t *testing.T) {
 	entry, err := d.searchHongguoDramasProgress(ctx, "霸总", nil)
 	fmt.Printf("SEARCH err=%v items=%d\n", err, len(entry.Dramas))
 
-	media, err := d.resolveHongguoMultiMedia(ctx, "7503780574541122622")
+	media, err := d.resolveHongguoMediaRoutes(ctx, 1, "7503745441910017049", "7503780574541122622")
 	if err == nil {
 		fmt.Printf("PLAYBACK OK key=%v\n", media.CENCKey != nil)
+		body, probeErr := d.sourceProbeBytes(providerMediaContext(ctx, media.credentials), media.URL, media.Referer, false)
+		if probeErr != nil {
+			fmt.Printf("MEDIA RANGE ERR %v\n", probeErr)
+			t.Fatal(probeErr)
+		}
+		mp4Header := bytes.Contains(body, []byte("ftyp"))
+		fmt.Printf("MEDIA RANGE OK bytes=%d mp4=%v duration_ms=%d quality=%d\n", len(body), mp4Header, media.Duration.Milliseconds(), media.Quality)
+		if !mp4Header {
+			t.Fatal("media range response is not MP4")
+		}
 	} else {
 		fmt.Printf("PLAYBACK ERR %v\n", err)
 	}

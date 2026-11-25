@@ -30,16 +30,19 @@ type nativeStreamAsset struct {
 }
 
 type nativeStreamSession struct {
-	credentials *providerMediaCredentials
-	mu          sync.Mutex
-	assets      map[string]nativeStreamAsset
-	referer     string
-	key         []byte
-	ctx         context.Context
-	cancel      context.CancelFunc
-	lastUsed    time.Time
-	guardAccess bool
-	accessError error
+	hongguoPath  *hongguoStreamPath
+	credentials  *providerMediaCredentials
+	routeHost    string
+	routeAddress string
+	mu           sync.Mutex
+	assets       map[string]nativeStreamAsset
+	referer      string
+	key          []byte
+	ctx          context.Context
+	cancel       context.CancelFunc
+	lastUsed     time.Time
+	guardAccess  bool
+	accessError  error
 }
 
 type nativeStreamServer struct {
@@ -116,13 +119,25 @@ func (stream *nativeStreamServer) nativeOpen(media providerMedia) (string, strin
 
 // nativeOpenWithAccessGuard 打开原生包含访问Guard。
 func (stream *nativeStreamServer) nativeOpenWithAccessGuard(media providerMedia, guardAccess bool) (string, string) {
+	return stream.nativeOpenSourceStream(media, guardAccess, "")
+}
+
+func (stream *nativeStreamServer) nativeOpenSourceStream(media providerMedia, guardAccess bool, source string) (string, string) {
 	tokenBytes := make([]byte, 24)
 	if _, err := rand.Read(tokenBytes); err != nil {
 		panic(err)
 	}
 	token := hex.EncodeToString(tokenBytes)
-	ctx, cancel := context.WithCancel(providerMediaContext(context.Background(), media.credentials))
-	session := &nativeStreamSession{assets: map[string]nativeStreamAsset{}, referer: media.Referer, key: media.HLSKey, ctx: ctx, cancel: cancel, lastUsed: time.Now(), credentials: media.credentials, guardAccess: guardAccess}
+	ctx := providerMediaRequestContext(context.Background(), media)
+	ctx, cancel := context.WithCancel(ctx)
+	routeHost := ""
+	if parsed, err := url.Parse(media.URL); err == nil {
+		routeHost = parsed.Hostname()
+	}
+	session := &nativeStreamSession{assets: map[string]nativeStreamAsset{}, referer: media.Referer, key: media.HLSKey, ctx: ctx, cancel: cancel, lastUsed: time.Now(), credentials: media.credentials, routeHost: routeHost, routeAddress: media.routeAddress, guardAccess: guardAccess}
+	if source == sourceHongguo {
+		session.hongguoPath = &hongguoStreamPath{address: media.URL}
+	}
 	stream.mu.Lock()
 	for id, old := range stream.sessions {
 		if time.Since(old.lastUsed) > 10*time.Minute {
@@ -301,8 +316,15 @@ func (stream *nativeStreamServer) nativeServe(writer http.ResponseWriter, reques
 		http.NotFound(writer, request)
 		return
 	}
-	ctx, cancel := context.WithCancel(providerMediaContext(request.Context(), session.credentials))
+	ctx := providerMediaContext(request.Context(), session.credentials)
+	if session.routeAddress != "" {
+		ctx = cdnRouteContext(ctx, session.routeHost, session.routeAddress)
+	}
+	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	if session.hongguoPath != nil && asset.address == session.hongguoPath.address {
+		ctx = context.WithValue(ctx, hongguoStreamPathKey{}, session.hongguoPath)
+	}
 	stop := context.AfterFunc(session.ctx, cancel)
 	defer stop()
 	writer.Header().Set("Cache-Control", "no-store")
@@ -380,6 +402,12 @@ func (stream *nativeStreamServer) nativeServe(writer http.ResponseWriter, reques
 		if err := session.observeRouteAccess(response, peek); err != nil {
 			http.Error(writer, err.Error(), http.StatusForbidden)
 			return
+		}
+		if session.hongguoPath != nil && response.Request != nil && response.Request.URL.String() == session.hongguoPath.address &&
+			len(peek) >= 8 && (bytes.Equal(peek[4:8], []byte("ftyp")) || bytes.Equal(peek[4:8], []byte("styp"))) {
+			if proxy, ok := response.Request.Context().Value(hongguoFallbackProxyKey{}).(*url.URL); ok && proxy != nil {
+				session.hongguoPath.proxy.Store(proxy)
+			}
 		}
 		if strings.HasPrefix(strings.TrimSpace(strings.TrimPrefix(string(peek), "\ufeff")), "#EXTM3U") {
 			playlist = true

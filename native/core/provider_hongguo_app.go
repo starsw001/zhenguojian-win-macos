@@ -186,17 +186,27 @@ func hongguoAppQuery(deviceID, installID string) url.Values {
 // hongguoAppRequest 向红果 App 接口发送请求并读取响应。
 func (downloader *Downloader) hongguoAppRequest(ctx context.Context, method, path string, extra url.Values, payload any) (map[string]any, error) {
 	client := downloader.hongguoClient()
-	if method == http.MethodPost && path == hongguoVideoModelPath {
+	playbackRead := method == http.MethodPost && path == hongguoVideoModelPath
+	var playbackDevice hongguoPlaybackDevice
+	if playbackRead {
 		ctx = context.WithValue(ctx, hongguoMetadataReadKey{}, true)
+		var err error
+		playbackDevice, err = downloader.hongguoPlaybackDevice(ctx)
+		if err != nil {
+			return nil, err
+		}
 	}
 	comment, _ := ctx.Value(hongguoCommentKey{}).(bool)
 	signed := !comment && path != hongguoBookmallTabPath
-	if signed {
+	if signed && !playbackRead {
 		_ = downloader.ensureHongguoDevice(ctx, "")
 	}
 	client.mu.Lock()
 	base, deviceID, installID := client.baseURL, client.state.DeviceID, client.state.InstallID
 	client.mu.Unlock()
+	if playbackRead {
+		deviceID, installID = playbackDevice.DeviceID, playbackDevice.InstallID
+	}
 	query := hongguoAppQuery(deviceID, installID)
 	for key, values := range extra {
 		query[key] = append([]string(nil), values...)
@@ -215,6 +225,9 @@ func (downloader *Downloader) hongguoAppRequest(ctx context.Context, method, pat
 	}
 	if attempts > 3 {
 		attempts = 3
+	}
+	if playbackRead {
+		attempts = 1
 	}
 	var lastErr error
 	rotations := 0
@@ -275,6 +288,9 @@ func (downloader *Downloader) hongguoAppRequest(ctx context.Context, method, pat
 		content, readErr := io.ReadAll(io.LimitReader(response.Body, providerMaxBodyBytes+1))
 		response.Body.Close()
 		client.hongguoAppGateRelease()
+		if playbackRead && (nativeMediaAccessStopsSwitch(response, content) || response.StatusCode == http.StatusPaymentRequired || response.Header.Get("Retry-After") != "") {
+			return nil, fmt.Errorf("%w：红果播放接口 HTTP %d，源站要求暂停或授权", errNativeMediaAccessStop, response.StatusCode)
+		}
 		if readErr != nil {
 			lastErr = readErr
 			continue
@@ -285,6 +301,9 @@ func (downloader *Downloader) hongguoAppRequest(ctx context.Context, method, pat
 				return nil, lastErr
 			}
 			continue
+		}
+		if playbackRead && len(bytes.TrimSpace(content)) == 0 {
+			return nil, errHongguoEmptyPrimaryPlayback
 		}
 		if len(content) == 0 {
 			lastErr = errors.New("红果 App 接口未返回有效数据")
@@ -310,6 +329,9 @@ func (downloader *Downloader) hongguoAppRequest(ctx context.Context, method, pat
 		}
 		code := firstNonEmpty(mapString(result, "code", "Code", "status_code"), mapString(nestedMap(result, "BaseResp"), "StatusCode"))
 		if code != "" && code != "0" {
+			if playbackRead {
+				return nil, &hongguoPlaybackResponseError{"红果播放接口未授权或未提供本集（" + truncate(code, 20) + "）"}
+			}
 			return nil, fmt.Errorf("红果 App 接口暂不可用（%s）", truncate(code, 20))
 		}
 		return result, nil

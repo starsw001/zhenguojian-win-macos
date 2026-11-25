@@ -314,7 +314,7 @@ func (client *yeguoAPIClient) do(ctx context.Context, request *http.Request, tim
 }
 
 // yeguoAPIBase 取得页面或配置声明的 API 基础地址。
-func yeguoAPIBase(document *html.Node, configured string) (string, error) {
+func yeguoAPIBase(document *html.Node, configured, pageURL string) (string, error) {
 	base := strings.TrimRight(configured, "/")
 	if base == "" {
 		for _, node := range providerHTMLNodes(document, func(node *html.Node) bool {
@@ -340,6 +340,15 @@ func yeguoAPIBase(document *html.Node, configured string) (string, error) {
 					break
 				}
 			}
+		}
+	}
+	if base == "" && validYeguoSite(pageURL) != "" {
+		if page, err := url.Parse(pageURL); err == nil {
+			page.Path = "/api.php"
+			page.RawPath = ""
+			page.RawQuery = ""
+			page.Fragment = ""
+			base = page.String()
 		}
 	}
 	address, err := url.Parse(base)
@@ -440,7 +449,7 @@ func (client *yeguoAPIClient) discoverConfigurationAt(ctx context.Context, site 
 	if err != nil {
 		return nil, err
 	}
-	apiBase, err := yeguoAPIBase(document, d.cfg.YeguoAPIURL)
+	apiBase, err := yeguoAPIBase(document, d.cfg.YeguoAPIURL, pageURL)
 	if err != nil {
 		return nil, err
 	}

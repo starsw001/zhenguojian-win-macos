@@ -40,7 +40,7 @@ type nativeDownloadFileState struct {
 
 // transferMedia 返回传输媒体。
 func (manager *nativeDownloads) transferMedia(ctx context.Context, job nativeDownloadJob, media providerMedia) (nativeDownloadResult, error) {
-	ctx = providerMediaContext(ctx, media.credentials)
+	ctx = providerMediaRequestContext(ctx, media)
 	source := sourceFromDramaID(job.Drama.ID)
 	ctx = context.WithValue(ctx, nativeDownloadSourceKey{}, source)
 	bundle := nativeDownloadBundle{quality: media.Quality, playlists: map[string][]byte{}}

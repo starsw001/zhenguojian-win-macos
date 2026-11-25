@@ -42,10 +42,11 @@ type diagnosticEvent struct {
 }
 
 type diagnosticLog struct {
-	mu          sync.Mutex
-	path        string
-	limit       int64
-	warningOnce sync.Once
+	mu                     sync.Mutex
+	path                   string
+	limit                  int64
+	warningOnce            sync.Once
+	sourceAddressSnapshots map[string]string
 }
 
 // newDiagnosticLog 创建诊断日志。
@@ -58,6 +59,7 @@ func (log *diagnosticLog) setDirectory(directory string) {
 	log.mu.Lock()
 	defer log.mu.Unlock()
 	log.path = filepath.Join(directory, "app.log")
+	log.sourceAddressSnapshots = nil
 }
 
 // filePath 取得诊断日志使用的文件路径。

@@ -49,7 +49,11 @@ func (stream *nativeStreamServer) nativePrefetch(ctx context.Context, token, ent
 	if session == nil {
 		return 0
 	}
-	ctx, cancel := context.WithCancel(providerMediaContext(ctx, session.credentials))
+	ctx = providerMediaContext(ctx, session.credentials)
+	if session.routeAddress != "" {
+		ctx = cdnRouteContext(ctx, session.routeHost, session.routeAddress)
+	}
+	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	stop := context.AfterFunc(session.ctx, cancel)
 	defer stop()

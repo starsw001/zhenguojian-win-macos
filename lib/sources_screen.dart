@@ -8,9 +8,11 @@ import 'package:media_kit_video/media_kit_video.dart';
 import 'core_bridge.dart';
 import 'local_store.dart';
 import 'models.dart';
+import 'piguo_access_screen.dart';
 import 'source_status.dart';
 import 'source_intervention.dart';
 import 'source_playback_check.dart';
+import 'sorani_login_screen.dart';
 
 String sourceTimestamp(DateTime? value) {
   if (value == null) return '尚无记录';
@@ -52,7 +54,11 @@ class HuangguoMirrorsPanel extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  _HuangguoMirrorEntry(item: item, source: status.source),
+                  _HuangguoMirrorEntry(
+                    item: item,
+                    source: status.source,
+                    label: '线路 ${unique.indexOf(item) + 1}',
+                  ),
                   if (aliases[item.origin]?.isNotEmpty == true)
                     ExpansionTile(
                       key: PageStorageKey(
@@ -66,6 +72,8 @@ class HuangguoMirrorsPanel extends StatelessWidget {
                             child: _HuangguoMirrorEntry(
                               item: alias,
                               source: status.source,
+                              label:
+                                  '重复线路 ${aliases[item.origin]!.indexOf(alias) + 1}',
                             ),
                           ),
                       ],
@@ -83,14 +91,10 @@ class HuangguoMirrorsPanel extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  SelectableText(
-                    publication.url,
-                    key: PageStorageKey(
-                      'mirror-publication-${status.source}-${publication.url}',
-                    ),
+                  Text(
+                    '${publication.kindLabel} ${status.mirrorPublications.indexOf(publication) + 1}',
                   ),
-                  Text(publication.kindLabel),
-                  Text(publication.message),
+                  Text(sourceProgressText(publication.message)),
                   Text('读取：${sourceTimestamp(publication.checkedAt)}'),
                 ],
               ),
@@ -102,9 +106,13 @@ class HuangguoMirrorsPanel extends StatelessWidget {
 }
 
 class _HuangguoMirrorEntry extends StatelessWidget {
-  const _HuangguoMirrorEntry({required this.item, required this.source});
+  const _HuangguoMirrorEntry({
+    required this.item,
+    required this.source,
+    required this.label,
+  });
   final SourceMirror item;
-  final String source;
+  final String source, label;
 
   @override
   Widget build(BuildContext context) => Align(
@@ -112,26 +120,22 @@ class _HuangguoMirrorEntry extends StatelessWidget {
     child: Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        SelectableText(
-          item.origin,
-          key: PageStorageKey('mirror-address-$source-${item.origin}'),
-        ),
+        Text(label),
         Text('${item.kindLabel} · ${item.label}'),
-        Text('加入日期：${item.addedOn} · ${item.addedFrom}'),
+        Text('加入日期：${item.addedOn}'),
         Text(
           '海报：${item.poster ? "通过" : "未通过"} · '
           '浏览：${item.browse ? "通过" : "未通过"} · '
           '选集：${item.selection ? "通过" : "未通过"} · '
           '实播：${item.playback ? "通过" : "未通过"}',
         ),
-        if (item.posterMessage.isNotEmpty) Text(item.posterMessage),
-        if (item.effectiveOrigin.isNotEmpty &&
-            item.effectiveOrigin != item.origin)
-          Text('实际落点：${item.effectiveOrigin}'),
-        Text(item.message),
-        if (item.catalogMessage.isNotEmpty) Text('目录检查：${item.catalogMessage}'),
+        if (item.posterMessage.isNotEmpty)
+          Text(sourceProgressText(item.posterMessage)),
+        Text(sourceProgressText(item.message)),
+        if (item.catalogMessage.isNotEmpty)
+          Text(sourceProgressText('目录检查：${item.catalogMessage}')),
         if (item.lastError.isNotEmpty && item.lastError != item.message)
-          Text('上次失败：${item.lastError}'),
+          Text(sourceProgressText('上次失败：${item.lastError}')),
         Text('检查：${sourceTimestamp(item.checkedAt)}'),
       ],
     ),
@@ -158,6 +162,8 @@ class SourcesScreen extends StatefulWidget {
 
 class _SourcesScreenState extends State<SourcesScreen> {
   final _statuses = <String, SourceStatus>{};
+  Map<String, dynamic>? _soraniAccount;
+  Map<String, dynamic>? _piguoAccess;
   final _errors = <String, String>{};
   final _pending = <String>{};
   final _revisions = <String, int>{};
@@ -212,6 +218,11 @@ class _SourcesScreenState extends State<SourcesScreen> {
             final revision = _revisions[source.id] ?? 0;
             try {
               final status = await widget.repository.sourceStatus(source.id);
+              final account =
+                  const {'sorani', 'piguo'}.contains(source.id) &&
+                      widget.store.allowsSource(source.id)
+                  ? await widget.repository.sourceAccount(source.id, 'status')
+                  : null;
               if (!mounted ||
                   epoch != widget.store.profileEpoch ||
                   revision != (_revisions[source.id] ?? 0)) {
@@ -219,6 +230,12 @@ class _SourcesScreenState extends State<SourcesScreen> {
               }
               setState(() {
                 _statuses[source.id] = status;
+                if (source.id == 'sorani' && account != null) {
+                  _soraniAccount = account;
+                }
+                if (source.id == 'piguo' && account != null) {
+                  _piguoAccess = account;
+                }
                 _errors.remove(source.id);
               });
               if (SourceIntervention(status).required &&
@@ -261,11 +278,18 @@ class _SourcesScreenState extends State<SourcesScreen> {
     _interventionOpen = true;
     _interventionsShown.add(fingerprint);
     try {
-      final resume = await showSourceIntervention(
-        context,
-        name: source.name,
-        status: status,
-      );
+      final resume =
+          source.id == 'piguo' && !SourceIntervention(status).rateLimited
+          ? await openPiguoAccess(
+              context,
+              repository: widget.repository,
+              store: widget.store,
+            )
+          : await showSourceIntervention(
+              context,
+              name: source.name,
+              status: status,
+            );
       if (!resume || !mounted) return;
       final operation = switch (status.operation) {
         'more' || 'metadata' || 'vipMetadata' => status.operation,
@@ -375,9 +399,7 @@ class _SourcesScreenState extends State<SourcesScreen> {
       if (health.sample.isNotEmpty) text.writeln('检测剧集：${health.sample}');
       for (final step in health.steps) {
         text.writeln('${step.name}：${step.message}');
-        text.writeln(
-          '${step.host} HTTP ${step.httpStatus} · ${step.elapsedMs} ms',
-        );
+        text.writeln('HTTP ${step.httpStatus} · ${step.elapsedMs} ms');
         if (step.cfRay.isNotEmpty) text.writeln('CF Ray: ${step.cfRay}');
       }
     }
@@ -404,7 +426,9 @@ class _SourcesScreenState extends State<SourcesScreen> {
     }
     if (status.error.isNotEmpty) text.writeln(status.error);
     if (status.storageError.isNotEmpty) text.writeln(status.storageError);
-    await Clipboard.setData(ClipboardData(text: text.toString()));
+    await Clipboard.setData(
+      ClipboardData(text: sourceProgressText(text.toString())),
+    );
     if (mounted) {
       ScaffoldMessenger.of(
         context,
@@ -441,7 +465,7 @@ class _SourcesScreenState extends State<SourcesScreen> {
                   const Padding(
                     padding: EdgeInsets.only(bottom: 16),
                     child: Text(
-                      '保留全部站源及失败记录；更多操作可隐藏或取消隐藏，按当前用户保存，不删除数据或改变权限。未解锁站源仍需授权。Windows 检测会联网读取目录、搜索、选集并短暂实播，不写观看历史；离开此页停止实播。',
+                      '线路地址仅记入 logs/app.log，实际日志位置可在设置 → 网络与资源中查看。保留全部站源及失败记录；更多操作可隐藏或取消隐藏，按当前用户保存，不删除数据或改变权限。未解锁站源仍需授权。Windows 检测会联网读取目录、搜索、选集并短暂实播，不写观看历史；离开此页停止实播。',
                     ),
                   ),
                   if (sources.isEmpty)
@@ -470,7 +494,15 @@ class _SourcesScreenState extends State<SourcesScreen> {
         widget.repository.supportsSourceManagement &&
         widget.store.allowsSource(source.id) &&
         _playbackCheck == null;
-    final error = sourceProgressText(_errors[source.id] ?? status?.error ?? '');
+    final rawError = _errors[source.id] ?? status?.error ?? '';
+    final error = sourceProgressText(
+      source.id == 'sorani'
+          ? soraniSourceError(
+              rawError,
+              authenticated: _soraniAccount?['authenticated'] == true,
+            )
+          : rawError,
+    );
     final health = status?.health;
     final healthExpanded = _expandedHealth.contains(source.id);
     final colors = Theme.of(context).colorScheme;
@@ -507,20 +539,86 @@ class _SourcesScreenState extends State<SourcesScreen> {
               ),
             if (status != null && status.catalogRule.isNotEmpty)
               Text(
-                '采集规则：${status.catalogRule} · 本次 ${status.catalogPages} 页 / ${status.catalogFetched} 部',
+                sourceProgressText(
+                  '采集规则：${status.catalogRule} · 本次 ${status.catalogPages} 页 / ${status.catalogFetched} 部',
+                ),
               ),
             if (status != null && status.catalogOrigin.isNotEmpty) ...[
-              SelectableText('当前目录地址：${status.catalogOrigin}'),
               Text('最近完整同步：${sourceTimestamp(status.catalogFullAt)}'),
             ],
             if (source.id != 'huangguoai')
               const Text('本地无匹配后再查线上；线路只检测连接，实播请手动确认'),
+            if (source.id == 'piguo')
+              Text(
+                _piguoAccess?['authenticated'] == true
+                    ? '皮果浏览器验证已连接'
+                    : '皮果若返回浏览器验证，请在内置原站页手动完成后连接',
+              ),
             const SizedBox(height: 12),
+            if (source.id == 'sorani' && widget.store.allowsSource(source.id))
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Text(
+                  _soraniAccount?['authenticated'] == true
+                      ? '青空账号已连接：${_soraniAccount?['name'] ?? ''}'
+                      : '青空需要登录；没有账号请先到源站自行注册，再登录账号播放。',
+                ),
+              ),
             Wrap(
               spacing: 10,
               runSpacing: 8,
               crossAxisAlignment: WrapCrossAlignment.center,
               children: [
+                if (source.id == 'sorani')
+                  OutlinedButton.icon(
+                    key: const ValueKey('login-sorani'),
+                    onPressed:
+                        !busy &&
+                            widget.repository.supportsSourceManagement &&
+                            widget.store.allowsSource(source.id)
+                        ? () async {
+                            await openSoraniLogin(
+                              context,
+                              repository: widget.repository,
+                              store: widget.store,
+                            );
+                            if (mounted) await _refresh();
+                          }
+                        : null,
+                    icon: const Icon(Icons.person_outline),
+                    label: Text(
+                      _soraniAccount?['authenticated'] == true
+                          ? '青空账号管理'
+                          : '登录青空账号',
+                    ),
+                  ),
+                if (source.id == 'piguo')
+                  OutlinedButton.icon(
+                    key: const ValueKey('access-piguo'),
+                    onPressed:
+                        !busy &&
+                            widget.repository.supportsSourceManagement &&
+                            widget.store.allowsSource(source.id)
+                        ? () async {
+                            final connected = await openPiguoAccess(
+                              context,
+                              repository: widget.repository,
+                              store: widget.store,
+                            );
+                            if (connected && mounted) {
+                              await _run(source, 'checkCatalog');
+                            } else if (mounted) {
+                              await _refresh();
+                            }
+                          }
+                        : null,
+                    icon: const Icon(Icons.verified_user_outlined),
+                    label: Text(
+                      _piguoAccess?['authenticated'] == true
+                          ? '皮果验证管理'
+                          : '连接皮果浏览器验证',
+                    ),
+                  ),
                 FilledButton.icon(
                   key: ValueKey('update-${source.id}'),
                   onPressed: enabled ? () => _run(source, 'update') : null,
@@ -616,7 +714,8 @@ class _SourcesScreenState extends State<SourcesScreen> {
                   controls: NoVideoControls,
                 ),
               ),
-            if (_checkingSource == source.id) Text(_checkStage),
+            if (_checkingSource == source.id)
+              Text(sourceProgressText(_checkStage)),
             if (busy) ...[
               const SizedBox(height: 12),
               LinearProgressIndicator(
@@ -657,7 +756,7 @@ class _SourcesScreenState extends State<SourcesScreen> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      status.storageError,
+                      sourceProgressText(status.storageError),
                       style: TextStyle(color: colors.error),
                     ),
                     TextButton.icon(
@@ -688,12 +787,14 @@ class _SourcesScreenState extends State<SourcesScreen> {
                         '${sourceTimestamp(previous.checkedAt)} · ${previous.networkMode} · ${previous.label}',
                       ),
                       subtitle: Text(
-                        [
-                          for (final step in previous.steps)
-                            '${step.name} [${step.state}]：${step.message}',
-                          if (previous.downloadCheck != null)
-                            '${previous.downloadCheck!.name} [${previous.downloadCheck!.state}]：${previous.downloadCheck!.message}',
-                        ].join('\n'),
+                        sourceProgressText(
+                          [
+                            for (final step in previous.steps)
+                              '${step.name} [${step.state}]：${step.message}',
+                            if (previous.downloadCheck != null)
+                              '${previous.downloadCheck!.name} [${previous.downloadCheck!.state}]：${previous.downloadCheck!.message}',
+                          ].join('\n'),
+                        ),
                       ),
                     ),
                 ],
@@ -702,10 +803,12 @@ class _SourcesScreenState extends State<SourcesScreen> {
               const Divider(height: 28),
               if (health.downloadCheck != null)
                 SelectableText(
-                  '${health.downloadCheck!.name} [${health.downloadCheck!.state}]：${health.downloadCheck!.message}',
+                  sourceProgressText(
+                    '${health.downloadCheck!.name} [${health.downloadCheck!.state}]：${health.downloadCheck!.message}',
+                  ),
                 ),
               if (health.networkMode.isNotEmpty)
-                Text('检测网络模式：${health.networkMode}'),
+                Text(sourceProgressText('检测网络模式：${health.networkMode}')),
               Row(
                 children: [
                   Expanded(
@@ -765,7 +868,8 @@ class _SourcesScreenState extends State<SourcesScreen> {
                 ],
               ),
               if (healthExpanded) ...[
-                if (health.sample.isNotEmpty) Text('检测剧集：${health.sample}'),
+                if (health.sample.isNotEmpty)
+                  Text(sourceProgressText('检测剧集：${health.sample}')),
                 for (final step in health.steps)
                   Padding(
                     padding: const EdgeInsets.only(top: 10),
@@ -786,10 +890,14 @@ class _SourcesScreenState extends State<SourcesScreen> {
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Text('${step.name}：${step.message}'),
+                              Text(
+                                sourceProgressText(
+                                  '${step.name}：${step.message}',
+                                ),
+                              ),
                               if (step.host.isNotEmpty || step.httpStatus > 0)
                                 Text(
-                                  '${step.host}${step.httpStatus > 0 ? ' · HTTP ${step.httpStatus}' : ''} · ${step.elapsedMs} ms',
+                                  '${step.httpStatus > 0 ? 'HTTP ${step.httpStatus} · ' : ''}${step.elapsedMs} ms',
                                   style: Theme.of(context).textTheme.bodySmall,
                                 ),
                             ],

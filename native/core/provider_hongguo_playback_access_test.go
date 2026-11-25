@@ -65,44 +65,44 @@ func TestHongguoBackupPlaybackDoesNotRepeatTLSOrAuthorizationFailures(t *testing
 	}
 }
 
-// TestHongguoEmptyPrimaryChecksOnlyOfficialSameEpisode 验证「Hongguo Empty Primary Checks Only Official Same Episode」回归场景。
-func TestHongguoEmptyPrimaryChecksOnlyOfficialSameEpisode(t *testing.T) {
+// TestHongguoWebRouteChecksOnlyOfficialSameEpisode 验证「Hongguo Web Route Checks Only Official Same Episode」回归场景。
+func TestHongguoWebRouteChecksOnlyOfficialSameEpisode(t *testing.T) {
 	const publicAddress = "https://synthetic-fixture.qznovelvod.com/5678.mp4"
-	for _, tc := range []struct{ name, page, wantError string }{
-		{"public same episode", `"series_id":"1234","vid":"5678","protectedPlayback":false,"video_player_info":{"vid":"5678","main_url":"` + publicAddress + `"}`, ""},
-		{"protected despite address", `"series_id":"1234","vid":"5678","protectedPlayback":true,"video_player_info":{"vid":"5678","main_url":"` + publicAddress + `"}`, "protectedPlayback"},
-		{"same episode public preview", `"series_id":"1234","vid":"5678","protectedPlayback":true,"publicVideoSeo":{"available":true,"seriesId":"1234","itemId":"5678","durationSeconds":151.267}`, "公开预览不是正片"},
-		{"other episode public preview", `"series_id":"1234","vid":"5678","protectedPlayback":true,"publicVideoSeo":{"available":true,"seriesId":"1234","itemId":"9999"}`, "protectedPlayback"},
-		{"wrong page episode", `"series_id":"1234","vid":"9999","video_player_info":{"main_url":"` + publicAddress + `"}`, "未返回所请求"},
-		{"wrong media episode", `"series_id":"1234","vid":"5678","video_player_info":{"video_id":"9999","main_url":"` + publicAddress + `"}`, "分集与请求不符"},
-		{"wrong media work", `"series_id":"1234","vid":"5678","video_player_info":{"series_id":"9999","main_url":"` + publicAddress + `"}`, "作品与请求不符"},
-		{"unrelated address", `"series_id":"1234","vid":"5678","video_player_info":{"main_url":"https://not-hongguo.example.invalid/5678.mp4"}`, "未提供所选分集"},
+	for _, tc := range []struct {
+		name, page, wantError string
+		wantCalls             int
+	}{
+		{"public same episode", `"series_id":"1234","vid":"5678","protectedPlayback":false,"video_player_info":{"vid":"5678","main_url":"` + publicAddress + `"}`, "", 1},
+		{"protected despite address", `"series_id":"1234","vid":"5678","protectedPlayback":true,"video_player_info":{"vid":"5678","main_url":"` + publicAddress + `"}`, "protectedPlayback", 1},
+		{"same episode public preview", `"series_id":"1234","vid":"5678","protectedPlayback":true,"publicVideoSeo":{"available":true,"seriesId":"1234","itemId":"5678","durationSeconds":151.267}`, "公开预览不是正片", 2},
+		{"other episode public preview", `"series_id":"1234","vid":"5678","protectedPlayback":true,"publicVideoSeo":{"available":true,"seriesId":"1234","itemId":"9999"}`, "protectedPlayback", 1},
+		{"wrong page episode", `"series_id":"1234","vid":"9999","video_player_info":{"main_url":"` + publicAddress + `"}`, "未返回所请求", 1},
+		{"wrong media episode", `"series_id":"1234","vid":"5678","video_player_info":{"video_id":"9999","main_url":"` + publicAddress + `"}`, "分集与请求不符", 1},
+		{"wrong media work", `"series_id":"1234","vid":"5678","video_player_info":{"series_id":"9999","main_url":"` + publicAddress + `"}`, "作品与请求不符", 1},
+		{"unrelated address", `"series_id":"1234","vid":"5678","video_player_info":{"main_url":"https://not-hongguo.example.invalid/5678.mp4"}`, "未提供所选分集", 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			calls := 0
 			d := sourceFixtureDownloader(t, func(r *http.Request) (*http.Response, error) {
 				calls++
-				if calls == 1 && r.URL.Path == "/novel/player/multi_video_model/v1/" && r.URL.Query().Get("device_id") == "123456789" {
-					return sourceFixtureResponse(r, http.StatusOK, ""), nil
-				}
-				if calls == 2 && r.URL.String() == hongguoBaseURL+"/player/1234/5678" && r.Method == http.MethodGet && r.Header.Get("Authorization") == "" && r.Header.Get("Cookie") == "" {
+				if calls == 1 && r.URL.String() == hongguoBaseURL+"/player/1234/5678" && r.Method == http.MethodGet && r.Header.Get("Authorization") == "" && r.Header.Get("Cookie") == "" {
 					return sourceFixtureResponse(r, http.StatusOK, `<script>_ROUTER_DATA={"loaderData":{"player_page":{`+tc.page+`}}}</script>`), nil
+				}
+				if r.URL.Path == hongguoProtectedFallbackPath && r.Method == http.MethodPost && r.Header.Get("Authorization") == "" && r.Header.Get("Cookie") == "" {
+					return sourceFixtureResponse(r, http.StatusServiceUnavailable, "unavailable"), nil
 				}
 				t.Fatalf("unexpected request %d %s %s", calls, r.Method, r.URL.Path)
 				return nil, errors.New("unexpected request")
 			})
-			client := d.hongguoClient()
-			client.state.DeviceID, client.state.InstallID, client.state.Registered = "123456789", "987654321", true
-			d.cfg.Retries = 3
-			media, err := d.resolveProviderMedia(context.Background(), Task{DramaID: "hongguo:1234", Index: 1, Chapter: Chapter{Source: sourceHongguo, VideoURL: "hongguo-cenc://5678"}})
-			if calls != 2 {
+			media, err := d.resolveHongguoWebMedia(context.Background(), "1234", "5678")
+			if calls != tc.wantCalls {
 				t.Fatalf("unexpected request count: %d", calls)
 			}
 			if tc.wantError == "" {
 				if err != nil || media.URL != publicAddress {
 					t.Fatalf("public episode lost: %v, %v", media, err)
 				}
-			} else if err == nil || media.URL != "" || !errors.Is(err, errHongguoEmptyPrimaryPlayback) || !strings.Contains(err.Error(), tc.wantError) {
+			} else if err == nil || media.URL != "" || !strings.Contains(err.Error(), tc.wantError) {
 				t.Fatalf("invalid source became playable: %v, %v", media, err)
 			}
 		})

@@ -47,7 +47,8 @@ func TestPortableMutableDataAndRuntimeIntegrity(t *testing.T) {
 	}
 	defer z.Close()
 	for _, entry := range z.File {
-		if strings.HasPrefix(entry.Name, "app-data/") || strings.HasPrefix(entry.Name, "download/") || strings.HasPrefix(entry.Name, "logs/") {
+		name, _, valid := archiveEntryName(entry.Name, r)
+		if !valid || strings.HasPrefix(name, "app-data/") || strings.HasPrefix(name, "download/") || strings.HasPrefix(name, "logs/") {
 			t.Fatal("private runtime data included", entry.Name)
 		}
 	}

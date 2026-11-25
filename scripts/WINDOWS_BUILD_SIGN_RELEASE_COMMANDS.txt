@@ -7,6 +7,9 @@
 # 4. 私钥、授权配置和客户分发文件必须保留在源码目录之外，不要上传、复制进源码或放入 Release。
 # 5. 脚本不会自动上传 Release；最后由人工上传 tag 目录里的两个 ZIP 和两个 update.json。
 # 6. 一键流程会在两版构建前读取三个黄果发布页并原子替换包内地址缓存；任一发布页失败会停止构建且保留原缓存。
+# 7. 1.1.45 起每个 Windows ZIP 只含一个与压缩包同名的顶层版本文件夹；1.1.44 及更早客户端首次升级到该结构时需手动解压。
+# 8. 正式输出仅用 dist/windows/<软件名>-<版本+构建号>-windows-x64 和 dist/windows/releases/tag<版本>；不加 final、fix 等后缀或额外父目录。
+# 9. 每次构建核对或手动客户端验证前先执行 scripts/stop_windows_clients.ps1，确认两款软件进程归零；同版本目录仍不覆盖、不另建后缀目录。
 
 # ===============================================================================
 # 一、通用路径与环境预检
@@ -21,9 +24,20 @@ $Output = Join-Path $Project "dist\windows"
 
 Set-Location $Project
 
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/stop_windows_clients.ps1 -Edition both
+
+if ($LASTEXITCODE -ne 0) {
+  throw "红果赏或真果赏进程未清零，不要继续构建或验证"
+}
+
 python --version
 flutter --version
 go version
+nuget help | Select-Object -First 2
+
+# 青空原站登录窗口使用 WebView2；构建需要微软官方 NuGet CLI 位于本次进程 PATH。
+# 获取地址：https://learn.microsoft.com/nuget/install-nuget-client-tools#nugetexe-cli
+# 用户端若缺少 WebView2 Runtime，登录页会提示自行安装微软官方运行时，不会自动安装。
 
 foreach ($Required in @($PublicConfig, $CustomerFile, $SigningKey)) {
   if (-not (Test-Path -LiteralPath $Required -PathType Leaf)) {
@@ -47,7 +61,7 @@ if (-not $CurrentVersion) {
 # ===============================================================================
 
 # 只在准备发布“下一个新版本”时执行一次。
-# 例如当前为 1.1.44+175，会递增为 1.1.45+176，构建两版并输出 releases\tag1.1.45。
+# 例如当前为 1.1.47+178，会递增为 1.1.48+179，构建两版并输出 releases\tag1.1.48。
 # 如果中途失败，pubspec.yaml 可能已经递增；不要再执行 --next-from，请使用后面的“当前版本逐步续做”。
 
 python scripts/release_windows_updates.py `
@@ -132,6 +146,12 @@ if ($LASTEXITCODE -ne 0) {
 # 七、核对可执行目录、Tag 目录、版本与 SHA-256
 # ===============================================================================
 
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/stop_windows_clients.ps1 -Edition both
+
+if ($LASTEXITCODE -ne 0) {
+  throw "红果赏或真果赏进程未清零，不要继续核对"
+}
+
 $Version = [regex]::Match(
   (Get-Content -LiteralPath "pubspec.yaml" -Raw -Encoding UTF8),
   '(?m)^version:\s*(\d+\.\d+\.\d+\+\d+)\s*$'
@@ -190,7 +210,7 @@ if ($LASTEXITCODE -ne 0) {
 # 九、手动发版
 # ===============================================================================
 
-# 1. 使用 $TagDirectory 的 tag 名称创建发布版本，例如 tag1.1.44。
+# 1. 使用 $TagDirectory 的 tag 名称创建发布版本，例如 tag1.1.45。
 # 2. 只上传 $TagDirectory 中的两个 ZIP 和两个 update.json。
 # 3. 不上传 distribution-signing.key、production-public.json、universal-distribution.json、app-data、download、logs、视频、构建缓存、调试符号或纯源码恢复包。
 # 4. 发布后保留本地已签名目录和源码恢复包，不要覆盖旧版本。

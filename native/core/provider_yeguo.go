@@ -53,13 +53,37 @@ func firstPresent(values map[string]any, keys ...string) any {
 
 // fetchYeguoCategories 获取椰果分类列表。
 func (d *Downloader) fetchYeguoCategories(ctx context.Context) ([]nativeCategory, error) {
-	data, err := d.yeguoClient().call(ctx, "/api/home/contentOptions", nil)
+	client := d.yeguoClient()
+	access, err := client.configuration(ctx)
+	if err != nil {
+		return nil, err
+	}
+	route := "/api/home/contentOptions"
+	var values url.Values
+	if strings.HasSuffix(strings.TrimRight(access.base, "/"), "/api.php") {
+		route = "/api/theater/exploreList"
+		values = url.Values{"page": {"1"}, "limit": {"20"}}
+	}
+	data, err := client.call(ctx, route, values)
 	if err != nil {
 		return nil, err
 	}
 	filters, valid := data["video_filter"].(map[string]any)
 	if !valid {
-		return nil, errors.New("野果分类数据格式无效")
+		filters = map[string]any{}
+		rows, rowsValid := data["filters"].([]any)
+		if !rowsValid || len(rows) > len(yeguoFilterFields) {
+			return nil, errors.New("野果分类数据格式无效")
+		}
+		for _, value := range rows {
+			row, _ := value.(map[string]any)
+			key := mapString(row, "key")
+			options, optionsValid := row["options"].([]any)
+			if !optionsValid {
+				return nil, errors.New("野果分类数据格式无效")
+			}
+			filters[key] = map[string]any{"list": options}
+		}
 	}
 	var categories []nativeCategory
 	seen := map[string]bool{}

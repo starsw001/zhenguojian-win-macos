@@ -2,7 +2,6 @@ import 'dart:convert';
 import 'package:duanju_app/local_store.dart';
 import 'package:duanju_app/models.dart';
 import 'package:duanju_app/player_screen.dart';
-import 'package:duanju_app/playback_routes_bar.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -158,11 +157,21 @@ void main() {
         expect(find.text('正在播放本地视频'), findsNothing);
         expect(player.opened.last.start, const Duration(seconds: 28));
         expect(player.played.last, isFalse);
-        final bar = tester.widget<PlaybackRoutesBar>(
-          find.byType(PlaybackRoutesBar),
+        final firstRoute = find.byKey(const ValueKey('playback-route-0'));
+        final secondRoute = find.byKey(const ValueKey('playback-route-1'));
+        expect(firstRoute, findsOneWidget);
+        expect(secondRoute, findsOneWidget);
+        expect(
+          find.descendant(
+            of: firstRoute,
+            matching: find.byIcon(Icons.check_circle),
+          ),
+          findsOneWidget,
         );
-        expect(bar.routes[0].status, 'passed');
-        expect(bar.routes[1].status, 'failed');
+        expect(
+          find.descendant(of: secondRoute, matching: find.byIcon(Icons.cancel)),
+          findsOneWidget,
+        );
         await tester.tap(find.byKey(const ValueKey('playback-route-2')));
         await settle(tester);
         expect(repo.selected, [2]);

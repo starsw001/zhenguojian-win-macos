@@ -16,7 +16,7 @@ func TestHongguoResiliencePublicRouteStopsAtProtectedPage(t *testing.T) {
 	d := sourceFixtureDownloader(t, func(r *http.Request) (*http.Response, error) {
 		calls = append(calls, r.URL.Host)
 		switch r.URL.Host {
-		case "api5-normal-sinfonlineb.fqnovel.com":
+		case "api5-normal-sinfonlinea.fqnovel.com", "api5-normal-sinfonlineb.fqnovel.com":
 			return nil, io.ErrUnexpectedEOF
 		case "hongguoduanju.com":
 			return sourceFixtureResponse(r, 200, `<script>_ROUTER_DATA={"loaderData":{"player_page":{"isSuccess":true,"series_id":"1234","vid":"5678","protectedPlayback":true}}}}</script>`), nil
@@ -27,7 +27,7 @@ func TestHongguoResiliencePublicRouteStopsAtProtectedPage(t *testing.T) {
 	c := d.hongguoClient()
 	c.state.DeviceID, c.state.InstallID, c.state.Registered = "123456789", "987654321", true
 	_, err := d.resolveHongguoMedia(context.Background(), Task{DramaID: "hongguo:1234", Index: 1, Chapter: Chapter{VideoURL: "hongguo-cenc://5678"}})
-	if err == nil || !strings.Contains(err.Error(), "protectedPlayback") || strings.Join(calls, ",") != "api5-normal-sinfonlineb.fqnovel.com,hongguoduanju.com" {
+	if err == nil || !strings.Contains(err.Error(), "protectedPlayback") || strings.Join(calls, ",") != "api5-normal-sinfonlinea.fqnovel.com,api5-normal-sinfonlineb.fqnovel.com,api5-normal-sinfonlineb.fqnovel.com,hongguoduanju.com" {
 		t.Fatalf("wrong fallback sequence: %v %v", calls, err)
 	}
 }
@@ -73,7 +73,7 @@ func TestHongguoResilienceProxyRetryPreservesExactRead(t *testing.T) {
 			calls++
 			data, e := io.ReadAll(r.Body)
 			proxy, _ := router.proxy(r)
-			if e != nil || string(data) != body || r.URL.String() != url || (calls == 1) != (proxy != nil) {
+			if e != nil || string(data) != body || r.URL.String() != url || (calls == 1) != (proxy == nil) {
 				t.Fatalf("request changed: calls=%d proxy=%v", calls, proxy)
 			}
 			if calls == 1 && status == 0 {

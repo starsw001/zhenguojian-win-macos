@@ -215,10 +215,14 @@ func (cache *nativeCoverCache) download(ctx context.Context, address, referer st
 	request.Header.Set("Accept", "image/webp,image/jpeg,image/png,image/gif,*/*;q=0.5")
 	request.Header.Set("Sec-Fetch-Mode", "no-cors")
 	request.Header.Set("Sec-Fetch-Dest", "image")
+	cache.downloader.applyPiguoAccessSession(ctx, address, request)
 	client := *cache.downloader.client
 	client.CheckRedirect = func(request *http.Request, via []*http.Request) error {
 		if len(via) >= 5 || !validNativeCoverURL(request.URL) {
 			return errors.New("海报重定向地址无效")
+		}
+		if providerSourceForURL(request.URL.String()) != sourcePiguo {
+			request.Header.Del("Cookie")
 		}
 		request.Header.Set("Referer", referer)
 		return nil

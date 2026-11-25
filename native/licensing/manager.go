@@ -56,6 +56,9 @@ func Open(config Config) *Manager {
 	if m.config.Device == nil {
 		m.config.Device = machineHash
 	}
+	if m.config.DeviceInfo == nil {
+		m.config.DeviceInfo = platformDeviceInfo
+	}
 	if m.config.Protect == nil {
 		m.config.Protect = platformProtect
 	}
@@ -713,6 +716,7 @@ func (m *Manager) refresh(key string) {
 		path = m.config.ActivatePath
 		body["key"] = key
 		body["permit"] = m.distribution.Permit
+		body["deviceInfo"] = m.config.DeviceInfo()
 		if m.distribution.AccountMode == "universal" {
 			body["accountSession"] = m.accountSession
 		}

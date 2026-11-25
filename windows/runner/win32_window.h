@@ -52,6 +52,8 @@ class Win32Window {
   // If true, closing this window will quit the application.
   void SetQuitOnClose(bool quit_on_close);
 
+  void SetCloseToTray(bool close_to_tray);
+
   // Return a RECT representing the bounds of the current client area.
   RECT GetClientArea();
 
@@ -63,6 +65,8 @@ class Win32Window {
                                  UINT const message,
                                  WPARAM const wparam,
                                  LPARAM const lparam) noexcept;
+
+  bool HandlesTrayMessage(UINT message, WPARAM wparam) const;
 
   // Called when CreateAndShow is called, allowing subclass window-related
   // setup. Subclasses should return false if setup fails.
@@ -90,7 +94,16 @@ class Win32Window {
   // Update the window frame's theme to match the system theme.
   static void UpdateTheme(HWND const window);
 
+  bool AddTrayIcon();
+  void RemoveTrayIcon();
+  void RestoreFromTray();
+  void ShowTrayMenu();
+
   bool quit_on_close_ = false;
+  bool close_to_tray_ = false;
+  bool exit_requested_ = false;
+  bool tray_icon_visible_ = false;
+  UINT taskbar_created_message_ = 0;
 
   // window handle for top level window.
   HWND window_handle_ = nullptr;

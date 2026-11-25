@@ -270,12 +270,40 @@ Future<void> _runDownload(
       }
       if (state == 'ready') {
         progress.value = 1;
-        statusText.value = '即将关闭并完成更新…';
+        statusText.value = '更新包已验证完成。';
         break;
       }
       throw AppFailure('${status['message'] ?? '更新失败，请稍后重试'}');
     }
     if (UpdateActivity.playing) throw AppFailure('播放中，暂不更新。');
+    closeDialog();
+    await Future<void>.delayed(const Duration(milliseconds: 150));
+    if (!context.mounted) return;
+    final startUpdate = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        title: const Text('更新包已准备好'),
+        content: const Text(
+          '点击“开始更新”后，软件会先完整退出，再把新版覆盖到原安装目录并重新打开。'
+          '已下载剧集、设置、日志和其他用户文件都会保留。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('稍后安装'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('开始更新'),
+          ),
+        ],
+      ),
+    );
+    if (startUpdate != true) return;
+    if (UpdateActivity.playing || await repository.updateBusy()) {
+      throw AppFailure('播放或下载中，暂不更新。');
+    }
     final applied = await repository.applyUpdate();
     if (applied['restart'] != true) throw AppFailure('版本切换未就绪，继续使用原版。');
     exit(74);

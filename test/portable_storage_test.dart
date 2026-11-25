@@ -62,6 +62,32 @@ void main() {
     },
   );
 
+  test('verified update slots keep data in the original install root', () {
+    final root = p.join(fixture.path, 'installed');
+    final executable = p.join(
+      root,
+      'app-data',
+      'updates',
+      'slot-${List.filled(64, 'a').join()}',
+      'bundle',
+      'app.exe',
+    );
+    final trial = PortableStorageLayout(executable, updateRoot: root);
+    expect(trial.root, root);
+    expect(trial.data, p.join(root, 'app-data'));
+    expect(
+      PortablePathProvider(trial).getDownloadsPath(),
+      completion(p.join(root, 'download')),
+    );
+    expect(
+      () => PortableStorageLayout(
+        executable,
+        updateRoot: p.join(fixture.path, 'other-install'),
+      ),
+      throwsArgumentError,
+    );
+  });
+
   test(
     'preferences survive restart but cannot cross version or edition folders',
     () async {

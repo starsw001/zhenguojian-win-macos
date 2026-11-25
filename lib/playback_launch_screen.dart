@@ -4,6 +4,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import 'core_bridge.dart';
+import 'sorani_login_screen.dart';
 import 'follow_state.dart';
 import 'local_store.dart';
 import 'models.dart';
@@ -271,6 +272,22 @@ class _PlaybackLaunchScreenState extends State<PlaybackLaunchScreen> {
                       message: _error!,
                       onRetry: () => _load(),
                       action: '重试',
+                      secondaryAction:
+                          _selected.source == 'sorani' &&
+                              soraniLoginRequired(_error)
+                          ? FilledButton.icon(
+                              onPressed: () async {
+                                final connected = await openSoraniLogin(
+                                  context,
+                                  repository: widget.repository,
+                                  store: widget.store,
+                                );
+                                if (connected && mounted) await _load();
+                              },
+                              icon: const Icon(Icons.login),
+                              label: const Text('登录青空账号后重试'),
+                            )
+                          : null,
                       icon: Icons.play_disabled_rounded,
                     ),
             ),

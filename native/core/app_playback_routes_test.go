@@ -54,15 +54,15 @@ func TestHongguoAutomaticMediaUsesResolverPreferredVariant(t *testing.T) {
 // TestHongguoBackupAddressesAndCodecAlternatives 验证「Hongguo Backup Addresses And Codec Alternatives」回归场景。
 func TestHongguoBackupAddressesAndCodecAlternatives(t *testing.T) {
 	media, err := selectHongguoAppMedia(map[string]any{"video_list": []any{
-		map[string]any{"main_url": "https://media.test/hevc.mp4", "video_meta": map[string]any{"codec_type": "hevc", "definition": "1080p"}},
+		map[string]any{"main_url": "https://primary-fixture.qznovelvod.com/hevc.mp4", "video_meta": map[string]any{"codec_type": "hevc", "definition": "1080p"}},
 		map[string]any{
-			"main_url":    base64.StdEncoding.EncodeToString([]byte("https://media.test/main.mp4?token=a%2Fb")),
-			"backup_url":  "https://backup.test/main.mp4?token=unchanged",
-			"backup_urls": []any{"https://backup.test/main.mp4?token=unchanged", "file:///invalid", "https://third.test/main.mp4"},
+			"main_url":    base64.StdEncoding.EncodeToString([]byte("https://primary-fixture.qznovelvod.com/main.mp4?token=a%2Fb")),
+			"backup_url":  "https://backup-fixture.fqnovelvod.com/main.mp4?token=unchanged",
+			"backup_urls": []any{"https://backup-fixture.fqnovelvod.com/main.mp4?token=unchanged", "file:///invalid", "https://third-fixture.douyinvod.com/main.mp4"},
 			"video_meta":  map[string]any{"codec_type": "h264", "definition": "1080p"},
 		},
-		map[string]any{"main_url": "https://media.test/low.mp4", "video_meta": map[string]any{"codec_type": "h264", "definition": "720p"}},
-		map[string]any{"main_url": "https://media.test/unsupported.mp4", "backup_url": "https://backup.test/unsupported.mp4", "video_meta": map[string]any{"codec_type": "bytevc2", "definition": "2160p"}},
+		map[string]any{"main_url": "https://primary-fixture.qznovelvod.com/low.mp4", "video_meta": map[string]any{"codec_type": "h264", "definition": "720p"}},
+		map[string]any{"main_url": "https://primary-fixture.qznovelvod.com/unsupported.mp4", "backup_url": "https://backup-fixture.fqnovelvod.com/unsupported.mp4", "video_meta": map[string]any{"codec_type": "bytevc2", "definition": "2160p"}},
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -73,8 +73,8 @@ func TestHongguoBackupAddressesAndCodecAlternatives(t *testing.T) {
 		addresses = append(addresses, option.URL)
 	}
 	want := []string{
-		"https://media.test/main.mp4?token=a%2Fb", "https://backup.test/main.mp4?token=unchanged",
-		"https://third.test/main.mp4", "https://media.test/hevc.mp4", "https://media.test/low.mp4",
+		"https://primary-fixture.qznovelvod.com/main.mp4?token=a%2Fb", "https://backup-fixture.fqnovelvod.com/main.mp4?token=unchanged",
+		"https://third-fixture.douyinvod.com/main.mp4", "https://primary-fixture.qznovelvod.com/hevc.mp4", "https://primary-fixture.qznovelvod.com/low.mp4",
 	}
 	if !reflect.DeepEqual(addresses, want) || !reflect.DeepEqual(choices.qualities, []int{1080, 720}) {
 		t.Fatalf("wrong fallback order: %+v; qualities=%v", addresses, choices.qualities)

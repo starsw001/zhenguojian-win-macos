@@ -22,7 +22,7 @@ import (
 )
 
 const hongguoPlaybackRegisterURL = "https://log5-applog-lf.fqnovel.com/service/2/device_register/?tt_data=a&cronet_version=8d40f833_2026-03-03&ttnet_version=4.2.243.31-douyin&use_store_region_cookie=1"
-const hongguoRegisteredPlaybackUserAgent = hongguoAppUserAgent
+const hongguoRegisteredPlaybackUserAgent = hongguoPlaybackRegistrationUserAgent
 
 type hongguoPlaybackDevice struct {
 	Version   int                     `json:"version"`

@@ -53,6 +53,8 @@ environment.setdefault('GOSUMDB', 'off')
 flutter = shutil.which('flutter')
 if not flutter:
     raise SystemExit('请先将 Flutter SDK 的 bin 目录加入 PATH。')
+if not shutil.which('nuget', path=environment.get('PATH')):
+    raise SystemExit('青空原站登录窗口的 Windows 构建需要 NuGet CLI。请从微软官方 NuGet 下载页取得 nuget.exe，并将其目录加入本次构建进程的 PATH；不会自动安装或修改系统环境。')
 with china_mirror_environment(environment, options.cn_mirrors, gradle=False) as env:
     verify_flutter_version(root, flutter, env)
     write_app_version(root)

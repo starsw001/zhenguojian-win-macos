@@ -15,12 +15,14 @@ import 'app_layout.dart';
 import 'app_orientation.dart';
 import 'app_theme.dart';
 import 'core_bridge.dart';
+import 'sorani_login_screen.dart';
 import 'cache_settings.dart';
 import 'diary_service.dart';
 import 'luna_exo_player.dart';
 import 'danmaku_controller.dart';
 import 'danmaku_overlay.dart';
 import 'download_picker.dart';
+import 'download_notice.dart';
 import 'downloads_screen.dart';
 import 'follow_state.dart';
 import 'local_store.dart';
@@ -106,6 +108,9 @@ class _PlayerScreenState extends State<PlayerScreen>
   Timer? _errorTimer;
   Timer? _pictureInPictureExitTimer;
   Future<void> _operations = Future<void>.value();
+  late DramaDetail _detail;
+  late final DramaDetail _localDetail;
+  DramaDetail? _onlineDetail;
   late int _index;
   late final int _profileEpoch;
   int _openedIndex = -1;
@@ -116,6 +121,7 @@ class _PlayerScreenState extends State<PlayerScreen>
   bool _forceLocal = false;
   bool _hasLocalVideo = false;
   bool _localFailure = false;
+  bool _loadingOnlineEpisodes = false;
   bool _fullscreen = false;
   bool _automaticFullscreenSuppressed = false;
   bool _panelOpen = false;
@@ -186,6 +192,8 @@ class _PlayerScreenState extends State<PlayerScreen>
     super.initState();
     UpdateActivity.enterPlayer();
     WidgetsBinding.instance.addObserver(this);
+    _detail = widget.detail;
+    _localDetail = widget.detail;
     _index = widget.initialIndex;
     if (widget.localOnly) _loadingMessage = '正在读取本地视频';
     _profileEpoch = widget.handoff?.profileEpoch ?? widget.store.profileEpoch;
@@ -232,8 +240,8 @@ class _PlayerScreenState extends State<PlayerScreen>
       player: _player,
       video: _video,
       preferences: preferences.enhancement,
-      category: widget.detail.drama.category,
-      tags: widget.detail.drama.tags,
+      category: _detail.drama.category,
+      tags: _detail.drama.tags,
     );
     _interactions = PlayerInteractions(
       player: _player,
@@ -251,9 +259,9 @@ class _PlayerScreenState extends State<PlayerScreen>
       onEpisode: (direction) {
         final next = _index + direction;
         if (next < 0) return '已经是第一集';
-        if (next >= widget.detail.episodes.length) return '已经是最后一集';
+        if (next >= _detail.episodes.length) return '已经是最后一集';
         unawaited(_play(next));
-        return '第 ${widget.detail.episodes[next].number} 集';
+        return '第 ${_detail.episodes[next].number} 集';
       },
     );
     _playerFocus.addListener(() {
@@ -282,7 +290,7 @@ class _PlayerScreenState extends State<PlayerScreen>
           } else if (_autoAdvance &&
               _foreground &&
               !_panelOpen &&
-              _index + 1 < widget.detail.episodes.length) {
+              _index + 1 < _detail.episodes.length) {
             _play(_index + 1, showControlsOnReady: false);
           } else {
             _playIntent = false;
@@ -391,7 +399,7 @@ class _PlayerScreenState extends State<PlayerScreen>
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted && !_closed && !widget.localOnly) {
         widget.repository.catalogUpdates.publish(
-          widget.repository.catalogUpdates.current(widget.detail.drama),
+          widget.repository.catalogUpdates.current(_detail.drama),
           retryCover: true,
         );
       }
@@ -600,7 +608,7 @@ class _PlayerScreenState extends State<PlayerScreen>
       LanPlaybackHost(
         identity: _lanIdentity,
         title:
-            '${widget.detail.drama.title} · 第 ${widget.detail.episodes[_index].number} 集',
+            '${_detail.drama.title} · 第 ${_detail.episodes[_index].number} 集',
         stop: _stopForLan,
       ),
     );
@@ -680,9 +688,9 @@ class _PlayerScreenState extends State<PlayerScreen>
         context,
         link,
         snapshot: () => LanPlaybackIntent(
-          drama: widget.detail.drama,
-          episodeID: widget.detail.episodes[index].id,
-          episode: widget.detail.episodes[index].number,
+          drama: _detail.drama,
+          episodeID: _detail.episodes[index].id,
+          episode: _detail.episodes[index].number,
           position: _currentPosition,
         ),
         stillCurrent: current,
@@ -714,7 +722,7 @@ class _PlayerScreenState extends State<PlayerScreen>
         _openedIndex != _index ||
         widget.store.profileEpoch != _profileEpoch ||
         widget.store.locked ||
-        _index + 1 >= widget.detail.episodes.length) {
+        _index + 1 >= _detail.episodes.length) {
       _preloader.clear();
       return;
     }
@@ -732,8 +740,8 @@ class _PlayerScreenState extends State<PlayerScreen>
       return;
     }
     _preloader.prepare(
-      widget.detail.drama,
-      widget.detail.episodes[_index + 1],
+      _detail.drama,
+      _detail.episodes[_index + 1],
       quality: _requestedQuality,
     );
   }
@@ -844,8 +852,7 @@ class _PlayerScreenState extends State<PlayerScreen>
         : _recovery.next(
             current,
             allowRefresh:
-                widget.detail.drama.source != 'hongguo' &&
-                current.routes.isEmpty,
+                _detail.drama.source != 'hongguo' && current.routes.isEmpty,
             allCandidates: current.routes.isNotEmpty,
           );
     if (action == PlaybackRecoveryAction.stop) {
@@ -909,14 +916,14 @@ class _PlayerScreenState extends State<PlayerScreen>
     }
     final store = widget.store;
     final progressKey =
-        '${widget.mediaId ?? widget.detail.drama.id}:$_openedIndex:$position:$duration';
+        '${widget.mediaId ?? _detail.drama.id}:$_openedIndex:$position:$duration';
     if (_savedProgressKey == progressKey && _saveWarning == null) {
       if (flush && widget.mediaId == null) LanController.current?.flush();
       return;
     }
     final entry = WatchEntry(
-      drama: widget.repository.catalogUpdates.current(widget.detail.drama),
-      episode: widget.detail.episodes[_openedIndex].number,
+      drama: widget.repository.catalogUpdates.current(_detail.drama),
+      episode: _detail.episodes[_openedIndex].number,
       position: position,
       duration: duration,
       updatedAt: DateTime.now(),
@@ -959,7 +966,7 @@ class _PlayerScreenState extends State<PlayerScreen>
     if (_closed ||
         widget.store.profileEpoch != _profileEpoch ||
         index < 0 ||
-        index >= widget.detail.episodes.length) {
+        index >= _detail.episodes.length) {
       return;
     }
     _interactions.cancel();
@@ -970,9 +977,15 @@ class _PlayerScreenState extends State<PlayerScreen>
       widget.handoff?.fail('接收端已更换播放内容');
     }
     if (index != _index) {
-      _forceOnline = false;
+      final keepExpandedOnline =
+          _forceOnline &&
+          _onlineDetail != null &&
+          identical(_detail, _onlineDetail);
+      if (!keepExpandedOnline) _forceOnline = false;
       _forceLocal = false;
-      _hasLocalVideo = false;
+      _hasLocalVideo = keepExpandedOnline
+          ? _episodeIndexIn(_localDetail, _detail.episodes[index]) >= 0
+          : false;
     }
     if (routeIndex == null &&
         recoveryAction != PlaybackRecoveryAction.alternative) {
@@ -986,8 +999,8 @@ class _PlayerScreenState extends State<PlayerScreen>
                 _preloadEnabled &&
                 !_localOnly
             ? _preloader.take(
-                widget.detail.drama,
-                widget.detail.episodes[index],
+                _detail.drama,
+                _detail.episodes[index],
                 quality: _requestedQuality,
                 online: _forceOnline,
               )
@@ -1046,9 +1059,9 @@ class _PlayerScreenState extends State<PlayerScreen>
       if (_closed || ticket != _generation) {
         return;
       }
-      final requestedEpisode = widget.detail.episodes[index].number;
+      final requestedEpisode = _detail.episodes[index].number;
       DiaryService.add(
-        '[Play] 请求播放: 剧=${widget.detail.drama.title}, 站源=${widget.detail.drama.source}, '
+        '[Play] 请求播放: 剧=${_detail.drama.title}, 站源=${_detail.drama.source}, '
         '第$requestedEpisode集, 模式=${_forceOnline
             ? '手动联网'
             : _localOnly
@@ -1062,8 +1075,8 @@ class _PlayerScreenState extends State<PlayerScreen>
           : handoffPlan != null
           ? await _loader.use(handoffPlan)
           : await _loader.load(
-              widget.detail.drama,
-              widget.detail.episodes[index],
+              _detail.drama,
+              _detail.episodes[index],
               quality: _requestedQuality,
               localOnly: _localOnly,
               online: _forceOnline,
@@ -1187,8 +1200,8 @@ class _PlayerScreenState extends State<PlayerScreen>
         installed = true;
         _acceptErrors = true;
         DiaryService.add(
-          '[Play] 调用 _player.open: 剧=${widget.detail.drama.title}, '
-          '第${widget.detail.episodes[index].number}集, 来源=${plan.local ? '本地文件' : '在线线路'}, '
+          '[Play] 调用 _player.open: 剧=${_detail.drama.title}, '
+          '第${_detail.episodes[index].number}集, 来源=${plan.local ? '本地文件' : '在线线路'}, '
           'url=${plan.url}, headers=${plan.headers.keys.toList()}',
         );
         await _player.open(
@@ -1222,8 +1235,8 @@ class _PlayerScreenState extends State<PlayerScreen>
       });
     } catch (error) {
       DiaryService.add(
-        '[Play] 捕获播放流程错误: 剧=${widget.detail.drama.title}, '
-        '站源=${widget.detail.drama.source}, 第${widget.detail.episodes[index].number}集, '
+        '[Play] 捕获播放流程错误: 剧=${_detail.drama.title}, '
+        '站源=${_detail.drama.source}, 第${_detail.episodes[index].number}集, '
         '模式=${_forceOnline
             ? '手动联网'
             : _localOnly
@@ -1324,8 +1337,55 @@ class _PlayerScreenState extends State<PlayerScreen>
     );
   }
 
+  int _episodeIndexIn(DramaDetail detail, Episode episode) {
+    var index = episode.id.isEmpty
+        ? -1
+        : detail.episodes.indexWhere((candidate) => candidate.id == episode.id);
+    if (index < 0) {
+      index = detail.episodes.indexWhere(
+        (candidate) => candidate.number == episode.number,
+      );
+    }
+    return index;
+  }
+
+  Future<(DramaDetail, int)> _onlineEpisodes(Episode current) async {
+    var detail = _onlineDetail;
+    String? warning;
+    if (detail == null && widget.localOnly) {
+      setState(() => _loadingOnlineEpisodes = true);
+      try {
+        final candidate = await widget.repository.detail(_localDetail.drama);
+        final index = _episodeIndexIn(candidate, current);
+        if (candidate.drama.siteIdentity == _localDetail.drama.siteIdentity &&
+            candidate.episodes.isNotEmpty &&
+            index >= 0) {
+          detail = candidate;
+          _onlineDetail = candidate;
+        } else {
+          warning = '完整选集与当前作品或分集不一致，继续使用当前选集列表。';
+        }
+      } catch (_) {
+        warning = '完整选集读取失败，继续使用当前选集列表。';
+      } finally {
+        if (mounted && !_closed) {
+          setState(() => _loadingOnlineEpisodes = false);
+        }
+      }
+    }
+    detail ??= _detail;
+    final index = _episodeIndexIn(detail, current);
+    if (warning != null && mounted && !_closed) _notice(warning);
+    return (detail, index < 0 ? _index : index);
+  }
+
   bool get _canSwitchLocal =>
-      _forceOnline && _hasLocalVideo && widget.mediaId == null;
+      _forceOnline &&
+      _hasLocalVideo &&
+      widget.mediaId == null &&
+      _index >= 0 &&
+      _index < _detail.episodes.length &&
+      _episodeIndexIn(_localDetail, _detail.episodes[_index]) >= 0;
 
   bool get _showRouteBar =>
       _plan?.local == true ||
@@ -1343,7 +1403,7 @@ class _PlayerScreenState extends State<PlayerScreen>
         _routeChecks[route.index] ?? route,
     ],
     selected: _plan?.routeIndex ?? 0,
-    busy: _loading,
+    busy: _loading || _loadingOnlineEpisodes,
     routesBlocked: _routeChecks.values.any((route) => route.stop),
     onSelected: _selectRoute,
   );
@@ -1352,20 +1412,41 @@ class _PlayerScreenState extends State<PlayerScreen>
     if (!mounted ||
         _closed ||
         _loading ||
+        _loadingOnlineEpisodes ||
         !widget.allowOnlineFallback ||
         widget.mediaId != null) {
       return;
     }
-    _forceOnline = true;
-    _forceLocal = false;
-    await _play(_index, position: _currentPosition, playWhenReady: _playIntent);
+    final current = _detail.episodes[_index];
+    final online = await _onlineEpisodes(current);
+    if (!mounted || _closed) return;
+    final position = _currentPosition;
+    setState(() {
+      _detail = online.$1;
+      _index = online.$2;
+      if (_openedIndex >= 0) _openedIndex = online.$2;
+      _mobileTab = 0;
+      _forceOnline = true;
+      _forceLocal = false;
+    });
+    await _play(online.$2, position: position, playWhenReady: _playIntent);
   }
 
   Future<void> _switchLocal() async {
     if (!mounted || _closed || _loading || !_canSwitchLocal) return;
-    _forceOnline = false;
-    _forceLocal = true;
-    await _play(_index, position: _currentPosition, playWhenReady: _playIntent);
+    final current = _detail.episodes[_index];
+    final localIndex = _episodeIndexIn(_localDetail, current);
+    if (localIndex < 0) return;
+    final position = _currentPosition;
+    setState(() {
+      _detail = _localDetail;
+      _index = localIndex;
+      if (_openedIndex >= 0) _openedIndex = localIndex;
+      _mobileTab = 0;
+      _forceOnline = false;
+      _forceLocal = true;
+    });
+    await _play(localIndex, position: position, playWhenReady: _playIntent);
   }
 
   Future<void> _retry({int? quality}) async {
@@ -1474,7 +1555,7 @@ class _PlayerScreenState extends State<PlayerScreen>
 
   Future<void> _toggleFavorite() async {
     try {
-      await widget.store.toggleFavorite(widget.detail.drama);
+      await widget.store.toggleFavorite(_detail.drama);
       if (mounted && !_closed) setState(() {});
     } catch (_) {
       _notice('追剧记录未能保存，请检查存储空间后重试');
@@ -1482,7 +1563,7 @@ class _PlayerScreenState extends State<PlayerScreen>
   }
 
   Future<void> _toggleDanmaku() async {
-    if (widget.detail.drama.source != 'hongguo') return;
+    if (_detail.drama.source != 'hongguo') return;
     try {
       await _setPreferences(_preferences.copyWith(danmaku: !_danmakuEnabled));
     } catch (_) {
@@ -1507,7 +1588,7 @@ class _PlayerScreenState extends State<PlayerScreen>
       return;
     }
     final added = await widget.repository.enqueueDownloadsOnRoute(
-      widget.detail,
+      _detail,
       selection.episodes,
       quality: selection.quality,
       preferredRoute:
@@ -1517,21 +1598,15 @@ class _PlayerScreenState extends State<PlayerScreen>
       playback: _plan,
     );
     if (!mounted || _closed) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(added == 0 ? '所选集数已在下载列表中' : '已加入 $added 集，已有任务自动跳过'),
-        action: SnackBarAction(
-          label: '查看',
-          onPressed: () {
-            Navigator.of(context).push(
-              MaterialPageRoute<void>(
-                builder: (_) => DownloadsScreen(
-                  repository: widget.repository,
-                  store: widget.store,
-                ),
-              ),
-            );
-          },
+    showDownloadQueuedNotice(
+      context,
+      added: added,
+      onView: () => Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) => DownloadsScreen(
+            repository: widget.repository,
+            store: widget.store,
+          ),
         ),
       ),
     );
@@ -1566,18 +1641,18 @@ class _PlayerScreenState extends State<PlayerScreen>
             data: menuTheme,
             child: PlayerMenu(
               section: section,
-              episodes: widget.detail.episodes,
+              episodes: _detail.episodes,
               currentIndex: _index,
               preferences: _preferences,
               qualities: _plan?.qualities ?? [],
               actualQuality: _plan?.quality ?? 0,
               local: _plan?.local == true,
-              favorite: widget.store.isFavorite(widget.detail.drama.id),
+              favorite: widget.store.isFavorite(_detail.drama.id),
               mobile: _mobile,
               onEpisode: (index) => Navigator.pop(menuContext, index),
               onDownload: _downloadsAvailable ? _downloadEpisodes : null,
               onPreferences: _setPreferences,
-              showDanmaku: widget.detail.drama.source == 'hongguo',
+              showDanmaku: _detail.drama.source == 'hongguo',
               danmakuStatus: _danmaku.status,
               onRetryDanmaku: _danmaku.canRetry ? _danmaku.retry : null,
               preloadStatus: _preloader.status,
@@ -1586,8 +1661,7 @@ class _PlayerScreenState extends State<PlayerScreen>
                 unawaited(_enhancement.toggleCompare());
                 Navigator.pop(menuContext);
               },
-              onFavorite: () =>
-                  widget.store.toggleFavorite(widget.detail.drama),
+              onFavorite: () => widget.store.toggleFavorite(_detail.drama),
               subtitleTracks: _subtitleTracks,
               subtitleTrackId: _player.state.track.subtitle.id,
               subtitleDelay: _subtitleDelay,
@@ -1774,7 +1848,7 @@ class _PlayerScreenState extends State<PlayerScreen>
         builder: (_) => Theme(
           data: televisionTheme(AppTheme.dark),
           child: TelevisionEpisodeDialog(
-            episodes: widget.detail.episodes,
+            episodes: _detail.episodes,
             currentIndex: _index,
           ),
         ),
@@ -1802,11 +1876,11 @@ class _PlayerScreenState extends State<PlayerScreen>
               speed: _speed,
               quality: _requestedQuality,
               qualities: _plan?.qualities ?? [],
-              favorite: widget.store.isFavorite(widget.detail.drama.id),
+              favorite: widget.store.isFavorite(_detail.drama.id),
               onFavorite: _toggleFavorite,
               autoAdvance: _autoAdvance,
               danmaku: _danmakuEnabled,
-              showDanmaku: widget.detail.drama.source == 'hongguo',
+              showDanmaku: _detail.drama.source == 'hongguo',
               danmakuStatus: _danmaku.status,
               onRetryDanmaku: _danmaku.canRetry ? _danmaku.retry : null,
               preload: _preloadEnabled,
@@ -1924,7 +1998,7 @@ class _PlayerScreenState extends State<PlayerScreen>
 
   Widget _buildPlayer(BuildContext context) {
     final theme = Theme.of(context);
-    final title = widget.detail.drama.title;
+    final title = _detail.drama.title;
     final fullscreen = _showFullscreen;
     final pictureInPicture = _pictureInPictureVisible;
     return PopScope(
@@ -2040,7 +2114,7 @@ class _PlayerScreenState extends State<PlayerScreen>
         ? televisionTheme(AppTheme.dark)
         : AppTheme.dark;
     final title =
-        '${widget.detail.drama.title} · 第 ${widget.detail.episodes[_index].number} 集${_plan?.local == true ? ' · 本地' : ''}${widget.detail.episodes[_index].vip ? ' · VIP 试看' : ''}${(_plan?.routeIndex ?? 0) > 0 ? ' · 线路 ${_plan!.routeIndex + 1}' : ''}';
+        '${_detail.drama.title} · 第 ${_detail.episodes[_index].number} 集${_plan?.local == true ? ' · 本地' : ''}${_detail.episodes[_index].vip ? ' · VIP 试看' : ''}${(_plan?.routeIndex ?? 0) > 0 ? ' · 线路 ${_plan!.routeIndex + 1}' : ''}';
     final hideOverlayForPictureInPicture = _pictureInPictureVisible;
     final Widget controls = hideOverlayForPictureInPicture
         ? const SizedBox.shrink()
@@ -2054,7 +2128,7 @@ class _PlayerScreenState extends State<PlayerScreen>
             onTogglePlayback: _togglePlayback,
             onSeek: _seek,
             onPrevious: _index > 0 ? () => _play(_index - 1) : null,
-            onNext: _index + 1 < widget.detail.episodes.length
+            onNext: _index + 1 < _detail.episodes.length
                 ? () => _play(_index + 1)
                 : null,
             onEpisodes: () => _televisionEpisodes(context),
@@ -2078,14 +2152,14 @@ class _PlayerScreenState extends State<PlayerScreen>
             onSeek: _seekTo,
             speed: _speed,
             qualityLabel: _qualityLabel,
-            showDanmaku: widget.detail.drama.source == 'hongguo',
+            showDanmaku: _detail.drama.source == 'hongguo',
             danmakuEnabled: _danmakuEnabled,
             danmakuStatus: _danmaku.status,
             onEpisodes: () => _openPanel(PlayerMenuSection.episodes),
             onSpeed: () => _openPanel(PlayerMenuSection.speed),
             onQuality: () => _openPanel(PlayerMenuSection.quality),
             onSubtitles: () => _openPanel(PlayerMenuSection.subtitles),
-            onDanmaku: widget.detail.drama.source == 'hongguo'
+            onDanmaku: _detail.drama.source == 'hongguo'
                 ? _toggleDanmaku
                 : null,
             onRetryDanmaku: _danmaku.canRetry
@@ -2096,7 +2170,7 @@ class _PlayerScreenState extends State<PlayerScreen>
                 ? _enterPictureInPicture
                 : null,
             onPrevious: _index > 0 ? () => _play(_index - 1) : null,
-            onNext: _index + 1 < widget.detail.episodes.length
+            onNext: _index + 1 < _detail.episodes.length
                 ? () => _play(_index + 1)
                 : null,
           );
@@ -2168,6 +2242,20 @@ class _PlayerScreenState extends State<PlayerScreen>
                       alignment: WrapAlignment.center,
                       crossAxisAlignment: WrapCrossAlignment.center,
                       children: [
+                        if (_detail.drama.source == 'sorani' &&
+                            soraniLoginRequired(_error))
+                          FilledButton.icon(
+                            onPressed: () async {
+                              final connected = await openSoraniLogin(
+                                context,
+                                repository: widget.repository,
+                                store: widget.store,
+                              );
+                              if (connected && mounted) _retry();
+                            },
+                            icon: const Icon(Icons.login),
+                            label: const Text('登录青空账号后重试'),
+                          ),
                         FilledButton.tonalIcon(
                           onPressed: () =>
                               DiaryService.showDiaryDialog(context),
@@ -2186,7 +2274,7 @@ class _PlayerScreenState extends State<PlayerScreen>
                           SourceDiagnosticsButton(
                             repository: widget.repository,
                             store: widget.store,
-                            drama: widget.detail.drama,
+                            drama: _detail.drama,
                           ),
                       ],
                     ),
@@ -2327,7 +2415,7 @@ class _PlayerScreenState extends State<PlayerScreen>
   }
 
   Widget _mobileSynopsis() {
-    final drama = widget.detail.drama;
+    final drama = _detail.drama;
     final colors = Theme.of(context).colorScheme;
     final meta = [
       SourceSite.byId(drama.source).name,
@@ -2402,9 +2490,9 @@ class _PlayerScreenState extends State<PlayerScreen>
           ],
           const SizedBox(height: 12),
           Text(body, style: const TextStyle(height: 1.55)),
-          if (widget.detail.warning.isNotEmpty) ...[
+          if (_detail.warning.isNotEmpty) ...[
             const SizedBox(height: 12),
-            Text(widget.detail.warning, style: TextStyle(color: colors.error)),
+            Text(_detail.warning, style: TextStyle(color: colors.error)),
           ],
         ],
       ),
@@ -2485,7 +2573,7 @@ class _PlayerScreenState extends State<PlayerScreen>
       );
     }
     return DownloadPicker(
-      detail: widget.detail,
+      detail: _detail,
       preferences: widget.store.downloadPreferences,
       embedded: true,
       onSubmit: _submitDownloadSelection,
@@ -2500,7 +2588,7 @@ class _PlayerScreenState extends State<PlayerScreen>
         if (widget.siteSelector != null) widget.siteSelector!,
         Expanded(
           child: PlayerEpisodeGrid(
-            episodes: widget.detail.episodes,
+            episodes: _detail.episodes,
             currentIndex: _index,
             compact: compact,
             title: compact ? '剧集' : '选集',

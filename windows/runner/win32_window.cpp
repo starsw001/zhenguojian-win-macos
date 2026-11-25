@@ -2,6 +2,7 @@
 
 #include <dwmapi.h>
 #include <flutter_windows.h>
+#include <shellapi.h>
 
 #include "resource.h"
 
@@ -29,6 +30,11 @@ constexpr const wchar_t kGetPreferredBrightnessRegValue[] = L"AppsUseLightTheme"
 // The number of Win32Window objects that currently exist.
 static int g_active_window_count = 0;
 
+constexpr UINT kTrayIconMessage = WM_APP + 37;
+constexpr UINT kTrayIconId = 1;
+constexpr UINT kRestoreWindowCommand = 40001;
+constexpr UINT kExitApplicationCommand = 40002;
+
 using EnableNonClientDpiScaling = BOOL __stdcall(HWND hwnd);
 
 // Scale helper to convert logical scaler values to physical using passed in
@@ -51,6 +57,19 @@ void EnableFullDpiSupportIfAvailable(HWND hwnd) {
     enable_non_client_dpi_scaling(hwnd);
   }
   FreeLibrary(user32_module);
+}
+
+DWORD WINAPI close_watchdog(LPVOID) {
+  Sleep(3000);
+  TerminateProcess(GetCurrentProcess(), 0);
+  return 0;
+}
+
+void start_close_watchdog() {
+  HANDLE thread = CreateThread(nullptr, 0, close_watchdog, nullptr, 0, nullptr);
+  if (thread != nullptr) {
+    CloseHandle(thread);
+  }
 }
 
 }  // namespace
@@ -111,7 +130,8 @@ void WindowClassRegistrar::UnregisterWindowClass() {
   class_registered_ = false;
 }
 
-Win32Window::Win32Window() {
+Win32Window::Win32Window()
+    : taskbar_created_message_(RegisterWindowMessageW(L"TaskbarCreated")) {
   ++g_active_window_count;
 }
 
@@ -192,8 +212,51 @@ Win32Window::MessageHandler(HWND hwnd,
                             UINT const message,
                             WPARAM const wparam,
                             LPARAM const lparam) noexcept {
+  if (message == taskbar_created_message_) {
+    tray_icon_visible_ = false;
+    if (close_to_tray_ && !IsWindowVisible(hwnd)) {
+      AddTrayIcon();
+    }
+    return 0;
+  }
+
   switch (message) {
+    case WM_CLOSE:
+      if (close_to_tray_ && !exit_requested_ && AddTrayIcon()) {
+        ShowWindow(hwnd, SW_HIDE);
+        return 0;
+      }
+      break;
+
+    case kTrayIconMessage:
+      switch (static_cast<UINT>(lparam)) {
+        case WM_LBUTTONUP:
+        case WM_LBUTTONDBLCLK:
+          RestoreFromTray();
+          return 0;
+        case WM_RBUTTONUP:
+        case WM_CONTEXTMENU:
+          ShowTrayMenu();
+          return 0;
+      }
+      break;
+
+    case WM_COMMAND:
+      switch (LOWORD(wparam)) {
+        case kRestoreWindowCommand:
+          RestoreFromTray();
+          return 0;
+        case kExitApplicationCommand:
+          exit_requested_ = true;
+          RemoveTrayIcon();
+          TerminateProcess(GetCurrentProcess(), 0);
+          return 0;
+      }
+      break;
+
     case WM_DESTROY:
+      RemoveTrayIcon();
+      start_close_watchdog();
       window_handle_ = nullptr;
       Destroy();
       if (quit_on_close_) {
@@ -233,6 +296,19 @@ Win32Window::MessageHandler(HWND hwnd,
   }
 
   return DefWindowProc(window_handle_, message, wparam, lparam);
+}
+
+bool Win32Window::HandlesTrayMessage(UINT message, WPARAM wparam) const {
+  if (message == WM_CLOSE || message == kTrayIconMessage ||
+      message == taskbar_created_message_) {
+    return true;
+  }
+  if (message != WM_COMMAND) {
+    return false;
+  }
+  const UINT command = LOWORD(wparam);
+  return command == kRestoreWindowCommand ||
+         command == kExitApplicationCommand;
 }
 
 void Win32Window::Destroy() {
@@ -275,6 +351,77 @@ HWND Win32Window::GetHandle() {
 
 void Win32Window::SetQuitOnClose(bool quit_on_close) {
   quit_on_close_ = quit_on_close;
+}
+
+void Win32Window::SetCloseToTray(bool close_to_tray) {
+  close_to_tray_ = close_to_tray;
+}
+
+bool Win32Window::AddTrayIcon() {
+  if (tray_icon_visible_) {
+    return true;
+  }
+  NOTIFYICONDATAW icon{};
+  icon.cbSize = sizeof(icon);
+  icon.hWnd = window_handle_;
+  icon.uID = kTrayIconId;
+  icon.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
+  icon.uCallbackMessage = kTrayIconMessage;
+  icon.hIcon = LoadIconW(GetModuleHandle(nullptr), MAKEINTRESOURCEW(IDI_APP_ICON));
+  if (icon.hIcon == nullptr) {
+    icon.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+  }
+  GetWindowTextW(window_handle_, icon.szTip,
+                 static_cast<int>(sizeof(icon.szTip) / sizeof(icon.szTip[0])));
+  if (!Shell_NotifyIconW(NIM_ADD, &icon)) {
+    return false;
+  }
+  tray_icon_visible_ = true;
+  return true;
+}
+
+void Win32Window::RemoveTrayIcon() {
+  if (!tray_icon_visible_ || window_handle_ == nullptr) {
+    return;
+  }
+  NOTIFYICONDATAW icon{};
+  icon.cbSize = sizeof(icon);
+  icon.hWnd = window_handle_;
+  icon.uID = kTrayIconId;
+  Shell_NotifyIconW(NIM_DELETE, &icon);
+  tray_icon_visible_ = false;
+}
+
+void Win32Window::RestoreFromTray() {
+  if (window_handle_ == nullptr) {
+    return;
+  }
+  ShowWindow(window_handle_, SW_RESTORE);
+  SetForegroundWindow(window_handle_);
+  if (child_content_ != nullptr) {
+    SetFocus(child_content_);
+  }
+}
+
+void Win32Window::ShowTrayMenu() {
+  if (window_handle_ == nullptr) {
+    return;
+  }
+  HMENU menu = CreatePopupMenu();
+  if (menu == nullptr) {
+    return;
+  }
+  AppendMenuW(menu, MF_STRING, kRestoreWindowCommand, L"显示主窗口");
+  AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+  AppendMenuW(menu, MF_STRING, kExitApplicationCommand, L"退出软件");
+  SetMenuDefaultItem(menu, kRestoreWindowCommand, FALSE);
+  POINT cursor{};
+  GetCursorPos(&cursor);
+  SetForegroundWindow(window_handle_);
+  TrackPopupMenu(menu, TPM_LEFTALIGN | TPM_BOTTOMALIGN | TPM_RIGHTBUTTON,
+                 cursor.x, cursor.y, 0, window_handle_, nullptr);
+  DestroyMenu(menu);
+  PostMessage(window_handle_, WM_NULL, 0, 0);
 }
 
 bool Win32Window::OnCreate() {

@@ -26,6 +26,11 @@ type soraniAPIClient struct {
 	base       string
 	site       string
 	once       sync.Once
+	authOnce   sync.Once
+	authMu     sync.Mutex
+	refreshMu  sync.Mutex
+	auth       *soraniAccountSession
+	authEpoch  uint64
 }
 
 // soraniClient 取得Sorani请求使用的客户端。
@@ -42,6 +47,19 @@ func (d *Downloader) soraniClient() *soraniAPIClient {
 
 // get 从Sorani API 客户端中取得指定条目。
 func (client *soraniAPIClient) get(ctx context.Context, route string, query url.Values, limit int64) (any, error) {
+	session := client.accountSnapshot()
+	value, err := client.request(ctx, http.MethodGet, route, query, limit, session)
+	if errors.Is(err, errSoraniLoginRequired) && session != nil {
+		session, err = client.refreshAccount(ctx, session)
+		if err != nil {
+			return nil, err
+		}
+		return client.request(ctx, http.MethodGet, route, query, limit, session)
+	}
+	return value, err
+}
+
+func (client *soraniAPIClient) request(ctx context.Context, method, route string, query url.Values, limit int64, session *soraniAccountSession) (any, error) {
 	if limit <= 0 {
 		limit = 4 << 20
 	}
@@ -62,7 +80,7 @@ func (client *soraniAPIClient) get(ctx context.Context, route string, query url.
 	if len(query) > 0 {
 		address += "?" + query.Encode()
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, address, nil)
+	request, err := http.NewRequestWithContext(ctx, method, address, nil)
 	if err != nil {
 		return nil, errors.New("无法创建青空次元请求")
 	}
@@ -83,9 +101,24 @@ func (client *soraniAPIClient) get(ctx context.Context, route string, query url.
 	// 与黄剧客户端一致：接口请求不携带共享 Cookie Jar，且只允许同源重定向。
 	transport := *d.client
 	transport.Jar = nil
+	if session != nil {
+		if !client.accountOriginAllowed() {
+			return nil, errors.New("青空登录状态只能用于原站 HTTPS 接口")
+		}
+		request.Header.Set("Authorization", "Bearer "+session.Token)
+		if session.UserAgent != "" {
+			request.Header.Set("User-Agent", session.UserAgent)
+		}
+		request.Header.Set("Referer", soraniSiteBaseURL+"/")
+		request.Header.Set("Origin", soraniSiteBaseURL)
+		transport.Jar = session.jar
+	}
 	previousRedirect := transport.CheckRedirect
 	transport.CheckRedirect = func(next *http.Request, via []*http.Request) error {
-		if len(via) >= 5 || providerMediaOrigin(next.URL) != providerMediaOrigin(base) {
+		if session != nil && method != http.MethodGet {
+			return errors.New("青空账号请求不接受重定向，请重新登录")
+		}
+		if len(via) >= 5 || providerMediaOrigin(next.URL) != providerMediaOrigin(base) || session != nil && !strings.HasPrefix(next.URL.Path, "/sorani-cms/api/") {
 			return errors.New("青空次元接口重定向地址异常")
 		}
 		if previousRedirect != nil {
@@ -110,6 +143,12 @@ func (client *soraniAPIClient) get(ctx context.Context, route string, query url.
 			d.limiter.observe(request, response)
 		}
 		observeSourceResponse(ctx, response)
+		if response.StatusCode == http.StatusUnauthorized {
+			return nil, errSoraniLoginRequired
+		}
+		if response.StatusCode == http.StatusForbidden && (route == "/auth/profile" || route == "/auth/refresh") {
+			return nil, errSoraniLoginRequired
+		}
 		blocked := catalogResponseBlockReason(response, data) != ""
 		if response.StatusCode < 200 || response.StatusCode >= 300 || blocked {
 			return nil, d.catalogResponseError(request, response, data)
@@ -122,7 +161,7 @@ func (client *soraniAPIClient) get(ctx context.Context, route string, query url.
 		}
 		var networkError net.Error
 		transient := errors.Is(readErr, io.ErrUnexpectedEOF) || errors.As(readErr, &networkError)
-		if attempt > 0 || !transient || ctx.Err() != nil {
+		if method != http.MethodGet || attempt > 0 || !transient || ctx.Err() != nil {
 			return nil, fmt.Errorf("青空次元响应读取中断（已读%d字节）：%w", len(data), publicError(readErr))
 		}
 		select {
@@ -142,7 +181,17 @@ func (client *soraniAPIClient) get(ctx context.Context, route string, query url.
 	}
 	// 上游统一用 code=200 表示成功；非 200 一律视为业务错误。
 	if row, ok := decoded.(map[string]any); ok {
+		code := nativeText(row["code"])
+		if code == "401" || soraniNeedsLogin(mapString(row, "message", "msg")) {
+			return nil, errSoraniLoginRequired
+		}
+		if payload, ok := row["data"].(map[string]any); ok && soraniNeedsLogin(mapString(payload, "message", "msg")) {
+			return nil, errSoraniLoginRequired
+		}
 		if code := nativeText(row["code"]); code != "" && code != "200" {
+			if session != nil {
+				return nil, errors.New("青空账号接口未完成操作，请在原站确认账号状态后重试")
+			}
 			message := mapString(row, "message", "msg")
 			if message == "" {
 				message = "上游返回错误码 " + code

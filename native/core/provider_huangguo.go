@@ -469,6 +469,7 @@ func (d *Downloader) fetchProviderText(ctx context.Context, rawURL, referer stri
 			if noCache, _ := ctx.Value(providerTextNoCacheKey{}).(bool); noCache {
 				req.Header.Set("Cache-Control", "no-cache")
 			}
+			d.applyPiguoAccessSession(ctx, rawURL, req)
 			resp, err := d.doCatalogRequestWithTimeout(req, timeout)
 			if err != nil {
 				lastErr = err

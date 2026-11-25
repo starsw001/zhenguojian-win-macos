@@ -5,8 +5,22 @@ final _sourceProgressAddress = RegExp(
   caseSensitive: false,
 );
 
+final _sourceProgressHost = RegExp(
+  r'''\b(?:(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,63}|(?:\d{1,3}\.){3}\d{1,3})(?::\d{1,5})?(?:/[^\s<>"'；，。·]*)?''',
+  caseSensitive: false,
+);
+
 String sourceProgressText(String value) => value
     .replaceAll(_sourceProgressAddress, '')
+    .replaceAllMapped(_sourceProgressHost, (match) {
+      final address = match.group(0)!;
+      if (RegExp(
+        r'\.(?:log|json|txt|exe|dll|mp4|m3u8|dart|go)(?:\.\d+)?$',
+        caseSensitive: false,
+      ).hasMatch(address))
+        return address;
+      return '';
+    })
     .replaceAll(RegExp(r'\s*·\s*(?=[；;]|$)'), '')
     .trim();
 

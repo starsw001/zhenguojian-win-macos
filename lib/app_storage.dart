@@ -16,10 +16,34 @@ Future<void> prepareAppStorage() async {
 }
 
 Future<void> _preparePortableStorage() async {
-  final layout = PortableStorageLayout(Platform.resolvedExecutable);
+  final layout = PortableStorageLayout(
+    Platform.resolvedExecutable,
+    updateRoot: _trustedUpdateRoot(),
+  );
   await layout.prepare();
   PathProviderPlatform.instance = PortablePathProvider(layout);
   SharedPreferencesStorePlatform.instance = PortablePreferencesStore(layout);
+}
+
+String? _trustedUpdateRoot() {
+  final environment = Platform.environment;
+  final root = environment['GUO_UPDATE_ROOT'];
+  final token = environment['GUO_UPDATE_SESSION'] ?? '';
+  final parent = int.tryParse(environment['GUO_UPDATE_PARENT_PID'] ?? '');
+  if (root == null ||
+      !p.isAbsolute(root) ||
+      !RegExp(r'^[a-f0-9]{40}$').hasMatch(token) ||
+      parent == null ||
+      parent <= 0) {
+    return null;
+  }
+  final executable = p.normalize(Platform.resolvedExecutable);
+  final normalizedRoot = p.normalize(root);
+  if (!p.equals(p.dirname(executable), normalizedRoot) &&
+      !p.isWithin(normalizedRoot, executable)) {
+    return null;
+  }
+  return normalizedRoot;
 }
 
 Future<Map<String, String>> _storageFiles(Directory root) async {

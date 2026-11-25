@@ -128,8 +128,8 @@ func TestHongguoPlaybackRegistrationEnvelopeRoundTrip(t *testing.T) {
 	}
 }
 
-// TestHongguoPlaybackAccessFailuresDoNotRotateIdentityOrRetry 验证「Hongguo Playback Access Failures Do Not Rotate Identity Or Retry」回归场景。
-func TestHongguoPlaybackAccessFailuresDoNotRotateIdentityOrRetry(t *testing.T) {
+// TestHongguoPlaybackAccessFailuresKeepIdentityAcrossRoutes 验证「Hongguo Playback Access Failures Keep Identity Across Routes」回归场景。
+func TestHongguoPlaybackAccessFailuresKeepIdentityAcrossRoutes(t *testing.T) {
 	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusTooManyRequests, http.StatusOK} {
 		calls := 0
 		d := sourceFixtureDownloader(t, func(request *http.Request) (*http.Response, error) {
@@ -143,8 +143,8 @@ func TestHongguoPlaybackAccessFailuresDoNotRotateIdentityOrRetry(t *testing.T) {
 		client := d.hongguoClient()
 		client.state.DeviceID, client.state.InstallID, client.state.Registered = "123456789", "987654321", true
 		_, err := d.resolveHongguoMedia(context.Background(), Task{DramaID: "hongguo:1234", Index: 1, Chapter: Chapter{VideoURL: "hongguo-cenc://5678"}})
-		if err == nil || calls != 1 || !hongguoStopPlaybackFallback(err) {
-			t.Fatalf("failed source triggered alternate identity or fallback: status %d calls %d err %v", status, calls, err)
+		if err == nil || calls != 1 || client.playbackDevice == nil || client.playbackDevice.DeviceID != "123456789" || client.playbackDevice.InstallID != "987654321" {
+			t.Fatalf("failed routes changed playback identity: status %d calls %d err %v", status, calls, err)
 		}
 	}
 }

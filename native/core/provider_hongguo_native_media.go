@@ -32,6 +32,9 @@ func (downloader *Downloader) resolveHongguoAppMedia(ctx context.Context, videoI
 		return providerMedia{}, err
 	}
 	data := nestedMap(result, "data")
+	if id := mapString(data, "item_id", "episode_id", "video_id"); id != "" && id != videoID {
+		return providerMedia{}, errors.New("红果 App 返回了其他分集")
+	}
 	model, _ := data["video_model"].(map[string]any)
 	if encoded, ok := data["video_model"].(string); ok && encoded != "" {
 		if decoded, err := decodeHongguoBase64(encoded); err == nil && len(decoded) > 0 {
@@ -44,7 +47,7 @@ func (downloader *Downloader) resolveHongguoAppMedia(ctx context.Context, videoI
 		}
 	}
 	if len(model) == 0 {
-		if rows := anyList(data["video_list"]); len(rows) > 0 {
+		if data["video_list"] != nil {
 			model = map[string]any{
 				"video_list":     data["video_list"],
 				"video_duration": data["video_duration"],
@@ -78,7 +81,7 @@ func selectHongguoAppMedia(model map[string]any) (providerMedia, error) {
 	for _, row := range variants {
 		variant, _ := row.(map[string]any)
 		meta := nestedMap(variant, "video_meta")
-		codec := strings.ToLower(mapString(meta, "codec_type"))
+		codec := strings.ToLower(firstNonEmpty(mapString(meta, "codec_type"), mapString(variant, "codec_type")))
 		if codec == "bytevc2" || strings.Contains(strings.ToLower(mapString(variant, "gear_des_key")), "bytevc2") {
 			continue
 		}
@@ -98,7 +101,7 @@ func selectHongguoAppMedia(model map[string]any) (providerMedia, error) {
 			}
 		}
 		height, _ := strconv.Atoi(mapString(meta, "vheight"))
-		if definition, err := strconv.Atoi(hongguoQualityNumber.FindString(mapString(meta, "definition"))); err == nil && definition > 0 {
+		if definition, err := strconv.Atoi(hongguoQualityNumber.FindString(firstNonEmpty(mapString(meta, "definition"), mapString(variant, "definition", "quality_desc")))); err == nil && definition > 0 {
 			height = definition
 		} else if width, _ := strconv.Atoi(mapString(meta, "vwidth")); width > 0 && (height == 0 || width < height) {
 			height = width
@@ -131,33 +134,12 @@ func selectHongguoAppMedia(model map[string]any) (providerMedia, error) {
 func hongguoMediaAddresses(info map[string]any) []string {
 	var addresses []string
 	seen := map[string]bool{}
-	var add func(any)
-	add = func(value any) {
-		switch value := value.(type) {
-		case string:
-			address := strings.TrimSpace(value)
-			if len(address) > 8192 {
-				return
-			}
-			if !isProviderHTTPMediaURL(address) {
-				decoded, err := decodeHongguoBase64(address)
-				if err != nil {
-					return
-				}
-				address = strings.TrimSpace(string(decoded))
-			}
-			if isProviderHTTPMediaURL(address) && !seen[address] {
-				seen[address] = true
-				addresses = append(addresses, address)
-			}
-		case []any:
-			for _, item := range value {
-				add(item)
-			}
+	for _, value := range hongguoMultiCandidateURLs(info) {
+		checked, err := hongguoIssuedMediaURL(value)
+		if err == nil && !seen[checked] {
+			seen[checked] = true
+			addresses = append(addresses, checked)
 		}
-	}
-	for _, key := range []string{"main_url", "backup_url", "backup_url_1", "backup_url_2", "backup_urls", "url_list"} {
-		add(info[key])
 	}
 	return addresses
 }

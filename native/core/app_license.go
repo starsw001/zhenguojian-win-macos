@@ -3,7 +3,6 @@ package core
 import (
 	"duanjuapp/native/licensing"
 	"errors"
-	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -35,8 +34,7 @@ func nativeLicenseManager() *licensing.Manager {
 		if buildAllSources == "true" {
 			edition = "zhenguoshang"
 		}
-		executable, _ := os.Executable()
-		root := filepath.Dir(executable)
+		root := nativeProgramRoot()
 		nativeLicense.manager = licensing.Open(licensing.Config{
 			Root: root, Storage: filepath.Join(root, "app-data", "licenses", edition),
 			Edition: edition, Version: buildAppVersion, ServerURL: licensing.ServiceOrigin,
@@ -113,10 +111,11 @@ func nativeLicenseAction(input nativeInput) (any, error) {
 		}
 		return map[string]any{"reachable": true, "message": "本机可以连接正确的许可证服务，未提交账号、密码或许可证。"}, nil
 	}
+	if input.Action == "licenseUpdateReady" {
+		return updateReady()
+	}
 	manager := nativeLicenseManager()
 	switch input.Action {
-	case "licenseUpdateReady":
-		return updateReady()
 	case "licenseStatus":
 		return manager.Poll(true), nil
 	case "licenseLogin":

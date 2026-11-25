@@ -10,17 +10,30 @@ import (
 )
 
 type providerMedia struct {
-	pending     *Task
-	credentials *providerMediaCredentials
-	Direct      bool
-	URL         string
-	Referer     string
-	Duration    time.Duration
-	Playlist    string
-	HLSKey      []byte
-	CENCKey     []byte
-	Quality     int
-	Variants    []providerMedia
+	pending      *Task
+	credentials  *providerMediaCredentials
+	routeAddress string
+	Direct       bool
+	URL          string
+	Referer      string
+	Duration     time.Duration
+	Playlist     string
+	HLSKey       []byte
+	CENCKey      []byte
+	Quality      int
+	Variants     []providerMedia
+}
+
+func providerMediaRequestContext(ctx context.Context, media providerMedia) context.Context {
+	ctx = providerMediaContext(ctx, media.credentials)
+	if media.routeAddress == "" {
+		return ctx
+	}
+	address, err := url.Parse(media.URL)
+	if err != nil || address.Hostname() == "" {
+		return ctx
+	}
+	return cdnRouteContext(ctx, address.Hostname(), media.routeAddress)
 }
 
 // providerBaseURL 取得指定站源配置的基础地址。
@@ -234,10 +247,7 @@ func (d *Downloader) resolveProviderMedia(ctx context.Context, task Task) (provi
 	}
 	parsed, _ := url.Parse(media.URL)
 	if strings.HasSuffix(strings.ToLower(parsed.Path), ".m3u8") {
-		mediaContext := ctx
-		if media.credentials != nil {
-			mediaContext = providerMediaContext(ctx, media.credentials)
-		}
+		mediaContext := providerMediaRequestContext(ctx, media)
 		playlist, finalURL, err := d.fetchMediaPlaylist(mediaContext, media.URL, media.Referer)
 		if err != nil {
 			return providerMedia{}, fmt.Errorf("获取播放列表失败: %w", err)

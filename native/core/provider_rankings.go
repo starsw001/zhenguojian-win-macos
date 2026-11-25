@@ -15,12 +15,14 @@ const rankingCacheMaxBytes = 16 << 20
 const rankingCacheMaxPages = 256
 
 type rankingBoard struct {
-	ID          string `json:"id"`
-	Source      string `json:"source"`
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	path        string
-	upstreamKey string
+	CategoryID   string `json:"categoryId,omitempty"`
+	CategoryName string `json:"categoryName,omitempty"`
+	ID           string `json:"id"`
+	Source       string `json:"source"`
+	Name         string `json:"name"`
+	Description  string `json:"description"`
+	path         string
+	upstreamKey  string
 }
 
 var rankingBoards = []rankingBoard{
@@ -43,9 +45,11 @@ var rankingBoards = []rankingBoard{
 }
 
 type rankingItem struct {
-	Rank   int    `json:"rank"`
-	Drama  Drama  `json:"drama"`
-	Metric string `json:"metric,omitempty"`
+	Status          string `json:"status,omitempty"`
+	ReservationOnly bool   `json:"reservationOnly,omitempty"`
+	Rank            int    `json:"rank"`
+	Drama           Drama  `json:"drama"`
+	Metric          string `json:"metric,omitempty"`
 }
 
 type rankingPage struct {
@@ -67,15 +71,24 @@ type rankingCall struct {
 }
 
 type rankingCache struct {
-	mu      sync.Mutex
-	pages   map[string]rankingPage
-	pending map[string]*rankingCall
+	boards          []rankingBoard
+	boardsLoaded    bool
+	boardsFetchedAt time.Time
+	boardsPending   chan struct{}
+	mu              sync.Mutex
+	pages           map[string]rankingPage
+	pending         map[string]*rankingCall
 }
 
 // findRankingBoard 查找排行榜榜单。
 func findRankingBoard(id string) (rankingBoard, bool) {
 	for _, board := range rankingBoards {
 		if board.ID == id {
+			return board, true
+		}
+	}
+	if strings.HasPrefix(id, "hongguo-web-") {
+		if board, ok := hongguoRankingSpec(strings.TrimPrefix(id, "hongguo-web-")); ok && board.ID == id {
 			return board, true
 		}
 	}

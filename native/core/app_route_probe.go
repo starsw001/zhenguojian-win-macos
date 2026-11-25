@@ -34,7 +34,7 @@ type nativeRouteChecks struct {
 
 // nativeRouteKey 返回原生线路键。
 func nativeRouteKey(media providerMedia) string {
-	return fmt.Sprintf("%x", sha256.Sum256([]byte(media.URL+"\x00"+media.Referer+fmt.Sprint(media.Quality))))
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(media.URL+"\x00"+media.Referer+"\x00"+media.routeAddress+fmt.Sprint(media.Quality))))
 }
 
 // nativeDownloadRouteOrder 根据选中地址生成当前分集的下载候选顺序。
@@ -114,7 +114,7 @@ func (engine *nativeEngine) probePlaybackRoute(ctx context.Context, media provid
 	if !isProviderHTTPMediaURL(media.URL) {
 		return result, errors.New("无效媒体地址")
 	}
-	ctx = providerMediaContext(ctx, media.credentials)
+	ctx = providerMediaRequestContext(ctx, media)
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, media.URL, nil)
 	if err != nil {
 		return result, err

@@ -60,7 +60,7 @@ func nativeAuthorizeInput(input nativeInput) error {
 		if !found || !nativeSourceAvailable(board.Source) {
 			return errNativeBuildSource
 		}
-	case "catalog", "cached", "categories", "cachedCategories", "sourceStatus", "sourceJob", "cancelSourceJob", "saveSourceHealth":
+	case "catalog", "cached", "categories", "cachedCategories", "sourceStatus", "sourceJob", "cancelSourceJob", "saveSourceHealth", "sourceAccount":
 		if !nativeSourceAvailable(input.Source) {
 			return errNativeBuildSource
 		}

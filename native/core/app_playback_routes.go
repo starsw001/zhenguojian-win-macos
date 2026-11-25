@@ -11,19 +11,22 @@ import (
 )
 
 type nativePlaybackChoice struct {
-	dramaID       string
-	episodeIndex  int
-	checks        *nativeRouteChecks
-	probeContext  context.Context
-	probeCancel   context.CancelFunc
-	danmakuSeries string
-	danmakuVideo  string
-	media         []providerMedia
-	index         int
-	qualities     []int
-	streamSession string
-	guardAccess   bool
-	created       time.Time
+	hongguoGeneration uint64
+	hongguoResolvedAt time.Time
+	source            string
+	dramaID           string
+	episodeIndex      int
+	checks            *nativeRouteChecks
+	probeContext      context.Context
+	probeCancel       context.CancelFunc
+	danmakuSeries     string
+	danmakuVideo      string
+	media             []providerMedia
+	index             int
+	qualities         []int
+	streamSession     string
+	guardAccess       bool
+	created           time.Time
 }
 
 // nativePlaybackChoices 为媒体计划提取可供播放切换的同集候选。
@@ -35,7 +38,7 @@ func nativePlaybackChoices(media providerMedia, quality int) nativePlaybackChoic
 		if option.pending == nil && !isProviderHTTPMediaURL(option.URL) {
 			continue
 		}
-		identity := option.URL + "\x00" + option.Referer + "\x00" + hex.EncodeToString(option.CENCKey) + "\x00" + hex.EncodeToString(option.HLSKey)
+		identity := option.URL + "\x00" + option.Referer + "\x00" + option.routeAddress + "\x00" + hex.EncodeToString(option.CENCKey) + "\x00" + hex.EncodeToString(option.HLSKey)
 		if seen[identity] {
 			continue
 		}
@@ -70,6 +73,7 @@ func nativePlaybackChoices(media providerMedia, quality int) nativePlaybackChoic
 func nativePlaybackChoicesForSource(source string, media providerMedia, quality int) nativePlaybackChoice {
 
 	choice := nativePlaybackChoices(media, 0)
+	choice.source = source
 	choice.guardAccess = true
 	if quality > 0 {
 		sort.SliceStable(choice.media, func(i, j int) bool {
@@ -77,7 +81,7 @@ func nativePlaybackChoicesForSource(source string, media providerMedia, quality 
 		})
 	} else if source == sourceHongguo && media.Direct {
 		for index, option := range choice.media {
-			if option.URL == media.URL && option.Referer == media.Referer &&
+			if option.URL == media.URL && option.Referer == media.Referer && option.routeAddress == media.routeAddress &&
 				bytes.Equal(option.CENCKey, media.CENCKey) && bytes.Equal(option.HLSKey, media.HLSKey) {
 				copy(choice.media[1:index+1], choice.media[:index])
 				choice.media[0] = option
@@ -135,7 +139,7 @@ func (engine *nativeEngine) nativeOpenPlayback(ctx context.Context, choice nativ
 		if err != nil {
 			return nativePlan{}, err
 		}
-		plan.URL, choice.streamSession = stream.nativeOpenWithAccessGuard(media, choice.guardAccess)
+		plan.URL, choice.streamSession = stream.nativeOpenSourceStream(media, choice.guardAccess, choice.source)
 	}
 	if choice.checks == nil {
 		choice.checks = &nativeRouteChecks{results: map[int]nativeRouteStatus{}}

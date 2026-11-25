@@ -16,9 +16,9 @@ import (
 	"golang.org/x/net/publicsuffix"
 )
 
-const hongguoPlaybackVersionCode = 73532
-const hongguoPlaybackVersionName = "7.3.5.32"
-const hongguoPlaybackRegistrationUserAgent = "com.phoenix.read/73532 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3)"
+const hongguoPlaybackVersionCode = 73932
+const hongguoPlaybackVersionName = "7.3.9.32"
+const hongguoPlaybackRegistrationUserAgent = "com.phoenix.read/72232 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3)"
 
 type hongguoPlaybackCookie struct {
 	Origin string      `json:"origin"`

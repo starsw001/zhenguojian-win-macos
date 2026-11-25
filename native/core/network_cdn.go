@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 )
@@ -14,6 +15,17 @@ import (
 type cdnRoute struct {
 	address string
 	expires time.Time
+}
+
+type cdnRouteContextKey struct{}
+
+type cdnRouteContextValue struct {
+	host    string
+	address string
+}
+
+func cdnRouteContext(ctx context.Context, host, address string) context.Context {
+	return context.WithValue(ctx, cdnRouteContextKey{}, cdnRouteContextValue{host: strings.ToLower(strings.TrimSuffix(host, ".")), address: address})
 }
 
 type cdnTransport struct {
@@ -45,6 +57,13 @@ func (transport *cdnTransport) RoundTrip(request *http.Request) (*http.Response,
 	routeKey := request.URL.Host
 	if proxyURL != nil {
 		routeKey += "|" + proxyURL.String()
+	}
+	if pinned, ok := request.Context().Value(cdnRouteContextKey{}).(cdnRouteContextValue); ok &&
+		pinned.host == strings.ToLower(strings.TrimSuffix(request.URL.Hostname(), ".")) {
+		if err := validateCDNAddresses([]string{pinned.address}); err != nil {
+			return nil, fmt.Errorf("CDN 指定地址无效: %w", err)
+		}
+		return transport.roundTripAddress(request, proxyURL, routeKey+"|explicit", pinned.address)
 	}
 	transport.mu.Lock()
 	preferred := transport.preferred[routeKey]

@@ -135,6 +135,10 @@ func huangguoBrowserHeaders(request *http.Request) fhttp.Header {
 		"accept-language":           {"zh-CN,zh;q=0.9"},
 		fhttp.HeaderOrderKey:        {"sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform", "upgrade-insecure-requests", "user-agent", "accept", "sec-fetch-site", "sec-fetch-mode", "sec-fetch-user", "sec-fetch-dest", "referer", "accept-encoding", "accept-language", "cookie"},
 	}
+	if duanjuSourceForHost(request.URL.Hostname()) == sourcePiguo {
+		headers["sec-ch-ua-platform"] = []string{`"Windows"`}
+		headers["user-agent"] = []string{firstNonEmpty(request.Header.Get("User-Agent"), piguoBrowserUserAgent)}
+	}
 	if mode := request.Header.Get("Sec-Fetch-Mode"); mode != "" && mode != "navigate" {
 		headers["accept"] = []string{firstNonEmpty(request.Header.Get("Accept"), "*/*")}
 		headers["sec-fetch-mode"] = []string{mode}

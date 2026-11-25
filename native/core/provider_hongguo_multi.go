@@ -19,6 +19,7 @@ import (
 	"math/big"
 	mrand "math/rand"
 	"net/http"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -27,7 +28,7 @@ import (
 
 const hongguoMultiVideoAPI = "https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/v1/"
 
-var errHongguoEmptyPrimaryPlayback = &hongguoPlaybackResponseError{"红果播放接口 HTTP 200，但正文为空；源站未返回本集数据，未自动轮换设备身份"}
+var errHongguoEmptyPrimaryPlayback = &hongguoPlaybackResponseError{"红果播放接口 HTTP 200，但正文为空；源站未返回本集数据"}
 
 const hongguoMultiUserAgent = "com.phoenix.read/71332 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3; Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)"
 
@@ -958,22 +959,45 @@ func hongguoMultiCleanURL(value string) string {
 
 // hongguoMultiCheckedURL 规整并校验多线路返回的媒体 URL。
 func hongguoMultiCheckedURL(value string, domains []string) (string, error) {
-	if !strings.HasPrefix(value, "https://") {
+	u, err := url.Parse(value)
+	if err != nil || u.Scheme != "https" || u.User != nil || u.Hostname() == "" || (u.Port() != "" && u.Port() != "443") || u.Fragment != "" {
 		return "", errors.New("片源地址格式无效")
 	}
-	host := value
-	if idx := strings.Index(value[8:], "/"); idx >= 0 {
-		host = value[8 : 8+idx]
-	}
-	if strings.Contains(host, "@") {
-		return "", errors.New("片源地址格式无效")
-	}
+	host := strings.ToLower(strings.TrimSuffix(u.Hostname(), "."))
 	for _, domain := range domains {
 		if host == domain || strings.HasSuffix(host, "."+domain) {
 			return value, nil
 		}
 	}
 	return "", errors.New("片源返回了不受支持的服务地址")
+}
+
+func hongguoIssuedMediaURL(value string) (string, error) {
+	value = hongguoMultiCleanURL(value)
+	if len(value) == 0 || len(value) > 8192 {
+		return "", errors.New("红果媒体地址长度无效")
+	}
+	if !isProviderHTTPMediaURL(value) && !strings.HasPrefix(value, "//") {
+		decoded, err := decodeHongguoBase64(value)
+		if err != nil {
+			return "", errors.New("红果媒体地址格式无效")
+		}
+		value = hongguoMultiCleanURL(string(decoded))
+	}
+	if strings.Contains(value, "#") {
+		return "", errors.New("红果媒体地址包含片段")
+	}
+	if strings.HasPrefix(value, "//") {
+		value = "https:" + value
+	}
+	if len(value) >= 7 && strings.EqualFold(value[:7], "http://") {
+		u, err := url.Parse(value)
+		if err != nil || u.User != nil || u.Host == "" || u.Fragment != "" || (u.Port() != "" && u.Port() != "80") || !strings.HasPrefix(value[7:], u.Host) {
+			return "", errors.New("红果备用媒体地址格式无效")
+		}
+		value = "https://" + strings.TrimSuffix(u.Host, ":80") + value[7+len(u.Host):]
+	}
+	return hongguoMultiCheckedURL(value, []string{"qznovelvod.com", "fqnovelvod.com", "douyinvod.com"})
 }
 
 // hongguoDeriveContentKey 根据协议输入派生媒体内容密钥。
@@ -1070,7 +1094,9 @@ func hongguoDecryptSpadeURL(value string, seed []byte) (string, error) {
 // hongguoMultiFetchJSON 读取多线路接口的 JSON 响应。
 func (d *Downloader) hongguoMultiFetchJSON(ctx context.Context, fullURL, method string, headers map[string]string, body []byte, prepare func(*http.Request)) (map[string]any, error) {
 	ctx = context.WithValue(ctx, nativeNoRedirectKey{}, true)
-	if method == http.MethodPost && fullURL == hongguoMultiVideoAPI {
+	playbackModelRequest := method == http.MethodPost && (fullURL == hongguoMultiVideoAPI || strings.HasPrefix(fullURL, hongguoMobileV5API+"?")) ||
+		method == http.MethodGet && strings.HasPrefix(fullURL, hongguoMobileV5TabAPI+"?")
+	if playbackModelRequest {
 		ctx = context.WithValue(ctx, hongguoMetadataReadKey{}, true)
 	}
 	request, err := http.NewRequestWithContext(ctx, method, fullURL, bytes.NewReader(body))
@@ -1080,15 +1106,20 @@ func (d *Downloader) hongguoMultiFetchJSON(ctx context.Context, fullURL, method 
 	for key, value := range headers {
 		request.Header.Set(key, value)
 	}
-	response, err := d.doPreparedCatalogRequest(request, 8*time.Second, prepare)
+	timeout := 8 * time.Second
+	if playbackModelRequest || hongguoRegistrationPost(request) {
+		timeout = 20 * time.Second
+	}
+	response, err := d.doPreparedCatalogRequest(request, timeout, prepare)
 	if err != nil {
 		return nil, err
 	}
 	content, readErr := io.ReadAll(io.LimitReader(response.Body, (2<<20)+1))
 	response.Body.Close()
 	d.recordDiagnostic(diagnosticEvent{Event: "playback.hongguo_metadata_response", Level: "info", Source: sourceHongguo, Host: request.URL.Hostname(), HTTPStatus: response.StatusCode, Protocol: response.Proto, ResponseType: response.Header.Get("Content-Type"), TotalBytes: int64(len(content)), Message: "红果播放元数据响应：" + request.URL.EscapedPath() + "；不记录设备身份、请求凭证或媒体密钥"})
-	if response.StatusCode == http.StatusUnauthorized {
-		return nil, &hongguoPlaybackResponseError{"红果播放接口 HTTP 401，需要源站授权；未切换身份或取流线路"}
+	if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusPaymentRequired ||
+		response.StatusCode == http.StatusUnavailableForLegalReasons || response.Header.Get("Retry-After") != "" {
+		return nil, fmt.Errorf("%w：红果播放接口 HTTP %d，源站要求暂停或授权", errNativeMediaAccessStop, response.StatusCode)
 	}
 	blocked := catalogResponseBlockReason(response, content)
 	if response.StatusCode != http.StatusOK || blocked != "" {
@@ -1105,7 +1136,11 @@ func (d *Downloader) hongguoMultiFetchJSON(ctx context.Context, fullURL, method 
 		return nil, &hongguoPlaybackResponseError{"红果播放元数据超过大小限制"}
 	}
 	if len(bytes.TrimSpace(content)) == 0 {
-		if method == http.MethodPost && fullURL == hongguoMultiVideoAPI {
+		if playbackModelRequest {
+			if len(content) == 0 {
+				state, _ := ctx.Value(hongguoEpisodeEmptyKey{}).(*hongguoEpisodeEmptyRead)
+				state.remember(request, body)
+			}
 			return nil, errHongguoEmptyPrimaryPlayback
 		}
 		return nil, &hongguoPlaybackResponseError{"红果播放接口 HTTP 200，但正文为 0 字节；源站未返回本集数据，请稍后重试或确认访问条件，未自动轮换设备身份"}
@@ -1152,7 +1187,7 @@ func hongguoMultiParseFallback(value any) string {
 
 // resolveHongguoMultiMedia 解析红果多线路媒体。
 func (downloader *Downloader) resolveHongguoMultiMedia(ctx context.Context, videoID string) (providerMedia, error) {
-	ctx, cancel := context.WithTimeout(ctx, 12*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 25*time.Second)
 	defer cancel()
 	if !hongguoNumericID.MatchString(videoID) {
 		return providerMedia{}, errors.New("红果视频 ID 无效")
@@ -1194,7 +1229,16 @@ func (downloader *Downloader) resolveHongguoMultiMedia(ctx context.Context, vide
 	data, _ := response["data"].(map[string]any)
 	entry, _ := data[videoID].(map[string]any)
 	if entry == nil {
+		entry, _ = nestedMap(data, "1004")[videoID].(map[string]any)
+	}
+	if entry == nil {
+		entry, _ = nestedMap(data, "video_model_data")[videoID].(map[string]any)
+	}
+	if entry == nil {
 		return providerMedia{}, errors.New("红果 App 接口未返回所选分集")
+	}
+	if id := mapString(entry, "item_id", "episode_id"); id != "" && id != videoID {
+		return providerMedia{}, errors.New("红果 App 返回了其他分集")
 	}
 	modelRaw, ok := entry["video_model"]
 	if !ok {
@@ -1280,7 +1324,7 @@ func (downloader *Downloader) resolveHongguoMultiMedia(ctx context.Context, vide
 			} else {
 				media = hongguoMultiCleanURL(candidate)
 			}
-			checked, err := hongguoMultiCheckedURL(media, []string{"qznovelvod.com", "fqnovelvod.com", "douyinvod.com"})
+			checked, err := hongguoIssuedMediaURL(media)
 			if err != nil {
 				lastErr = err
 				continue
@@ -1311,22 +1355,53 @@ func (downloader *Downloader) resolveHongguoMultiMedia(ctx context.Context, vide
 // hongguoMultiCandidateURLs 收集当前媒体响应中的多线路候选 URL。
 func hongguoMultiCandidateURLs(item map[string]any) []string {
 	var candidates []string
-	appendURL := func(value any) {
-		if address, ok := value.(string); ok {
-			if address = strings.TrimSpace(address); address != "" {
+	remaining := 2048
+	var add func(any, int)
+	add = func(v any, depth int) {
+		if remaining <= 0 || depth > 16 {
+			return
+		}
+		remaining--
+		switch value := v.(type) {
+		case string:
+			if address := strings.TrimSpace(value); len(value) <= 8192 && address != "" {
 				candidates = append(candidates, address)
+			}
+		case []any:
+			if depth == 16 {
+				return
+			}
+			for _, child := range value {
+				if remaining == 0 {
+					break
+				}
+				add(child, depth+1)
 			}
 		}
 	}
-	for _, key := range []string{"main_url", "backup_url", "backup_url_list", "backup_url_1", "backup_url_2", "backup_urls", "url_list"} {
-		switch value := item[key].(type) {
-		case []any:
-			for _, address := range value {
-				appendURL(address)
-			}
-		default:
-			appendURL(value)
+	numbered := make([]string, 0)
+	number := func(key string) int {
+		index, err := strconv.Atoi(strings.TrimPrefix(strings.TrimPrefix(key, "backup_url_"), "backupUrl"))
+		if err != nil {
+			return 0
 		}
+		return index
+	}
+	for key := range item {
+		if (strings.HasPrefix(key, "backup_url_") || strings.HasPrefix(key, "backupUrl")) && number(key) > 0 {
+			numbered = append(numbered, key)
+		}
+	}
+	sort.Slice(numbered, func(i, j int) bool {
+		a, b := number(numbered[i]), number(numbered[j])
+		if a == b {
+			return numbered[i] < numbered[j]
+		}
+		return a < b
+	})
+	keys := append([]string{"main_url", "mainUrl", "backup_url", "backupUrl"}, numbered...)
+	for _, key := range append(keys, "backup_url_list", "backup_urls", "url_list", "backupUrlList", "backupUrls", "urlList") {
+		add(item[key], 0)
 	}
 	return candidates
 }

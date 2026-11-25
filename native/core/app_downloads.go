@@ -24,24 +24,25 @@ type nativeDownloadEpisode struct {
 }
 
 type nativeDownloadJob struct {
-	PreferredRoute    int         `json:"preferredRoute,omitempty"`
-	PreferredRouteKey string      `json:"preferredRouteKey,omitempty"`
-	ID                string      `json:"id"`
-	Drama             nativeDrama `json:"drama"`
-	Chapter           Chapter     `json:"chapter"`
-	Index             int         `json:"index"`
-	Quality           int         `json:"quality"`
-	ActualQuality     int         `json:"actualQuality"`
-	State             string      `json:"state"`
-	Archived          bool        `json:"archived,omitempty"`
-	Folder            string      `json:"folder,omitempty"`
-	Bytes             int64       `json:"bytes"`
-	Total             int64       `json:"total"`
-	Progress          float64     `json:"progress"`
-	Error             string      `json:"error,omitempty"`
-	Created           int64       `json:"created"`
-	Revision          int64       `json:"revision,omitempty"`
-	Published         bool        `json:"published,omitempty"`
+	hongguoPlaybackSession string
+	PreferredRoute         int         `json:"preferredRoute,omitempty"`
+	PreferredRouteKey      string      `json:"preferredRouteKey,omitempty"`
+	ID                     string      `json:"id"`
+	Drama                  nativeDrama `json:"drama"`
+	Chapter                Chapter     `json:"chapter"`
+	Index                  int         `json:"index"`
+	Quality                int         `json:"quality"`
+	ActualQuality          int         `json:"actualQuality"`
+	State                  string      `json:"state"`
+	Archived               bool        `json:"archived,omitempty"`
+	Folder                 string      `json:"folder,omitempty"`
+	Bytes                  int64       `json:"bytes"`
+	Total                  int64       `json:"total"`
+	Progress               float64     `json:"progress"`
+	Error                  string      `json:"error,omitempty"`
+	Created                int64       `json:"created"`
+	Revision               int64       `json:"revision,omitempty"`
+	Published              bool        `json:"published,omitempty"`
 }
 
 type nativeDownloadRecord struct {
@@ -118,6 +119,11 @@ func newNativeDownloads(engine *nativeEngine) *nativeDownloads {
 	manager.concurrency, manager.bySource = settings.DownloadConcurrency, settings.DownloadBySource
 	manager.sourceConcurrency = settings.DownloadSourceConcurrency
 	manager.resolve = func(ctx context.Context, job nativeDownloadJob) (providerMedia, error) {
+		if job.hongguoPlaybackSession != "" {
+			if media, ok, err := engine.hongguoDownloadFromPlayback(ctx, job); ok || err != nil {
+				return media, err
+			}
+		}
 		return engine.downloader.resolvePlaybackMedia(ctx, Task{
 			DramaID: job.Drama.ID, DramaTitle: job.Drama.Title, Chapter: job.Chapter, Index: job.Index})
 	}
@@ -312,14 +318,20 @@ func (manager *nativeDownloads) enqueueContext(ctx context.Context, input native
 		return 0, errors.New("下载候选地址无效")
 	}
 	preferredKey, preferredEpisode := "", 0
-	if input.PreferredRoute > 0 && input.Session != "" {
+	var activeChoice nativePlaybackChoice
+	if input.Session != "" && (input.PreferredRoute > 0 || input.Drama.Source == sourceHongguo) {
 		manager.engine.mu.Lock()
 		choice, ok := manager.engine.playbacks[input.Session]
 		manager.engine.mu.Unlock()
-		if !ok || choice.dramaID != input.Drama.ID || input.PreferredRoute > len(choice.media) {
+		if input.PreferredRoute > 0 && (!ok || choice.dramaID != input.Drama.ID || input.PreferredRoute > len(choice.media)) {
 			return 0, errors.New("所选候选地址已失效，请重新选择")
 		}
-		preferredKey, preferredEpisode = nativeRouteKey(choice.media[input.PreferredRoute-1]), choice.episodeIndex
+		if ok && choice.dramaID == input.Drama.ID {
+			activeChoice = choice
+			if input.PreferredRoute > 0 {
+				preferredKey, preferredEpisode = nativeRouteKey(choice.media[input.PreferredRoute-1]), choice.episodeIndex
+			}
+		}
 	}
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
@@ -351,6 +363,14 @@ func (manager *nativeDownloads) enqueueContext(ctx context.Context, input native
 		if entry.Index == preferredEpisode {
 			routeKey = preferredKey
 		}
+		session, preferred := "", input.PreferredRoute
+		if input.Drama.Source == sourceHongguo && input.Session != "" {
+			if activeChoice.hongguoMatches(input.Drama.ID, entry.Index, entry.Chapter) {
+				session = input.Session
+			} else {
+				routeKey, preferred = "", 0
+			}
+		}
 		if existing := manager.jobs[id]; existing != nil {
 			if input.Force {
 				if _, changed := previous[id]; !changed {
@@ -371,7 +391,8 @@ func (manager *nativeDownloads) enqueueContext(ctx context.Context, input native
 				}
 				repaired++
 				existing.Chapter, existing.Quality = entry.Chapter, input.Quality
-				existing.PreferredRoute = input.PreferredRoute
+				existing.PreferredRoute = preferred
+				existing.hongguoPlaybackSession = session
 				existing.PreferredRouteKey = routeKey
 				existing.State, existing.Error, existing.Archived = "queued", "", false
 			}
@@ -383,7 +404,7 @@ func (manager *nativeDownloads) enqueueContext(ctx context.Context, input native
 		}
 		manager.jobs[id] = &nativeDownloadRecord{nativeDownloadJob: nativeDownloadJob{
 			ID: id, Drama: input.Drama, Chapter: entry.Chapter, Index: entry.Index,
-			Quality: input.Quality, PreferredRoute: input.PreferredRoute, PreferredRouteKey: routeKey, State: "queued", Created: time.Now().UnixMilli()}}
+			Quality: input.Quality, PreferredRoute: preferred, PreferredRouteKey: routeKey, hongguoPlaybackSession: session, State: "queued", Created: time.Now().UnixMilli()}}
 		manager.jobs[id].Folder = ".download-cache/" + id
 		if manager.bySource {
 			manager.jobs[id].Folder = ".download-cache/" + input.Drama.Source + "/" + id

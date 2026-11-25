@@ -230,3 +230,70 @@ func TestAutoProxyHeaderBudgetDoesNotCancelResponseBody(t *testing.T) {
 		t.Fatal("body was truncated or context was not released", string(data), err)
 	}
 }
+
+func TestHongguoProxyModesChooseDirectAutoAndSystem(t *testing.T) {
+	address := "https://v26-reading-videocdn302.qznovelvod.com/video.mp4"
+	for _, test := range []struct {
+		name          string
+		mode          string
+		globalMode    string
+		expectedCalls int
+		expectedRoute []bool
+	}{
+		{name: "direct", mode: "directOnly", globalMode: "auto", expectedCalls: 1, expectedRoute: []bool{false}},
+		{name: "auto", mode: "auto", globalMode: "auto", expectedCalls: 2, expectedRoute: []bool{false, true}},
+		{name: "old system switches to direct-first", mode: "system", globalMode: "direct", expectedCalls: 2, expectedRoute: []bool{false, true}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			router := autoProxyFixtureRouter(test.globalMode)
+			router.hongguoMode = test.mode
+			calls := 0
+			base := sourceFixtureTransport(func(request *http.Request) (*http.Response, error) {
+				proxy, err := router.proxy(request)
+				if err != nil || (proxy != nil) != test.expectedRoute[calls] {
+					t.Fatal("unexpected route", calls+1, proxy, err)
+				}
+				calls++
+				if calls < test.expectedCalls || test.mode == "directOnly" {
+					return nil, io.EOF
+				}
+				return sourceFixtureResponse(request, http.StatusOK, "ok"), nil
+			})
+			request, _ := http.NewRequest(http.MethodGet, address, nil)
+			response, err := newAutoProxyFallbackTransport(base, router, nil).RoundTrip(request)
+			if test.mode == "directOnly" {
+				if err == nil || calls != 1 {
+					t.Fatal("direct mode fell back to proxy", calls, err)
+				}
+				return
+			}
+			if err != nil || response == nil || response.StatusCode != http.StatusOK || calls != test.expectedCalls {
+				t.Fatal("Hongguo route did not complete", calls, err)
+			}
+			response.Body.Close()
+		})
+	}
+}
+
+func TestHongguoDirectDoesNotChangeUnrelatedAutoFallback(t *testing.T) {
+	router := autoProxyFixtureRouter("auto")
+	router.hongguoMode = "directOnly"
+	calls := 0
+	base := sourceFixtureTransport(func(request *http.Request) (*http.Response, error) {
+		calls++
+		proxy, err := router.proxy(request)
+		if err != nil || calls == 1 && proxy != nil || calls == 2 && proxy == nil {
+			t.Fatal("unrelated auto route changed", calls, proxy, err)
+		}
+		if calls == 1 {
+			return nil, io.EOF
+		}
+		return sourceFixtureResponse(request, http.StatusOK, "ok"), nil
+	})
+	request, _ := http.NewRequest(http.MethodGet, "https://example.invalid/catalog", nil)
+	response, err := newAutoProxyFallbackTransport(base, router, nil).RoundTrip(request)
+	if err != nil || response == nil || calls != 2 {
+		t.Fatal("unrelated auto fallback stopped working", calls, err)
+	}
+	response.Body.Close()
+}

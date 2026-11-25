@@ -1,0 +1,131 @@
+{
+  "observedOn": "2026-11-19",
+  "pages": {
+    "hot-drama": "<link rel=\"canonical\" href=\"https://hongguoduanju.com/rank/hot-drama\"><nav aria-label=\"榜单分类\"><a href=\"/rank/hot-drama\">全部</a><a href=\"/rank/hot-comic-drama\">漫剧</a><a href=\"/rank/hot-real-drama\">真人剧</a><a href=\"/rank/hot-ai-drama\">AI剧</a></nav><nav aria-label=\"榜单类型\"><a href=\"/rank/hot-drama\">热播榜</a><a href=\"/rank/prestige-drama\">臻果榜</a><a href=\"/rank/subscribe-drama\">预约榜</a><a href=\"/rank/new-drama\">新剧榜</a><a href=\"/rank/hot-search-drama\">热搜榜</a><a href=\"/rank/must-watch-drama\">必看榜</a><a href=\"/rank/followed-drama\">收藏榜</a></nav>",
+    "hot-comic-drama": "<link rel=\"canonical\" href=\"https://hongguoduanju.com/rank/hot-comic-drama\"><nav aria-label=\"榜单分类\"><a href=\"/rank/hot-drama\">全部</a><a href=\"/rank/hot-comic-drama\">漫剧</a><a href=\"/rank/hot-real-drama\">真人剧</a><a href=\"/rank/hot-ai-drama\">AI剧</a></nav><nav aria-label=\"榜单类型\"><a href=\"/rank/hot-comic-drama\">热播榜</a><a href=\"/rank/new-comic-drama\">新剧榜</a><a href=\"/rank/hot-search-comic-drama\">热搜榜</a></nav>",
+    "hot-real-drama": "<link rel=\"canonical\" href=\"https://hongguoduanju.com/rank/hot-real-drama\"><nav aria-label=\"榜单分类\"><a href=\"/rank/hot-drama\">全部</a><a href=\"/rank/hot-comic-drama\">漫剧</a><a href=\"/rank/hot-real-drama\">真人剧</a><a href=\"/rank/hot-ai-drama\">AI剧</a></nav><nav aria-label=\"榜单类型\"><a href=\"/rank/hot-real-drama\">热播榜</a><a href=\"/rank/new-real-drama\">新剧榜</a><a href=\"/rank/hot-search-real-drama\">热搜榜</a><a href=\"/rank/must-watch-real-drama\">必看榜</a><a href=\"/rank/followed-real-drama\">收藏榜</a></nav>",
+    "hot-ai-drama": "<link rel=\"canonical\" href=\"https://hongguoduanju.com/rank/hot-ai-drama\"><nav aria-label=\"榜单分类\"><a href=\"/rank/hot-drama\">全部</a><a href=\"/rank/hot-comic-drama\">漫剧</a><a href=\"/rank/hot-real-drama\">真人剧</a><a href=\"/rank/hot-ai-drama\">AI剧</a></nav><nav aria-label=\"榜单类型\"><a href=\"/rank/hot-ai-drama\">热播榜</a><a href=\"/rank/new-ai-drama\">新剧榜</a><a href=\"/rank/hot-search-ai-drama\">热搜榜</a><a href=\"/rank/must-watch-ai-drama\">必看榜</a><a href=\"/rank/followed-ai-drama\">收藏榜</a></nav>"
+  },
+  "expected": [
+    {
+      "group": "全部",
+      "name": "热播榜",
+      "path": "hot-drama",
+      "upstreamKey": "hongguo"
+    },
+    {
+      "group": "全部",
+      "name": "臻果榜",
+      "path": "prestige-drama",
+      "upstreamKey": "hongguo-prestige"
+    },
+    {
+      "group": "全部",
+      "name": "预约榜",
+      "path": "subscribe-drama",
+      "upstreamKey": "hongguo-subscribe"
+    },
+    {
+      "group": "全部",
+      "name": "新剧榜",
+      "path": "new-drama",
+      "upstreamKey": "hongguo-new"
+    },
+    {
+      "group": "全部",
+      "name": "热搜榜",
+      "path": "hot-search-drama",
+      "upstreamKey": "hongguo-hot_search"
+    },
+    {
+      "group": "全部",
+      "name": "必看榜",
+      "path": "must-watch-drama",
+      "upstreamKey": "hongguo-must_watch"
+    },
+    {
+      "group": "全部",
+      "name": "收藏榜",
+      "path": "followed-drama",
+      "upstreamKey": "hongguo-followed"
+    },
+    {
+      "group": "漫剧",
+      "name": "热播榜",
+      "path": "hot-comic-drama",
+      "upstreamKey": "comic"
+    },
+    {
+      "group": "漫剧",
+      "name": "新剧榜",
+      "path": "new-comic-drama",
+      "upstreamKey": "comic-new"
+    },
+    {
+      "group": "漫剧",
+      "name": "热搜榜",
+      "path": "hot-search-comic-drama",
+      "upstreamKey": "comic-hot_search"
+    },
+    {
+      "group": "真人剧",
+      "name": "热播榜",
+      "path": "hot-real-drama",
+      "upstreamKey": "real"
+    },
+    {
+      "group": "真人剧",
+      "name": "新剧榜",
+      "path": "new-real-drama",
+      "upstreamKey": "real-new"
+    },
+    {
+      "group": "真人剧",
+      "name": "热搜榜",
+      "path": "hot-search-real-drama",
+      "upstreamKey": "real-hot_search"
+    },
+    {
+      "group": "真人剧",
+      "name": "必看榜",
+      "path": "must-watch-real-drama",
+      "upstreamKey": "real-must_watch"
+    },
+    {
+      "group": "真人剧",
+      "name": "收藏榜",
+      "path": "followed-real-drama",
+      "upstreamKey": "real-followed"
+    },
+    {
+      "group": "AI剧",
+      "name": "热播榜",
+      "path": "hot-ai-drama",
+      "upstreamKey": "ai"
+    },
+    {
+      "group": "AI剧",
+      "name": "新剧榜",
+      "path": "new-ai-drama",
+      "upstreamKey": "ai-new"
+    },
+    {
+      "group": "AI剧",
+      "name": "热搜榜",
+      "path": "hot-search-ai-drama",
+      "upstreamKey": "ai-hot_search"
+    },
+    {
+      "group": "AI剧",
+      "name": "必看榜",
+      "path": "must-watch-ai-drama",
+      "upstreamKey": "ai-must_watch"
+    },
+    {
+      "group": "AI剧",
+      "name": "收藏榜",
+      "path": "followed-ai-drama",
+      "upstreamKey": "ai-followed"
+    }
+  ]
+}

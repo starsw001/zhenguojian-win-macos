@@ -51,6 +51,7 @@ type Downloader struct {
 	rankings                 rankingCache
 	cfg                      Config
 	client                   *http.Client
+	cdn                      *cdnTransport
 	huangdouDetails          map[string]huangdouDetailEntry
 	huangdouDetailPending    map[string]*huangdouDetailCall
 	providerMu               sync.Mutex
@@ -66,6 +67,9 @@ type Downloader struct {
 	huangju                  *huangjuAPIClient
 	yeguoOnce                sync.Once
 	yeguo                    *yeguoAPIClient
+	piguoAccessOnce          sync.Once
+	piguoAccessMu            sync.RWMutex
+	piguoAccess              *piguoAccessSession
 	soraniOnce               sync.Once
 	sorani                   *soraniAPIClient
 	dsdCatalog               dsdCatalogState
@@ -108,6 +112,7 @@ type nativeDrama struct {
 }
 
 type nativeInput struct {
+	SourceAuth              *soraniAccountSession   `json:"sourceAuth"`
 	Username                string                  `json:"username"`
 	Password                string                  `json:"password"`
 	LicenseKey              string                  `json:"licenseKey"`
@@ -322,6 +327,7 @@ func newNativeEngine(directory string, defaultDownloads ...string) (*nativeEngin
 	transport.ResponseHeaderTimeout = 20 * time.Second
 	transport.Proxy = router.proxy
 	cdn := newCDNTransport(transport, newDNSResolver(transport))
+	d.cdn = cdn
 	d.client = &http.Client{Transport: newAutoProxyFallbackTransport(newHuangguoBrowserTransport(cdn, d), router, d.recordDiagnostic), Timeout: 60 * time.Second,
 		CheckRedirect: func(request *http.Request, via []*http.Request) error {
 			if len(via) >= 10 {
@@ -389,6 +395,9 @@ func NativeRequest(raw string) (result string) {
 		}
 		if errors.Is(err, errNativeLocalFile) {
 			envelope["code"] = "local_media"
+		}
+		if errors.Is(err, errSoraniLoginRequired) {
+			envelope["code"] = "source_login_required"
 		}
 		var backoff *requestBackoff
 		if errors.As(err, &backoff) {
@@ -494,6 +503,8 @@ func nativeDispatch(input nativeInput) (any, error) {
 		ctx = work
 	}
 	switch input.Action {
+	case "sourceAccount":
+		return engine.sourceAccount(ctx, input)
 	case "lan":
 		return engine.nativeLAN(ctx, input.Command, input.LAN)
 	case "updateSystemProxy":
@@ -531,13 +542,7 @@ func nativeDispatch(input nativeInput) (any, error) {
 	case "cachedRecommendations":
 		return engine.cachedRecommendations(input.Category)
 	case "rankingBoards":
-		boards := []rankingBoard{}
-		for _, board := range rankingBoards {
-			if nativeSourceAvailable(board.Source) {
-				boards = append(boards, board)
-			}
-		}
-		return map[string]any{"items": boards}, nil
+		return map[string]any{"items": engine.downloader.availableRankingBoards(ctx)}, nil
 	case "rankings":
 		return engine.nativeRanking(ctx, input)
 	case "suggestions":
@@ -966,6 +971,13 @@ func (engine *nativeEngine) nativeResolve(ctx context.Context, input nativeInput
 		}
 	}
 	task := Task{DramaID: input.Drama.ID, DramaTitle: input.Drama.Title, Chapter: input.Chapter, Index: input.Index}
+	series, video, isHongguo := hongguoPlaybackIDs(task)
+	var hgGeneration uint64
+	var hgResolved time.Time
+	if isHongguo {
+		hgGeneration = engine.downloader.hongguoMediaCache.epoch()
+		hgResolved = time.Now()
+	}
 	if input.Force && sourceFromDramaID(input.Drama.ID) == sourceHongguo {
 		ctx = context.WithValue(ctx, hongguoFreshMediaKey{}, true)
 	}
@@ -979,8 +991,8 @@ func (engine *nativeEngine) nativeResolve(ctx context.Context, input nativeInput
 		return nativePlan{}, errors.New("该集没有可用的播放地址")
 	}
 	choice.dramaID, choice.episodeIndex = input.Drama.ID, input.Index
-	if series, video, valid := hongguoPlaybackIDs(task); valid {
-		choice.danmakuSeries, choice.danmakuVideo = series, video
+	if isHongguo {
+		choice.danmakuSeries, choice.danmakuVideo, choice.hongguoGeneration, choice.hongguoResolvedAt = series, video, hgGeneration, hgResolved
 	}
 	choice.checks = &nativeRouteChecks{results: map[int]nativeRouteStatus{}}
 	var plan nativePlan

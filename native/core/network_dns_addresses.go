@@ -20,7 +20,7 @@ var nonPublicCDNNetworks = []netip.Prefix{
 // protectedCDNHost 判断媒体主机是否需要采用受保护的 CDN 解析规则。
 func protectedCDNHost(host string) bool {
 	host = strings.ToLower(strings.TrimSuffix(host, "."))
-	for _, domain := range []string{"tuafjz.cn", "zdmhyg.cn", "lkkwip.cn", "bnfuiu.cn"} {
+	for _, domain := range []string{"tuafjz.cn", "zdmhyg.cn", "lkkwip.cn", "bnfuiu.cn", "qznovelvod.com", "fqnovelvod.com", "douyinvod.com"} {
 		if host == domain || strings.HasSuffix(host, "."+domain) {
 			return true
 		}

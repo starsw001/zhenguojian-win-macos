@@ -154,7 +154,13 @@ func (d *Downloader) fetchHongguoPlaybackText(ctx context.Context, address strin
 	if len(body) > providerMaxBodyBytes {
 		return "", errors.New("红果播放响应超过大小限制")
 	}
-	if response.StatusCode < 200 || response.StatusCode >= 300 || catalogResponseBlockReason(response, body) != "" {
+	if nativeMediaAccessStopsSwitch(response, body) || response.StatusCode == http.StatusPaymentRequired || response.Header.Get("Retry-After") != "" {
+		return "", errors.Join(d.catalogResponseError(request, response, body), errNativeMediaAccessStop)
+	}
+	if response.StatusCode == http.StatusNotFound {
+		return "", errors.Join(d.catalogResponseError(request, response, body), errHongguoWebEpisodeNotFound)
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return "", d.catalogResponseError(request, response, body)
 	}
 	return string(body), nil

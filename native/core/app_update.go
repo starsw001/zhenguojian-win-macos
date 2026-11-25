@@ -11,6 +11,8 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -45,6 +47,24 @@ func updateEdition() string {
 		return "zhenguoshang"
 	}
 	return "hongguoshang"
+}
+
+func nativeProgramRoot() string {
+	executable, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	fallback := filepath.Dir(executable)
+	root := filepath.Clean(os.Getenv("GUO_UPDATE_ROOT"))
+	parent, parentErr := strconv.Atoi(os.Getenv("GUO_UPDATE_PARENT_PID"))
+	if !filepath.IsAbs(root) || !secureupdate.ValidToken(os.Getenv("GUO_UPDATE_SESSION")) || parentErr != nil || parent <= 0 {
+		return fallback
+	}
+	relative, err := filepath.Rel(root, executable)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return fallback
+	}
+	return root
 }
 
 // updateClient 取得update请求使用的客户端。
@@ -261,5 +281,19 @@ func updateReady() (any, error) {
 	if e != nil || filepath.Base(exe) != i.Edition+".exe" {
 		return nil, errors.New("启动确认进程不匹配")
 	}
-	return map[string]any{}, i.Ack(os.Getenv("GUO_UPDATE_SESSION"))
+	slot, e := i.CurrentStagedSlot(exe)
+	if e != nil {
+		return nil, e
+	}
+	if e = i.Ack(os.Getenv("GUO_UPDATE_SESSION")); e != nil {
+		return nil, e
+	}
+	if e = i.WaitActive(slot, 15*time.Second); e != nil {
+		return nil, e
+	}
+	if e = i.StartInstaller(slot); e != nil {
+		_ = i.Commit(secureupdate.Selection{})
+		return nil, e
+	}
+	return map[string]any{"installing": true}, nil
 }

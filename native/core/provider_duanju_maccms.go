@@ -671,7 +671,7 @@ func (d *Downloader) searchMaccms(ctx context.Context, source, query string) ([]
 	case sourceWangguo:
 		address = fmt.Sprintf("%s/search/-------------.html?%s", base, url.Values{"wd": {query}}.Encode())
 	case sourcePiguo:
-		address = fmt.Sprintf("%s/q/%s?page=1", base, url.PathEscape(query))
+		address = fmt.Sprintf("%s/node/search?%s", base, url.Values{"title": {query}}.Encode())
 	default:
 		return nil, errors.New("该站源不支持在线搜索")
 	}

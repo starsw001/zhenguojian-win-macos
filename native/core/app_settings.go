@@ -20,6 +20,7 @@ type nativeResourceSettings struct {
 	CacheLimits               nativeCacheLimits           `json:"cacheLimits,omitempty"`
 	CacheUsage                map[string]nativeCacheUsage `json:"cacheUsage,omitempty"`
 	ProxyMode                 string                      `json:"proxyMode"`
+	HongguoProxyMode          string                      `json:"hongguoProxyMode"`
 	ProxyURL                  string                      `json:"proxyUrl"`
 	CatalogConcurrency        int                         `json:"catalogConcurrency"`
 	CatalogIntervalMS         int                         `json:"catalogIntervalMs"`
@@ -32,15 +33,19 @@ type nativeResourceSettings struct {
 
 // defaultResourceSettings 构造默认资源设置。
 func defaultResourceSettings() nativeResourceSettings {
-	return nativeResourceSettings{ProxyMode: "auto", CatalogConcurrency: 3, CatalogIntervalMS: 250, DownloadConcurrency: 2, DownloadSourceConcurrency: 1, CacheLimits: defaultNativeCacheLimits()}
+	return nativeResourceSettings{ProxyMode: "auto", HongguoProxyMode: "auto", CatalogConcurrency: 3, CatalogIntervalMS: 250, DownloadConcurrency: 2, DownloadSourceConcurrency: 1, CacheLimits: defaultNativeCacheLimits()}
 }
 
 // UnmarshalJSON 将 JSON 数据解码为资源设置，并处理对应字段转换。
 func (settings *nativeResourceSettings) UnmarshalJSON(data []byte) error {
 	type storedSettings nativeResourceSettings
-	stored := storedSettings{DownloadSourceConcurrency: 1}
+	stored := storedSettings{HongguoProxyMode: "auto", DownloadSourceConcurrency: 1}
 	if err := json.Unmarshal(data, &stored); err != nil {
 		return err
+	}
+	switch stored.HongguoProxyMode {
+	case "", "direct", "system":
+		stored.HongguoProxyMode = "auto"
 	}
 	*settings = nativeResourceSettings(stored)
 	return nil
@@ -62,6 +67,9 @@ func (settings nativeResourceSettings) validate() error {
 	}
 	if settings.ProxyMode != "auto" && settings.ProxyMode != "direct" && settings.ProxyMode != "manual" {
 		return errors.New("代理模式无效")
+	}
+	if settings.HongguoProxyMode != "auto" && settings.HongguoProxyMode != "directOnly" {
+		return errors.New("红果代理模式无效")
 	}
 	if settings.ProxyMode == "manual" || settings.ProxyURL != "" {
 		if len(settings.ProxyURL) > 2048 {
@@ -86,10 +94,37 @@ func (settings nativeResourceSettings) validate() error {
 type proxyRouter struct {
 	mu             sync.RWMutex
 	mode           string
+	hongguoMode    string
 	manual         *url.URL
 	system         nativeSystemProxy
 	systemRead     time.Time
 	systemOverride bool
+}
+
+func hongguoProxyHost(host string) bool {
+	host = strings.ToLower(strings.TrimSuffix(host, "."))
+	for _, domain := range []string{"hongguoduanju.com", "fqnovel.com", "qznovelvod.com", "fqnovelvod.com", "douyinvod.com", "snssdk.com", "999888456.xyz"} {
+		if host == domain || strings.HasSuffix(host, "."+domain) {
+			return true
+		}
+	}
+	return false
+}
+
+func (router *proxyRouter) requestMode(request *http.Request) (string, *url.URL) {
+	router.mu.RLock()
+	mode, hongguoMode, manual := router.mode, router.hongguoMode, router.manual
+	router.mu.RUnlock()
+	if hongguoMode != "" && hongguoProxyHost(request.URL.Hostname()) {
+		if hongguoMode == "directOnly" {
+			return "direct", nil
+		}
+		if mode != "manual" {
+			manual = nil
+		}
+		return "auto", manual
+	}
+	return mode, manual
 }
 
 // proxy 根据资源设置为当前请求选择代理。
@@ -100,14 +135,21 @@ func (router *proxyRouter) proxy(request *http.Request) (*url.URL, error) {
 	if request.URL.Hostname() == "127.0.0.1" || request.URL.Hostname() == "localhost" || request.URL.Hostname() == "::1" {
 		return nil, nil
 	}
-	router.mu.RLock()
-	mode, manual := router.mode, router.manual
-	router.mu.RUnlock()
+	if selected, ok := request.Context().Value(hongguoFallbackProxyKey{}).(*url.URL); ok && selected != nil && hongguoProxyHost(request.URL.Hostname()) {
+		return selected, nil
+	}
+	mode, manual := router.requestMode(request)
 	switch mode {
 	case "direct":
 		return nil, nil
 	case "manual":
 		return manual, nil
+	case "system":
+		return router.systemSettings().resolve(request)
+	case "auto":
+		if hongguoProxyHost(request.URL.Hostname()) && manual != nil && manual.Host != "" {
+			return manual, nil
+		}
 	}
 	return router.systemSettings().resolve(request)
 }
@@ -218,7 +260,7 @@ func (engine *nativeEngine) applyResourceSettings(settings nativeResourceSetting
 	router := engine.downloader.proxyRouter
 	manual, _ := url.Parse(settings.ProxyURL)
 	router.mu.Lock()
-	router.mode, router.manual = settings.ProxyMode, manual
+	router.mode, router.hongguoMode, router.manual = settings.ProxyMode, settings.HongguoProxyMode, manual
 	router.mu.Unlock()
 	engine.downloader.hongguoMediaCache.clear()
 	limiter := engine.downloader.limiter

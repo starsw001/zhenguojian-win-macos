@@ -25,7 +25,11 @@ void acknowledgeUpdateFrame() {
   _trialNotified = true;
   WidgetsBinding.instance.addPostFrameCallback((_) async {
     try {
-      await requestAppLicense('licenseUpdateReady');
+      final result = await requestAppLicense('licenseUpdateReady');
+      if (result['installing'] == true) {
+        await Future<void>.delayed(const Duration(milliseconds: 250));
+        exit(0);
+      }
     } catch (_) {
       _trialNotified = false;
     }
@@ -565,6 +569,7 @@ class _LicensedAppState extends State<LicensedApp> with WidgetsBindingObserver {
     animation: controller,
     builder: (context, _) {
       if (controller.ready) {
+        acknowledgeUpdateFrame();
         return AppLicenseScope(controller: controller, child: widget.child);
       }
       if (const {

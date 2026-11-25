@@ -87,6 +87,45 @@ func (f fixture) offer(t *testing.T, app []byte) (Release, []byte, []byte) {
 	return r, meta, b
 }
 
+func TestPublishedArchiveUsesVersionFolder(t *testing.T) {
+	for _, edition := range []string{"hongguoshang", "zhenguoshang"} {
+		f := newFixture(t, edition, nil)
+		r, _, _ := f.offer(t, nil)
+		z, err := zip.OpenReader(filepath.Join(f.releaseDir, r.Archive))
+		if err != nil {
+			t.Fatal(err)
+		}
+		root := ArchiveRoot(edition, r.Version)
+		var flat bytes.Buffer
+		flatWriter := zip.NewWriter(&flat)
+		for _, entry := range z.File {
+			if !strings.HasPrefix(entry.Name, root+"/") {
+				z.Close()
+				t.Fatalf("archive entry escaped version folder: %s", entry.Name)
+			}
+			name, layout, valid := archiveEntryName(entry.Name, r)
+			if !valid || layout != layoutNested || !allowed(name, edition) {
+				z.Close()
+				t.Fatalf("invalid nested archive entry: %s", entry.Name)
+			}
+			writer, _ := flatWriter.Create(name)
+			reader, _ := entry.Open()
+			io.Copy(writer, reader)
+			reader.Close()
+		}
+		flatWriter.Close()
+		z.Close()
+		legacy := r
+		legacy.Size = int64(flat.Len())
+		legacy.SHA256 = digest(flat.Bytes())
+		legacyPath := filepath.Join(t.TempDir(), "legacy-flat.zip")
+		os.WriteFile(legacyPath, flat.Bytes(), 0600)
+		if err := Extract(legacyPath, filepath.Join(t.TempDir(), "legacy-flat"), f.i.Key, legacy); err != nil {
+			t.Fatal("legacy flat archive rejected", err)
+		}
+	}
+}
+
 type transport func(*http.Request) (*http.Response, error)
 
 // RoundTrip 实现隔离测试使用的单次 HTTP 请求处理。
@@ -198,12 +237,13 @@ func TestRejectUnsafeArchive(t *testing.T) {
 			w := zip.NewWriter(&buf)
 			z, _ := zip.NewReader(bytes.NewReader(good), int64(len(good)))
 			for _, entry := range z.File {
-				if name == "missing-file" && entry.Name == "data/app.so" {
+				inner, _, _ := archiveEntryName(entry.Name, r)
+				if name == "missing-file" && inner == "data/app.so" {
 					continue
 				}
 				o, _ := w.Create(entry.Name)
 				in, _ := entry.Open()
-				if name == "bad-inner-hash" && entry.Name == "data/app.so" {
+				if name == "bad-inner-hash" && inner == "data/app.so" {
 					o.Write([]byte("changed"))
 				} else {
 					io.Copy(o, in)
@@ -211,7 +251,7 @@ func TestRejectUnsafeArchive(t *testing.T) {
 				in.Close()
 			}
 			if name != "bad-inner-hash" && name != "missing-file" {
-				hdr := zip.FileHeader{Name: name}
+				hdr := zip.FileHeader{Name: ArchiveRoot(r.Edition, r.Version) + "/" + name}
 				if name == "data/link" {
 					hdr.SetMode(os.ModeSymlink | 0777)
 				}

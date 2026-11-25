@@ -110,6 +110,7 @@ class _ResourceSettingsScreenState extends State<ResourceSettingsScreen> {
   late final int _epoch = widget.store.profileEpoch;
   ResourceSettings? _settings;
   String _mode = 'auto';
+  String _hongguoMode = 'auto';
   int _catalog = 3, _interval = 250, _downloads = 2, _sourceDownloads = 1;
   bool _folders = false, _busy = false, _showProxy = false;
   String? _error;
@@ -141,6 +142,7 @@ class _ResourceSettingsScreenState extends State<ResourceSettingsScreen> {
       setState(() {
         _settings = settings;
         _mode = settings.proxyMode;
+        _hongguoMode = settings.hongguoProxyMode;
         _proxy.text = settings.proxyUrl;
         _logDirectory.text = settings.logDirectory;
         _catalog = settings.catalogConcurrency;
@@ -187,6 +189,7 @@ class _ResourceSettingsScreenState extends State<ResourceSettingsScreen> {
         ResourceSettings(
           logDirectory: _logDirectory.text.trim(),
           proxyMode: _mode,
+          hongguoProxyMode: _hongguoMode,
           proxyUrl: _proxy.text.trim(),
           catalogConcurrency: _catalog,
           catalogIntervalMs: _interval,
@@ -297,6 +300,45 @@ class _ResourceSettingsScreenState extends State<ResourceSettingsScreen> {
     );
   }
 
+  Widget _hongguoProxyControl() => Card(
+    child: Padding(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const Row(
+            children: [
+              Icon(Icons.wifi_rounded, color: Colors.blue),
+              SizedBox(width: 10),
+              Text('红果网络', style: TextStyle(fontWeight: FontWeight.w600)),
+            ],
+          ),
+          const Divider(height: 28),
+          const Text('红果目录、详情与播放线路'),
+          const SizedBox(height: 4),
+          const Text(
+            '始终先直连。默认在网络连接失败时，用已配置的代理重试一次；没有代理就只用直连。站源要求登录、验证或限流时不换代理。本机播放流不走代理。',
+          ),
+          const SizedBox(height: 14),
+          Align(
+            alignment: Alignment.centerRight,
+            child: SegmentedButton<String>(
+              key: const ValueKey('hongguo-proxy-mode'),
+              segments: const [
+                ButtonSegment(value: 'auto', label: Text('直连优先')),
+                ButtonSegment(value: 'directOnly', label: Text('仅直连')),
+              ],
+              selected: {_hongguoMode},
+              onSelectionChanged: _busy
+                  ? null
+                  : (values) => setState(() => _hongguoMode = values.first),
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
+
   Widget _count(
     String title,
     int value,
@@ -396,9 +438,11 @@ class _ResourceSettingsScreenState extends State<ResourceSettingsScreen> {
                         padding: const EdgeInsets.only(bottom: 16),
                         child: Text(_settings!.warning),
                       ),
+                    _hongguoProxyControl(),
+                    const SizedBox(height: 20),
                     DropdownButtonFormField<String>(
                       initialValue: _mode,
-                      decoration: const InputDecoration(labelText: '连接方式'),
+                      decoration: const InputDecoration(labelText: '其他站源与通用请求'),
                       items: const [
                         DropdownMenuItem(value: 'auto', child: Text('自动')),
                         DropdownMenuItem(value: 'direct', child: Text('直连')),
@@ -413,7 +457,7 @@ class _ResourceSettingsScreenState extends State<ResourceSettingsScreen> {
                         padding: const EdgeInsets.symmetric(vertical: 12),
                         child: Text(
                           '${_settings!.systemProxyStatus.isEmpty ? '使用系统静态代理；未配置时使用环境变量或直连。' : _settings!.systemProxyStatus}\n'
-                          '仅代理连接中断或超时时，同一地址直连重试一次；'
+                          '直连中断或超时时，同一地址改用系统代理；'
                           'HTTP 错误、验证码和付费限制不切换。'
                           '如需始终通过代理，请选择手动代理。',
                         ),

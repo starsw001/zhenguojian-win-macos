@@ -24,7 +24,7 @@ func (engine *nativeEngine) checkOrdinaryEpisodeConnection(ctx context.Context, 
 	if err != nil {
 		return nil, err
 	}
-	ctx = providerMediaContext(ctx, media.credentials)
+	ctx = providerMediaRequestContext(ctx, media)
 	key, address, err := engine.downloader.sourceProbeResources(ctx, media)
 	if err != nil {
 		return nil, err

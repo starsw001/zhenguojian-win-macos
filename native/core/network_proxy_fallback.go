@@ -1,6 +1,7 @@
 package core
 
 import (
+	"bytes"
 	"context"
 	"crypto/x509"
 	"encoding/json"
@@ -9,6 +10,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"net/url"
 	"strings"
 	"sync/atomic"
@@ -18,6 +20,25 @@ import (
 type directProxyAttemptKey struct{}
 
 type hongguoMetadataReadKey struct{}
+type hongguoFallbackProxyKey struct{}
+type hongguoStreamPathKey struct{}
+type hongguoStreamPath struct {
+	address string
+	proxy   atomic.Pointer[url.URL]
+}
+
+func hongguoRegistrationPost(r *http.Request) bool {
+	if r.Method != http.MethodPost || r.GetBody == nil || r.URL.User != nil ||
+		r.Header.Get("Cookie") != "" || r.Header.Get("Authorization") != "" {
+		return false
+	}
+	return hongguoRequestAt(r, hongguoPlaybackRegisterURL) || hongguoRequestAt(r, hongguoDeviceRegisterURL)
+}
+
+func hongguoRequestAt(r *http.Request, endpoint string) bool {
+	u, _ := url.Parse(endpoint)
+	return r.URL.Scheme == "https" && strings.EqualFold(r.URL.Host, u.Host) && r.URL.EscapedPath() == u.EscapedPath() && r.URL.User == nil
+}
 
 type autoProxyFallbackTransport struct {
 	base          http.RoundTripper
@@ -44,13 +65,11 @@ func (body *routeResponseBody) Close() error {
 
 // canRetry 判断是否允许重试。
 func (transport *autoProxyFallbackTransport) canRetry(request *http.Request) bool {
-	if transport.router == nil || request.Context().Value(directProxyAttemptKey{}) == true || !replayableProviderRead(request) {
+	if transport.router == nil || request.Context().Value(directProxyAttemptKey{}) == true || (!replayableProviderRead(request) && !hongguoRegistrationPost(request)) {
 		return false
 	}
-	transport.router.mu.RLock()
-	mode := transport.router.mode
-	transport.router.mu.RUnlock()
-	if mode == "manual" || mode == "direct" {
+	mode, _ := transport.router.requestMode(request)
+	if mode != "auto" {
 		return false
 	}
 	proxy, err := transport.router.proxy(request)
@@ -101,10 +120,9 @@ func replayableProviderRead(request *http.Request) bool {
 		return replayableHuangguoPlaybackRead(request)
 	}
 	if known, _ := request.Context().Value(hongguoMetadataReadKey{}).(bool); known {
-		address, _ := url.Parse(hongguoAppBaseURL + hongguoVideoModelPath)
-		return request.URL.Scheme == address.Scheme && request.URL.Host == address.Host &&
-			request.URL.Path == address.Path && request.URL.User == nil &&
-			request.Header.Get("Authorization") == "" && request.Header.Get("Cookie") == ""
+		return request.Header.Get("Authorization") == "" && request.Header.Get("Proxy-Authorization") == "" &&
+			(hongguoRequestAt(request, hongguoAppBaseURL+hongguoVideoModelPath) ||
+				hongguoRequestAt(request, hongguoMultiVideoAPI) || hongguoRequestAt(request, hongguoMobileV5API))
 	}
 	if request.URL.RawQuery != "" {
 		return false
@@ -139,22 +157,68 @@ func replayableProviderRead(request *http.Request) bool {
 
 // RoundTrip 按auto代理回退传输层策略执行单次 HTTP 请求并返回响应或错误。
 func (transport *autoProxyFallbackTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	hongguo := transport.router != nil && hongguoProxyHost(request.URL.Hostname())
+	if pinned, _ := request.Context().Value(hongguoFallbackProxyKey{}).(*url.URL); hongguo && pinned != nil && hongguoRequestAt(request, hongguoMobileV5API) {
+		return transport.base.RoundTrip(request)
+	}
 	eligible := transport.canRetry(request)
+	bootstrap := eligible && hongguoRegistrationPost(request)
+	if path, _ := request.Context().Value(hongguoStreamPathKey{}).(*hongguoStreamPath); eligible && hongguo && path != nil &&
+		request.Method == http.MethodGet && request.URL.String() == path.address {
+		if saved := path.proxy.Load(); saved != nil {
+			proxy, _ := transport.router.proxy(request)
+			if proxy != nil && proxy.String() == saved.String() {
+				proxied := request.WithContext(context.WithValue(request.Context(), hongguoFallbackProxyKey{}, proxy))
+				res, err := transport.base.RoundTrip(proxied)
+				if err == nil || res != nil || request.Context().Err() != nil || !directTransportFailure(err) {
+					return res, err
+				}
+				path.proxy.CompareAndSwap(saved, nil)
+				return transport.base.RoundTrip(request.WithContext(context.WithValue(request.Context(), directProxyAttemptKey{}, true)))
+			}
+			path.proxy.CompareAndSwap(saved, nil)
+		}
+	}
 	first := request
 	var timer *time.Timer
 	var cancel context.CancelFunc
 	var expired atomic.Bool
+	var dialing, acquired atomic.Bool
 	if eligible {
 		attemptContext, stop := context.WithCancel(request.Context())
 		cancel = stop
 		first = request.Clone(context.WithValue(attemptContext, directProxyAttemptKey{}, true))
+		if bootstrap {
+			trace := &httptrace.ClientTrace{
+				DNSStart:     func(httptrace.DNSStartInfo) { dialing.Store(true) },
+				ConnectStart: func(string, string) { dialing.Store(true) },
+				GotConn:      func(httptrace.GotConnInfo) { acquired.Store(true) },
+			}
+			first = first.WithContext(httptrace.WithClientTrace(first.Context(), trace))
+		}
 		budget := transport.directTimeout
 		if deadline, ok := request.Context().Deadline(); ok && time.Until(deadline)/2 < budget {
 			budget = time.Until(deadline) / 2
 		}
 		timer = time.AfterFunc(budget, func() { expired.Store(true); stop() })
+	} else if hongguo {
+		first = request.WithContext(context.WithValue(request.Context(), directProxyAttemptKey{}, true))
 	}
 	response, err := transport.base.RoundTrip(first)
+	if eligible && hongguo && !bootstrap && err == nil && response != nil && response.Body != nil &&
+		request.Method != http.MethodHead && (response.StatusCode == http.StatusOK || response.StatusCode == http.StatusPartialContent) &&
+		response.ContentLength > 0 && response.Header.Get("Retry-After") == "" && !nativeMediaAccessStopsSwitch(response, nil) {
+		var prefix [1]byte
+		if _, readErr := io.ReadFull(response.Body, prefix[:]); readErr != nil {
+			response.Body.Close()
+			response, err = nil, readErr
+		} else {
+			response.Body = struct {
+				io.Reader
+				io.Closer
+			}{io.MultiReader(bytes.NewReader(prefix[:]), response.Body), response.Body}
+		}
+	}
 	if timer != nil {
 		timer.Stop()
 		if err == nil && response != nil && response.Body != nil {
@@ -166,6 +230,13 @@ func (transport *autoProxyFallbackTransport) RoundTrip(request *http.Request) (*
 	if err == nil || response != nil || request.Context().Err() != nil || !eligible || (!expired.Load() && !directTransportFailure(err)) {
 		return response, err
 	}
+	if bootstrap {
+		var op *net.OpError
+		var dns *net.DNSError
+		if acquired.Load() || !(errors.As(err, &dns) || errors.As(err, &op) && op.Op == "dial" || expired.Load() && dialing.Load()) {
+			return nil, err
+		}
+	}
 	if !transport.canRetry(request) {
 		return nil, err
 	}
@@ -173,6 +244,16 @@ func (transport *autoProxyFallbackTransport) RoundTrip(request *http.Request) (*
 		err = fmt.Errorf("直连等待超时：%w", context.DeadlineExceeded)
 	}
 	retry := request.Clone(request.Context())
+	if hongguo {
+		proxy, proxyErr := transport.router.proxy(request)
+		if proxyErr != nil || proxy == nil {
+			return nil, err
+		}
+		if state, _ := request.Context().Value(hongguoEpisodeEmptyKey{}).(*hongguoEpisodeEmptyRead); state != nil {
+			state.proxyTried.Store(true)
+		}
+		retry = retry.WithContext(context.WithValue(retry.Context(), hongguoFallbackProxyKey{}, proxy))
+	}
 	if request.Body != nil && request.Body != http.NoBody {
 		body, bodyErr := request.GetBody()
 		if bodyErr != nil {
@@ -180,23 +261,30 @@ func (transport *autoProxyFallbackTransport) RoundTrip(request *http.Request) (*
 		}
 		retry.Body = body
 	}
+	label := "系统代理"
+	if hongguo {
+		label = "已配置的代理"
+	}
 	if transport.record != nil {
 		transport.record(diagnosticEvent{Event: "network.auto_direct_transport_failed", Level: "warning", Host: request.URL.Hostname(), Attempt: 1,
-			Message: fmt.Sprintf("自动模式直连失败，同一地址改走系统代理：%v", publicError(err))})
+			Message: fmt.Sprintf("自动模式直连失败，同一地址改走%s：%v", label, publicError(err))})
 	}
 	recovered, proxyErr := transport.base.RoundTrip(retry)
+	if hongguo && recovered != nil && recovered.Request == nil {
+		recovered.Request = retry
+	}
 	if transport.record != nil {
-		event := diagnosticEvent{Event: "network.auto_proxy_result", Level: "info", Host: request.URL.Hostname(), Attempt: 2, Message: "自动模式同一地址系统代理请求完成；未修改网络设置"}
+		event := diagnosticEvent{Event: "network.auto_proxy_result", Level: "info", Host: request.URL.Hostname(), Attempt: 2, Message: "自动模式同一地址" + label + "请求完成；未修改网络设置"}
 		if recovered != nil {
 			event.HTTPStatus = recovered.StatusCode
 		}
 		if proxyErr != nil {
-			event.Level, event.Message = "warning", fmt.Sprintf("自动模式系统代理请求仍失败：%v", publicError(proxyErr))
+			event.Level, event.Message = "warning", fmt.Sprintf("自动模式%s请求仍失败：%v", label, publicError(proxyErr))
 		}
 		transport.record(event)
 	}
 	if proxyErr != nil {
-		return recovered, fmt.Errorf("自动模式直连失败（%v），同址系统代理仍失败：%w", publicError(err), publicError(proxyErr))
+		return recovered, fmt.Errorf("自动模式直连失败（%v），同址%s仍失败：%w", publicError(err), label, publicError(proxyErr))
 	}
 	return recovered, nil
 }

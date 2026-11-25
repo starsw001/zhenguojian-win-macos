@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -92,14 +93,33 @@ func (engine *nativeEngine) nativeRanking(ctx context.Context, input nativeInput
 	if input.Page < 1 || input.Page > 500 {
 		return nil, errors.New("榜单页码无效")
 	}
+	if board.Source == sourceHongguo {
+		discovered, err := engine.downloader.loadHongguoRankingBoards(ctx, false)
+		if err == nil {
+			found = false
+			for _, entry := range discovered {
+				if entry.ID == input.Board {
+					board, found = entry, true
+					break
+				}
+			}
+			if !found {
+				return nil, errNativeBuildSource
+			}
+		} else if strings.HasPrefix(input.Board, "hongguo-web-") {
+			return nil, err
+		}
+	}
 	page, err := engine.downloader.loadRankingPage(ctx, board, input.Page, input.Force)
 	if err != nil {
 		return nil, err
 	}
 	type item struct {
-		Rank   int         `json:"rank"`
-		Drama  nativeDrama `json:"drama"`
-		Metric string      `json:"metric,omitempty"`
+		Status          string      `json:"status,omitempty"`
+		ReservationOnly bool        `json:"reservationOnly,omitempty"`
+		Rank            int         `json:"rank"`
+		Drama           nativeDrama `json:"drama"`
+		Metric          string      `json:"metric,omitempty"`
 	}
 	items := make([]item, 0, len(page.Items))
 	engine.mu.Lock()
@@ -113,7 +133,7 @@ func (engine *nativeEngine) nativeRanking(ctx context.Context, input nativeInput
 		if old, found := library[drama.ID]; found {
 			drama = mergeNativeDrama(old, drama)
 		}
-		items = append(items, item{Rank: row.Rank, Drama: drama, Metric: row.Metric})
+		items = append(items, item{Rank: row.Rank, Drama: drama, Metric: row.Metric, Status: row.Status, ReservationOnly: row.ReservationOnly})
 	}
 	return map[string]any{"boardId": page.BoardID, "page": page.Page, "items": items,
 		"hasMore": page.HasMore, "totalPages": page.TotalPages, "updatedText": page.UpdatedText,

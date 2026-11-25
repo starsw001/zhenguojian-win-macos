@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -210,47 +211,166 @@ func (d *Downloader) resolveHongguoMedia(ctx context.Context, task Task) (provid
 		return providerMedia{}, err
 	}
 	fresh, _ := ctx.Value(hongguoFreshMediaKey{}).(bool)
-	key := seriesID + "/" + videoID
-	cached, generation, hit := d.hongguoMediaCache.get(key, fresh, time.Now())
-	if hit {
-		return cached, nil
-	}
-	media, err := d.resolveHongguoMediaRoutes(ctx, task.Index, seriesID, videoID)
-	if err != nil {
-		if hongguoStopPlaybackFallback(err) && !errors.Is(err, errHongguoEmptyPrimaryPlayback) {
-			d.hongguoMediaCache.clear()
-		}
-		return providerMedia{}, err
-	}
-	if err := ctx.Err(); err != nil {
-		return providerMedia{}, err
-	}
-	d.hongguoMediaCache.put(key, generation, media, time.Now())
-	return media, nil
+	key := seriesID + "/" + videoID + "/" + strconv.Itoa(task.Index)
+	return d.hongguoMediaCache.resolve(ctx, key, fresh, func(readCtx context.Context) (providerMedia, error) {
+		return d.resolveHongguoMediaRoutes(readCtx, task.Index, seriesID, videoID)
+	})
 }
 
 // resolveHongguoMediaRoutes 解析红果媒体候选线路。
 func (d *Downloader) resolveHongguoMediaRoutes(ctx context.Context, episode int, seriesID, videoID string) (providerMedia, error) {
-	media, primaryErr := d.resolveHongguoAppMedia(ctx, videoID)
-	if primaryErr == nil {
-		return media, nil
+	var routes []providerMedia
+	var failures []error
+	empty := &hongguoEpisodeEmptyRead{}
+	episodeContext := context.WithValue(ctx, hongguoEpisodeEmptyKey{}, empty)
+	allAppReadsEmpty := true
+	var supplementUntil time.Time
+	sources := []struct {
+		name   string
+		weight int
+		read   func(context.Context, string) (providerMedia, error)
+	}{
+		{"新版 App", 4, d.resolveHongguoMobileV5Media},
+		{"原 App 单集", 1, d.resolveHongguoAppMedia},
+		{"原 App 多线路", 3, d.resolveHongguoMultiMedia},
+	}
+	if episode > 0 && episode <= 5 {
+		sources = append(sources, struct {
+			name   string
+			weight int
+			read   func(context.Context, string) (providerMedia, error)
+		}{"官网同集", 1, func(ctx context.Context, id string) (providerMedia, error) {
+			return d.resolveHongguoWebEpisode(ctx, episode, seriesID, id)
+		}})
+	}
+	remainingWeight := 0
+	for _, source := range sources {
+		remainingWeight += source.weight
+	}
+	for _, route := range sources {
+		if ctx.Err() != nil {
+			break
+		}
+		limit, bounded := ctx.Deadline()
+		if !supplementUntil.IsZero() && (!bounded || supplementUntil.Before(limit)) {
+			limit, bounded = supplementUntil, true
+		}
+		stepContext := episodeContext
+		var cancel context.CancelFunc
+		if bounded {
+			left := time.Until(limit)
+			if left <= 0 {
+				break
+			}
+			stepContext, cancel = context.WithTimeout(episodeContext, left/time.Duration(remainingWeight)*time.Duration(route.weight))
+		}
+		remainingWeight -= route.weight
+		media, err := route.read(stepContext, videoID)
+		timedOut := errors.Is(stepContext.Err(), context.DeadlineExceeded)
+		if cancel != nil {
+			cancel()
+		}
+		if err == nil && isProviderHTTPMediaURL(media.URL) {
+			routes = append(routes, media)
+			n := len(mergeHongguoMediaRoutes([]providerMedia{media}).Variants)
+			d.recordDiagnostic(diagnosticEvent{Event: "playback.hongguo_route_source", Source: sourceHongguo, Level: "info", Episode: episode, Message: fmt.Sprintf("%s返回 %d 条同集地址", route.name, n)})
+			if supplementUntil.IsZero() {
+				wait := 6 * time.Second
+				if n == 1 {
+					wait = 12 * time.Second
+				}
+				supplementUntil = time.Now().Add(wait)
+			}
+			continue
+		}
+		if timedOut && ctx.Err() == nil {
+			d.recordDiagnostic(diagnosticEvent{Event: "playback.hongguo_route_source", Source: sourceHongguo, Level: "warning", Episode: episode, Message: route.name + "未在本次分配的时间内返回"})
+		}
+		if err == nil {
+			err = errors.New("未返回本集有效地址")
+		}
+		failures = append(failures, fmt.Errorf("%s：%w", route.name, publicError(err)))
+		if route.name != "官网同集" && !errors.Is(err, errHongguoEmptyPrimaryPlayback) {
+			allAppReadsEmpty = false
+		}
+		if route.name == "官网同集" && !errors.Is(err, errHongguoWebEpisodeNotFound) && !directTransportFailure(err) {
+			allAppReadsEmpty = false
+		}
+		if !errors.Is(err, errHongguoEmptyPrimaryPlayback) && (hongguoStopPlaybackFallback(err) || nativeRouteMustStop(err)) {
+			if len(routes) == 0 {
+				return providerMedia{}, fmt.Errorf("红果第%d集%s：%w", episode, route.name, publicError(err))
+			}
+			break
+		}
 	}
 	if err := ctx.Err(); err != nil {
 		return providerMedia{}, err
 	}
-	if hongguoStopPlaybackFallback(primaryErr) && !errors.Is(primaryErr, errHongguoEmptyPrimaryPlayback) {
-		return providerMedia{}, fmt.Errorf("红果第%d集播放接口暂不可用：%w", episode, primaryErr)
+	if len(routes) == 0 && allAppReadsEmpty {
+		if media, tried, err := empty.retry(ctx, d, videoID); tried {
+			if err == nil {
+				routes = append(routes, media)
+			} else {
+				failures = append(failures, fmt.Errorf("同址代理复核：%w", publicError(err)))
+			}
+		}
 	}
-	media, webErr := d.resolveHongguoWebMedia(ctx, seriesID, videoID)
-	if webErr == nil {
-		return media, nil
+	if len(routes) > 0 {
+		merged := mergeHongguoMediaRoutes(routes)
+		d.recordDiagnostic(diagnosticEvent{Event: "playback.hongguo_episode_routes", Level: "info", Source: sourceHongguo, Message: fmt.Sprintf("第 %d 集取得 %d 条去重的同集地址", episode, len(merged.Variants))})
+		return merged, nil
 	}
-	return providerMedia{}, fmt.Errorf("红果第%d集在线播放和下载暂不可用：%w；官网同集公开线路不可用：%w", episode, primaryErr, webErr)
+	return providerMedia{}, fmt.Errorf("红果第%d集未取得正片地址：%w", episode, errors.Join(failures...))
+}
+
+func mergeHongguoMediaRoutes(routes []providerMedia) providerMedia {
+	options := make([]providerMedia, 0, len(routes)*2)
+	seen := map[string]bool{}
+	for _, route := range routes {
+		for _, option := range append([]providerMedia{route}, route.Variants...) {
+			if option.pending == nil && !isProviderHTTPMediaURL(option.URL) {
+				continue
+			}
+			identity := option.URL + "\x00" + option.Referer + "\x00" + option.routeAddress + "\x00" + hex.EncodeToString(option.CENCKey) + "\x00" + hex.EncodeToString(option.HLSKey)
+			if seen[identity] {
+				continue
+			}
+			seen[identity] = true
+			option.Variants = nil
+			options = append(options, option)
+			if len(options) >= nativePlaybackRouteLimit {
+				break
+			}
+		}
+		if len(options) >= nativePlaybackRouteLimit {
+			break
+		}
+	}
+	if len(options) == 0 {
+		return providerMedia{}
+	}
+	media := options[0]
+	media.Variants = options
+	return media
 }
 
 // resolveHongguoWebMedia 解析红果网页媒体。
 func (d *Downloader) resolveHongguoWebMedia(ctx context.Context, seriesID, videoID string) (providerMedia, error) {
 	pageURL := hongguoBaseURL + "/player/" + url.PathEscape(seriesID) + "/" + url.PathEscape(videoID)
+	return d.resolveHongguoWebPlayer(ctx, pageURL, seriesID, videoID)
+}
+
+func (d *Downloader) resolveHongguoWebEpisode(ctx context.Context, episode int, seriesID, videoID string) (providerMedia, error) {
+	if episode == 1 {
+		media, err := d.resolveHongguoWebPlayer(ctx, hongguoBaseURL+"/player/"+url.PathEscape(seriesID), seriesID, videoID)
+		if !errors.Is(err, errHongguoWebEpisodeNotFound) {
+			return media, err
+		}
+	}
+	return d.resolveHongguoWebMedia(ctx, seriesID, videoID)
+}
+
+func (d *Downloader) resolveHongguoWebPlayer(ctx context.Context, pageURL, seriesID, videoID string) (providerMedia, error) {
 	ctx = context.WithValue(ctx, nativeNoRedirectKey{}, true)
 	body, err := d.fetchHongguoPlaybackText(ctx, pageURL)
 	if err != nil {
@@ -263,9 +383,13 @@ func (d *Downloader) resolveHongguoWebMedia(ctx context.Context, seriesID, video
 	if protected, marked := page["protectedPlayback"]; marked && protected != false {
 		preview, _ := page["publicVideoSeo"].(map[string]any)
 		if preview["available"] == true && mapString(preview, "seriesId") == seriesID && mapString(preview, "itemId") == videoID {
-			return providerMedia{}, errors.New("红果官网正片受保护（protectedPlayback），公开预览不是正片，不会用作正片播放或下载；请在官网或官方 App 查看本集")
+			media, fallbackErr := d.resolveHongguoProtectedWebMedia(ctx, pageURL, preview, videoID)
+			if fallbackErr == nil {
+				return media, nil
+			}
+			return providerMedia{}, fmt.Errorf("红果官网正片受保护（protectedPlayback），官方同集完整线路不可用：%w；公开预览不是正片，未用作播放或下载：%w", fallbackErr, errNativeMediaAccessStop)
 		}
-		return providerMedia{}, errors.New("红果网页启用了受保护播放（protectedPlayback）；请在官网或官方 App 确认访问权限，软件不会尝试绕过；已下载文件仍可离线播放")
+		return providerMedia{}, fmt.Errorf("红果网页启用了受保护播放（protectedPlayback），请在官网或官方 App 确认权限：%w", errNativeMediaAccessStop)
 	}
 	info, _ := page["video_player_info"].(map[string]any)
 	if id := mapString(info, "vid", "video_id"); id != "" && id != videoID {

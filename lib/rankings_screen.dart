@@ -207,6 +207,44 @@ class _RankingsScreenState extends State<RankingsScreen> {
     _load();
   }
 
+  Future<void> _openItem(RankingItem item) async {
+    if (item.reservationOnly) {
+      await showDialog<void>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: Text(item.drama.title),
+          content: SingleChildScrollView(
+            child: Text(
+              [
+                '源站预约信息，尚未上线，不提供播放。',
+                item.status,
+                item.metric,
+                item.drama.description,
+              ].where((text) => text.isNotEmpty).join('\n\n'),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('关闭'),
+            ),
+          ],
+        ),
+      );
+      return;
+    }
+    await Navigator.push<void>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => DetailScreen(
+          drama: item.drama,
+          repository: widget.repository,
+          store: widget.store,
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final groups = SourceGroup.fromSources(
@@ -221,6 +259,8 @@ class _RankingsScreenState extends State<RankingsScreen> {
             item.rank,
             widget.repository.catalogUpdates.current(item.drama),
             metric: item.metric,
+            status: item.status,
+            reservationOnly: item.reservationOnly,
           ),
         )
         .where(
@@ -272,11 +312,35 @@ class _RankingsScreenState extends State<RankingsScreen> {
   }
 
   List<Widget> _content(List<RankingBoard> boards, List<RankingItem> items) => [
+    if (_board?.source == 'hongguo' && _board!.categoryId.isNotEmpty)
+      CatalogFilters(
+        key: const ValueKey('hongguo-ranking-categories'),
+        categories: [
+          for (final entry in {
+            for (final board in boards) board.categoryId: board.categoryName,
+          }.entries)
+            CatalogCategory(entry.key, entry.value),
+        ],
+        category: _board!.categoryId,
+        onCategory: (id) {
+          final matching = boards
+              .where((board) => board.categoryId == id)
+              .toList();
+          _select(
+            matching.where((board) => board.name == _board!.name).firstOrNull ??
+                matching.first,
+          );
+        },
+        onRetry: () => _load(force: true),
+      ),
     if (boards.isNotEmpty)
       CatalogFilters(
         key: ValueKey('ranking-boards-${_board!.groupId}'),
         categories: [
-          for (final board in boards) CatalogCategory(board.id, board.name),
+          for (final board in boards)
+            if (_board!.categoryId.isEmpty ||
+                board.categoryId == _board!.categoryId)
+              CatalogCategory(board.id, board.name),
         ],
         category: _board!.id,
         onCategory: (id) =>
@@ -380,16 +444,7 @@ class _RankingsScreenState extends State<RankingsScreen> {
                           Scrollable.ensureVisible(context, alignment: .4);
                         }
                       },
-                      onTap: () => Navigator.push<void>(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => DetailScreen(
-                            drama: item.drama,
-                            repository: widget.repository,
-                            store: widget.store,
-                          ),
-                        ),
-                      ),
+                      onTap: () => _openItem(item),
                       child: Padding(
                         padding: const EdgeInsets.all(12),
                         child: Row(
@@ -442,6 +497,15 @@ class _RankingsScreenState extends State<RankingsScreen> {
                                       ].join(' · '),
                                       maxLines: 1,
                                       overflow: TextOverflow.ellipsis,
+                                    ),
+                                  if (item.status.isNotEmpty)
+                                    Text(
+                                      item.status,
+                                      maxLines: 3,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: Theme.of(
+                                        context,
+                                      ).textTheme.bodySmall,
                                     ),
                                   if (item.metric.isNotEmpty)
                                     Padding(

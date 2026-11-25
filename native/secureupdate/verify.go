@@ -51,6 +51,10 @@ func ArchiveName(ed, v string) string {
 	return ed + "-" + strings.ReplaceAll(v, "+", "-build") + "-windows-x64.zip"
 }
 
+func ArchiveRoot(ed, v string) string {
+	return strings.TrimSuffix(ArchiveName(ed, v), ".zip")
+}
+
 // ValidEdition 判断软件标识是否属于允许的版本类型。
 func ValidEdition(ed string) bool { return ed == "hongguoshang" || ed == "zhenguoshang" }
 
@@ -141,6 +145,21 @@ func allowed(s, ed string) bool {
 		return s == ed+".exe"
 	}
 	return safeName(s) && (s == "native_assets.json" || s == "distribution.json" || strings.HasPrefix(s, "data/") || (!strings.Contains(s, "/") && strings.HasSuffix(s, ".dll")))
+}
+
+const (
+	layoutUnknown = iota
+	layoutFlat
+	layoutNested
+)
+
+func archiveEntryName(name string, r Release) (string, int, bool) {
+	prefix := ArchiveRoot(r.Edition, r.Version) + "/"
+	if strings.HasPrefix(name, prefix) {
+		inner := strings.TrimPrefix(name, prefix)
+		return inner, layoutNested, inner != ""
+	}
+	return name, layoutFlat, name != ""
 }
 
 // getManifest 验证分发清单签名并核对软件、版本与分发身份。
@@ -286,12 +305,14 @@ func Extract(zipPath, target, key string, r Release) error {
 	var manifest []byte
 	seen := map[string]bool{}
 	var total uint64
+	layout := layoutUnknown
 	for _, f := range z.File {
-		n := f.Name
+		n, currentLayout, valid := archiveEntryName(f.Name, r)
 		l := strings.ToLower(n)
-		if !allowed(n, r.Edition) || seen[l] || !f.Mode().IsRegular() || f.UncompressedSize64 > uint64(MaxArchive) || total+f.UncompressedSize64 > uint64(MaxExtract) {
+		if !valid || layout != layoutUnknown && layout != currentLayout || !allowed(n, r.Edition) || seen[l] || !f.Mode().IsRegular() || f.UncompressedSize64 > uint64(MaxArchive) || total+f.UncompressedSize64 > uint64(MaxExtract) {
 			return errors.New("更新包路径、大小或条目类型异常")
 		}
+		layout = currentLayout
 		total += f.UncompressedSize64
 		seen[l] = true
 		if n == "distribution.json" {
@@ -320,10 +341,11 @@ func Extract(zipPath, target, key string, r Release) error {
 		return e
 	}
 	for _, f := range z.File {
-		if f.Name != "distribution.json" && m.Files[f.Name] == "" {
+		name, _, valid := archiveEntryName(f.Name, r)
+		if !valid || name != "distribution.json" && m.Files[name] == "" {
 			return errors.New("压缩包包含未签名文件")
 		}
-		p := filepath.Join(target, filepath.FromSlash(f.Name))
+		p := filepath.Join(target, filepath.FromSlash(name))
 		if e = os.MkdirAll(filepath.Dir(p), 0700); e != nil {
 			return e
 		}

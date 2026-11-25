@@ -8,7 +8,10 @@ import tempfile
 def build_launcher(root, target, variant, version, distribution, public_key):
     with tempfile.TemporaryDirectory(prefix='guo-launch-build-') as temp:
         work = Path(temp)
-        shutil.copy2(root / 'native/cmd/update-launcher/main_windows.go', work)
+        launcher_source = root / 'native/cmd/update-launcher'
+        for source in sorted(launcher_source.glob('*.go')):
+            if not source.name.endswith('_test.go'):
+                shutil.copy2(source, work)
         shutil.copy2(root / 'native/go.sum', work)
         (work / 'go.mod').write_text('module guo-launch-build\n\ngo 1.24.1\nrequire duanjuapp/native v0.0.0\nreplace duanjuapp/native => ' + json.dumps((root / 'native').as_posix()) + '\n', 'utf8')
         shutil.copy2(root / 'windows/runner/resources/app_icon.ico', work / 'icon.ico')

@@ -3,6 +3,30 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   test(
+    'update progress hides bare hosts but keeps page counts and HTTP errors',
+    () {
+      final raw =
+          '单地址暂存 1/2 · 短剧 · 第12页；完成后替换目录缓存 · 已保存 1944 部 · thu.example.cc HTTP 404';
+      final status = SourceStatus.fromJson({
+        'source': 'huangguoai',
+        'stage': raw,
+      });
+      expect(status.displayStage, isNot(contains('thu.example.cc')));
+      for (final text in ['1/2', '第12页', '1944 部', 'HTTP 404']) {
+        expect(status.displayStage, contains(text));
+      }
+      expect(status.stage, raw);
+      expect(
+        sourceProgressText('失败 203.0.113.12:8443/path HTTP 503'),
+        '失败  HTTP 503',
+      );
+      expect(
+        sourceProgressText('诊断文件 app.log 和 app.log.1 保留'),
+        '诊断文件 app.log 和 app.log.1 保留',
+      );
+    },
+  );
+  test(
     'cached progress hides address but retains count and raw source identity',
     () {
       final status = SourceStatus.fromJson({

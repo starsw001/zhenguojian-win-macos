@@ -13,6 +13,7 @@ class ResourceSettings {
     this.logPath = '',
     this.defaultLogDirectory = '',
     this.proxyMode = 'auto',
+    this.hongguoProxyMode = 'auto',
     this.proxyUrl = '',
     this.catalogConcurrency = 3,
     this.catalogIntervalMs = 250,
@@ -24,7 +25,11 @@ class ResourceSettings {
     this.cacheLimits = const CacheLimits(),
     this.cacheUsage = const {},
   });
-  final String proxyMode, proxyUrl, warning, systemProxyStatus;
+  final String proxyMode,
+      hongguoProxyMode,
+      proxyUrl,
+      warning,
+      systemProxyStatus;
   final String logDirectory, logPath, defaultLogDirectory;
   final int catalogConcurrency,
       catalogIntervalMs,
@@ -40,6 +45,9 @@ class ResourceSettings {
         logPath: data['logPath'] as String? ?? '',
         defaultLogDirectory: data['defaultLogDirectory'] as String? ?? '',
         proxyMode: data['proxyMode'] as String? ?? 'auto',
+        hongguoProxyMode: data['hongguoProxyMode'] == 'directOnly'
+            ? 'directOnly'
+            : 'auto',
         proxyUrl: data['proxyUrl'] as String? ?? '',
         catalogConcurrency: intValue(data['catalogConcurrency'] ?? 3),
         catalogIntervalMs: intValue(data['catalogIntervalMs'] ?? 250),
@@ -62,6 +70,7 @@ class ResourceSettings {
   Map<String, dynamic> toJson() => {
     'logDirectory': logDirectory,
     'proxyMode': proxyMode,
+    'hongguoProxyMode': hongguoProxyMode,
     'proxyUrl': proxyUrl,
     'catalogConcurrency': catalogConcurrency,
     'catalogIntervalMs': catalogIntervalMs,

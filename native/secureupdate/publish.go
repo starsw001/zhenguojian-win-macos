@@ -59,13 +59,14 @@ func Publish(dir, out, keyfile, expected, edition, id, version string) (Release,
 	defer tmp.Close()
 	h := sha256.New()
 	z := zip.NewWriter(io.MultiWriter(tmp, h))
+	archiveRoot := ArchiveRoot(edition, version)
 	names := []string{"distribution.json"}
 	for k := range m.Files {
 		names = append(names, k)
 	}
 	sort.Strings(names)
 	for _, s := range names {
-		w, e := z.Create(s)
+		w, e := z.Create(archiveRoot + "/" + s)
 		if e != nil {
 			return r, e
 		}

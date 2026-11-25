@@ -150,8 +150,10 @@ func (engine *nativeEngine) saveSourceRecordsLocked() error {
 func (engine *nativeEngine) sourceStatus(source string) nativeSourceStatus {
 	source = canonicalProviderSource(source)
 	engine.mu.Lock()
-	defer engine.mu.Unlock()
-	return engine.sourceStatusLocked(source)
+	status := engine.sourceStatusLocked(source)
+	engine.mu.Unlock()
+	engine.downloader.recordSourceAddresses(status)
+	return status
 }
 
 // sourceStatusLocked 返回站源状态，供内部持锁路径调用。

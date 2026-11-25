@@ -132,6 +132,7 @@ type Config struct {
 	EventPath             string
 	Client                *http.Client
 	Device                func() (string, error)
+	DeviceInfo            func() DeviceInfo
 	Protect               func([]byte) ([]byte, error)
 	Unprotect             func([]byte) ([]byte, error)
 	Now                   func() time.Time

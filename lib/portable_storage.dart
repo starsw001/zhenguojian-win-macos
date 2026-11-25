@@ -8,11 +8,30 @@ import 'package:shared_preferences_platform_interface/shared_preferences_platfor
 import 'package:shared_preferences_platform_interface/types.dart';
 
 class PortableStorageLayout {
-  PortableStorageLayout(String executable)
-    : root = p.dirname(p.normalize(executable)) {
+  PortableStorageLayout(String executable, {String? updateRoot})
+    : root = _resolveRoot(executable, updateRoot) {
     if (!p.isAbsolute(executable)) {
       throw ArgumentError.value(executable, 'executable', '软件路径必须是绝对路径');
     }
+  }
+
+  static String _resolveRoot(String executable, String? updateRoot) {
+    if (!p.isAbsolute(executable)) {
+      throw ArgumentError.value(executable, 'executable', '软件路径必须是绝对路径');
+    }
+    final normalizedExecutable = p.normalize(executable);
+    if (updateRoot == null || updateRoot.trim().isEmpty) {
+      return p.dirname(normalizedExecutable);
+    }
+    if (!p.isAbsolute(updateRoot)) {
+      throw ArgumentError.value(updateRoot, 'updateRoot', '更新根目录必须是绝对路径');
+    }
+    final normalizedRoot = p.normalize(updateRoot);
+    if (!p.equals(p.dirname(normalizedExecutable), normalizedRoot) &&
+        !p.isWithin(normalizedRoot, normalizedExecutable)) {
+      throw ArgumentError.value(updateRoot, 'updateRoot', '更新程序必须位于原安装目录内');
+    }
+    return normalizedRoot;
   }
 
   final String root;

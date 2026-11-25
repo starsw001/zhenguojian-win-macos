@@ -385,8 +385,18 @@ func (d *Downloader) resolveSoraniMedia(ctx context.Context, task Task) (provide
 		return providerMedia{}, err
 	}
 	row, _ := soraniPayload(value).(map[string]any)
+	if canPlay, present := row["canPlay"].(bool); present && !canPlay {
+		message := mapString(row, "message", "msg")
+		if message == "" {
+			message = "当前账号无权播放本集，请在源站确认账号权限"
+		}
+		return providerMedia{}, errors.New("青空：" + truncate(message, 120))
+	}
 	address := mapString(row, "playUrl", "url")
 	if address == "" {
+		if message := mapString(row, "message", "msg"); message != "" {
+			return providerMedia{}, errors.New("青空：" + truncate(message, 120))
+		}
 		return providerMedia{}, fmt.Errorf("青空次元该分集暂无可用播放地址（线路 %s）", lineCode)
 	}
 	media := providerMedia{URL: address, Referer: soraniSiteBaseURL + "/"}
